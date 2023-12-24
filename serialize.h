@@ -27,9 +27,10 @@
 
 /** @file */
 
-// todo: temporary
+#ifndef serialize_assert
 #include <assert.h>
 #define serialize_assert assert
+#endif // #ifndef serialize_assert
 
 #if defined(_MSC_VER) && !defined(_CRT_SECURE_NO_WARNINGS)
 #define _CRT_SECURE_NO_WARNINGS
@@ -121,8 +122,8 @@ namespace serialize
         Calculates the population count of an unsigned 32 bit integer at compile time.
         Population count is the number of bits in the integer that set to 1.
         See "Hacker's Delight" and http://www.hackersdelight.org/hdcodetxt/popArrayHS.c.txt
-        @see yojimbo::Log2
-        @see yojimbo::BitsRequired
+        @see serialize::Log2
+        @see serialize::BitsRequired
      */
 
     template <uint32_t x> struct PopCount
@@ -139,8 +140,8 @@ namespace serialize
 
     /**
         Calculates the log 2 of an unsigned 32 bit integer at compile time.
-        @see yojimbo::Log2
-        @see yojimbo::BitsRequired
+        @see serialize::Log2
+        @see serialize::BitsRequired
      */
 
     template <uint32_t x> struct Log2
@@ -268,36 +269,36 @@ namespace serialize
 
     /**
         Template to convert an integer value from local byte order to network byte order.
-        IMPORTANT: Because most machines running yojimbo are little endian, yojimbo defines network byte order to be little endian.
+        IMPORTANT: Because most machines are little endian, serialize defines network byte order to be little endian.
         @param value The input value in local byte order. Supported integer types: uint64_t, uint32_t, uint16_t.
         @returns The input value converted to network byte order. If this processor is little endian the output is the same as the input. If the processor is big endian, the output is the input byte swapped.
-        @see yojimbo::bswap
+        @see serialize::bswap
      */
 
     template <typename T> T host_to_network( T value )
     {
-#if YOJIMBO_BIG_ENDIAN
+#if SERIALIZE_BIG_ENDIAN
         return bswap( value );
-#else // #if YOJIMBO_BIG_ENDIAN
+#else // #if SERIALIZE_BIG_ENDIAN
         return value;
-#endif // #if YOJIMBO_BIG_ENDIAN
+#endif // #if SERIALIZE_BIG_ENDIAN
     }
 
     /**
         Template to convert an integer value from network byte order to local byte order.
-        IMPORTANT: Because most machines running yojimbo are little endian, yojimbo defines network byte order to be little endian.
+        IMPORTANT: Because most machines are little endian, serialize defines network byte order to be little endian.
         @param value The input value in network byte order. Supported integer types: uint64_t, uint32_t, uint16_t.
         @returns The input value converted to local byte order. If this processor is little endian the output is the same as the input. If the processor is big endian, the output is the input byte swapped.
-        @see yojimbo::bswap
+        @see serialize::bswap
      */
 
     template <typename T> T network_to_host( T value )
     {
-#if YOJIMBO_BIG_ENDIAN
+#if SERIALIZE_BIG_ENDIAN
         return bswap( value );
-#else // #if YOJIMBO_BIG_ENDIAN
+#else // #if SERIALIZE_BIG_ENDIAN
         return value;
-#endif // #if YOJIMBO_BIG_ENDIAN
+#endif // #if SERIALIZE_BIG_ENDIAN
     }
 
     /**
@@ -785,17 +786,7 @@ namespace serialize
     ** 64 bits - BBBBBBBBC
     */
 
-    /*
-    ** Write a 64-bit variable-length integer to memory starting at p[0].
-    ** The length of data write will be between 1 and 9 bytes.  The number
-    ** of bytes written is returned.
-    **
-    ** A variable-length integer consists of the lower 7 bits of each byte
-    ** for all bytes that have the 8th bit set and one byte with the 8th
-    ** bit clear.  Except, if we get to the 9th byte, it stores the full
-    ** 8 bits and is the last byte.
-    */
-    static int put_varint64(unsigned char *p, uint64_t v)
+    inline int put_varint64( unsigned char * p, uint64_t v )
     {
         int i, j, n;
         uint8_t buf[10];
@@ -821,7 +812,8 @@ namespace serialize
         return n;
     }
 
-    int serialize_put_varint(unsigned char *p, uint64_t v) {
+    inline int serialize_put_varint( unsigned char * p, uint64_t v ) 
+    {
         if (v <= 0x7f) {
             p[0] = v & 0x7f;
             return 1;
@@ -850,7 +842,7 @@ namespace serialize
     ** Read a 64-bit variable-length integer from memory starting at p[0].
     ** Return the number of bytes read.  The value is stored in *v.
     */
-    uint8_t serialize_get_varint(const unsigned char *p, uint64_t *v)
+    uint8_t serialize_get_varint( const unsigned char * p, uint64_t * v )
     {
         uint32_t a, b, s;
 
@@ -1001,33 +993,19 @@ namespace serialize
         return 9;
     }
 
-    /*
-    ** Read a 32-bit variable-length integer from memory starting at p[0].
-    ** Return the number of bytes read.  The value is stored in *v.
-    **
-    ** If the varint stored in p[0] is larger than can fit in a 32-bit unsigned
-    ** integer, then set *v to 0xffffffff.
-    **
-    ** A MACRO version, getVarint32, is provided which inlines the
-    ** single-byte case.  All code should use the MACRO version as
-    ** this function assumes the single-byte case has already been handled.
-    */
-    uint8_t serialize_get_varint32(const unsigned char *p, uint32_t *v)
+    uint8_t serialize_get_varint32( const unsigned char * p, uint32_t * v )
     {
         uint32_t a, b;
 
-        /* The 1-byte case.  Overwhelmingly the most common.  Handled inline
-        ** by the getVarin32() macro */
+        /* The 1-byte case.  Overwhelmingly the most common. */
         a = *p;
         /* a: p0 (unmasked) */
-#ifndef serialize_getvarint32
         if (!(a & 0x80))
         {
             /* Values between 0 and 127 */
             *v = a;
             return 1;
         }
-#endif
 
         /* The 2-byte case */
         p++;
@@ -1140,7 +1118,7 @@ namespace serialize
     int serialize_measure_varint( uint64_t v )
     {
         int i;
-        for (i = 1; (v >>= 7) != 0; i++) { serialize_assert(i<10); }
+        for ( i = 1; (v>>=7) != 0; i++ ) { serialize_assert(i<10); }
         return i;
     }
 
@@ -1190,7 +1168,7 @@ namespace serialize
         This class is a wrapper around the bit writer class. Its purpose is to provide unified interface for reading and writing.
         You can determine if you are writing to a stream by calling Stream::IsWriting inside your templated serialize method.
         This is evaluated at compile time, letting the compiler generate optimized serialize functions without the hassle of maintaining separate read and write functions.
-        IMPORTANT: Generally, you don't call methods on this class directly. Use the serialize_* macros instead. See test/shared.h for some examples.
+        IMPORTANT: Generally, you don't call methods on this class directly. Use the serialize_* macros instead.
         @see BitWriter
      */
 
@@ -1365,7 +1343,7 @@ namespace serialize
         This class is a wrapper around the bit reader class. Its purpose is to provide unified interface for reading and writing.
         You can determine if you are reading from a stream by calling Stream::IsReading inside your templated serialize method.
         This is evaluated at compile time, letting the compiler generate optimized serialize functions without the hassle of maintaining separate read and write functions.
-        IMPORTANT: Generally, you don't call methods on this class directly. Use the serialize_* macros instead. See test/shared.h for some examples.
+        IMPORTANT: Generally, you don't call methods on this class directly. Use the serialize_* macros instead.
         @see BitReader
      */
 
@@ -1707,12 +1685,12 @@ namespace serialize
     #define serialize_int( stream, value, min, max )                    \
         do                                                              \
         {                                                               \
-            serialize_assert( min < max );                                \
+            serialize_assert( min < max );                              \
             int32_t int32_value = 0;                                    \
             if ( Stream::IsWriting )                                    \
             {                                                           \
-                serialize_assert( int64_t(value) >= int64_t(min) );       \
-                serialize_assert( int64_t(value) <= int64_t(max) );       \
+                serialize_assert( int64_t(value) >= int64_t(min) );     \
+                serialize_assert( int64_t(value) <= int64_t(max) );     \
                 int32_value = (int32_t) value;                          \
             }                                                           \
             if ( !stream.SerializeInteger( int32_value, min, max ) )    \
@@ -1798,8 +1776,8 @@ namespace serialize
     #define serialize_bits( stream, value, bits )                       \
         do                                                              \
         {                                                               \
-            serialize_assert( bits > 0 );                                 \
-            serialize_assert( bits <= 32 );                               \
+            serialize_assert( bits > 0 );                               \
+            serialize_assert( bits <= 32 );                             \
             uint32_t uint32_value = 0;                                  \
             if ( Stream::IsWriting )                                    \
             {                                                           \
@@ -1868,7 +1846,7 @@ namespace serialize
     #define serialize_float( stream, value )                                        \
         do                                                                          \
         {                                                                           \
-            if ( !serialize::serialize_float_internal( stream, value ) )              \
+            if ( !serialize::serialize_float_internal( stream, value ) )            \
             {                                                                       \
                 return false;                                                       \
             }                                                                       \
@@ -1912,13 +1890,13 @@ namespace serialize
         @param stream The stream object. May be a read, write or measure stream.
         @param value The float value to serialize.
      */
-#define serialize_compressed_float(stream, value, min, max, res)                         \
-    do                                                                                   \
-    {                                                                                    \
+#define serialize_compressed_float(stream, value, min, max, res)                           \
+    do                                                                                     \
+    {                                                                                      \
         if (!serialize::serialize_compressed_float_internal(stream, value, min, max, res)) \
-        {                                                                                \
-            return false;                                                                \
-        }                                                                                \
+        {                                                                                  \
+            return false;                                                                  \
+        }                                                                                  \
     } while (0)
 
     /**
@@ -1961,7 +1939,7 @@ namespace serialize
     #define serialize_uint64( stream, value )                                       \
         do                                                                          \
         {                                                                           \
-            if ( !serialize::serialize_uint64_internal( stream, value ) )             \
+            if ( !serialize::serialize_uint64_internal( stream, value ) )           \
                 return false;                                                       \
         } while (0)
 
@@ -1997,7 +1975,7 @@ namespace serialize
     #define serialize_double( stream, value )                                       \
         do                                                                          \
         {                                                                           \
-            if ( !serialize::serialize_double_internal( stream, value ) )             \
+            if ( !serialize::serialize_double_internal( stream, value ) )           \
             {                                                                       \
                 return false;                                                       \
             }                                                                       \
@@ -2021,7 +1999,7 @@ namespace serialize
     #define serialize_bytes( stream, data, bytes )                                  \
         do                                                                          \
         {                                                                           \
-            if ( !serialize::serialize_bytes_internal( stream, data, bytes ) )        \
+            if ( !serialize::serialize_bytes_internal( stream, data, bytes ) )      \
             {                                                                       \
                 return false;                                                       \
             }                                                                       \
@@ -2057,7 +2035,7 @@ namespace serialize
     #define serialize_string( stream, string, buffer_size )                                 \
         do                                                                                  \
         {                                                                                   \
-            if ( !serialize::serialize_string_internal( stream, string, buffer_size ) )       \
+            if ( !serialize::serialize_string_internal( stream, string, buffer_size ) )     \
             {                                                                               \
                 return false;                                                               \
             }                                                                               \
@@ -2261,7 +2239,7 @@ namespace serialize
     #define serialize_int_relative( stream, previous, current )                             \
         do                                                                                  \
         {                                                                                   \
-            if ( !serialize::serialize_int_relative_internal( stream, previous, current ) )   \
+            if ( !serialize::serialize_int_relative_internal( stream, previous, current ) ) \
             {                                                                               \
                 return false;                                                               \
             }                                                                               \
@@ -2314,7 +2292,7 @@ namespace serialize
     #define serialize_ack_relative( stream, sequence, ack  )                                        \
         do                                                                                          \
         {                                                                                           \
-            if ( !serialize::serialize_ack_relative_internal( stream, sequence, ack ) )               \
+            if ( !serialize::serialize_ack_relative_internal( stream, sequence, ack ) )             \
             {                                                                                       \
                 return false;                                                                       \
             }                                                                                       \
@@ -2356,7 +2334,7 @@ namespace serialize
     #define serialize_sequence_relative( stream, sequence1, sequence2 )                             \
         do                                                                                          \
         {                                                                                           \
-            if ( !serialize::serialize_sequence_relative_internal( stream, sequence1, sequence2 ) )   \
+            if ( !serialize::serialize_sequence_relative_internal( stream, sequence1, sequence2 ) ) \
             {                                                                                       \
                 return false;                                                                       \
             }                                                                                       \
@@ -2367,8 +2345,8 @@ namespace serialize
     #define read_bits( stream, value, bits )                                                \
     do                                                                                      \
     {                                                                                       \
-        serialize_assert( bits > 0 );                                                         \
-        serialize_assert( bits <= 32 );                                                       \
+        serialize_assert( bits > 0 );                                                       \
+        serialize_assert( bits <= 32 );                                                     \
         uint32_t uint32_value= 0;                                                           \
         if ( !stream.SerializeBits( uint32_value, bits ) )                                  \
         {                                                                                   \
@@ -2380,7 +2358,7 @@ namespace serialize
     #define read_int( stream, value, min, max )                                             \
         do                                                                                  \
         {                                                                                   \
-            serialize_assert( min < max );                                                    \
+            serialize_assert( min < max );                                                  \
             int32_t int32_value = 0;                                                        \
             if ( !stream.SerializeInteger( int32_value, min, max ) )                        \
             {                                                                               \
