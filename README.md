@@ -8,8 +8,9 @@ It has the following features:
 
 * Serialize a bool with only one bit
 * Serialize any integer value from [1,64] bits writing only that number of bits to the buffer
-* Template based serialization system so you can write a unified serialize function instead of separate read and write
-* Serialize signed integer values with [min,max] range, varints, relative integer encoding, zig-zag encoding and compressed float values
+* Serialize signed integer values with [min,max] using only the bits required
+* Serialize floats, doubles, compressed floats, strings, varints, and integers relative to another integer
+* Template based serialization system so you can write a unified serialize function instead of separate read and write functions
 
 # Author
 
