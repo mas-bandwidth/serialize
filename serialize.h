@@ -302,39 +302,6 @@ namespace serialize
     }
 
     /**
-        Compares two 16 bit sequence numbers and returns true if the first one is greater than the second (considering wrapping).
-        IMPORTANT: This is not the same as s1 > s2!
-        Greater than is defined specially to handle wrapping sequence numbers.
-        If the two sequence numbers are close together, it is as normal, but they are far apart, it is assumed that they have wrapped around.
-        Thus, sequence_greater_than( 1, 0 ) returns true, and so does sequence_greater_than( 0, 65535 )!
-        @param s1 The first sequence number.
-        @param s2 The second sequence number.
-        @returns True if the s1 is greater than s2, with sequence number wrapping considered.
-     */
-
-    inline bool sequence_greater_than( uint16_t s1, uint16_t s2 )
-    {
-        return ( ( s1 > s2 ) && ( s1 - s2 <= 32768 ) ) ||
-               ( ( s1 < s2 ) && ( s2 - s1  > 32768 ) );
-    }
-
-    /**
-        Compares two 16 bit sequence numbers and returns true if the first one is less than the second (considering wrapping).
-        IMPORTANT: This is not the same as s1 < s2!
-        Greater than is defined specially to handle wrapping sequence numbers.
-        If the two sequence numbers are close together, it is as normal, but they are far apart, it is assumed that they have wrapped around.
-        Thus, sequence_less_than( 0, 1 ) returns true, and so does sequence_greater_than( 65535, 0 )!
-        @param s1 The first sequence number.
-        @param s2 The second sequence number.
-        @returns True if the s1 is less than s2, with sequence number wrapping considered.
-     */
-
-    inline bool sequence_less_than( uint16_t s1, uint16_t s2 )
-    {
-        return sequence_greater_than( s2, s1 );
-    }
-
-    /**
         Convert a signed integer to an unsigned integer with zig-zag encoding.
         0,-1,+1,-2,+2... becomes 0,1,2,3,4 ...
         @param n The input value.
@@ -356,6 +323,16 @@ namespace serialize
     inline int unsigned_to_signed( uint32_t n )
     {
         return ( n >> 1 ) ^ ( -int32_t( n & 1 ) );
+    }
+
+    template <typename T> T clamp( const T & value, const T & a, const T & b )
+    {
+        if ( value < a )
+            return a;
+        else if ( value > b )
+            return b;
+        else
+            return value;
     }
 
     /**
@@ -640,7 +617,9 @@ namespace serialize
 
             if ( m_scratchBits < bits )
             {
+#ifdef SERIALIZE_DEBUG
                 serialize_assert( m_wordIndex < m_numWords );
+#endif // SERIALIZE_DEBUG
                 m_scratch |= uint64_t( network_to_host( m_data[m_wordIndex] ) ) << m_scratchBits;
                 m_scratchBits += 32;
                 m_wordIndex++;
@@ -1841,8 +1820,6 @@ namespace serialize
         @param value The float value to serialize.
      */
 
-    // todo
-    /*
     #define serialize_float( stream, value )                                        \
         do                                                                          \
         {                                                                           \
@@ -1859,28 +1836,34 @@ namespace serialize
                                              float res)
     {
         const float delta = max - min;
+
         const float values = delta / res;
-        const uint32_t maxIntegerValue = (uint32_t)ceil(values);
-        const int bits = bits_required(0, maxIntegerValue);
+
+        const uint32_t maxIntegerValue = (uint32_t) ceil(values);
+
+        const int bits = bits_required( 0, maxIntegerValue );
+        
         uint32_t integerValue = 0;
-        if (Stream::IsWriting)
+        
+        if ( Stream::IsWriting )
         {
-            float normalizedValue = serialize_clamp( (value - min) / delta, 0.0f, 1.0f );
+            float normalizedValue = clamp( (value - min) / delta, 0.0f, 1.0f );
             integerValue = (uint32_t) floor( normalizedValue * maxIntegerValue + 0.5f );
         }
-        if (!stream.SerializeBits(integerValue, bits))
+
+        if ( !stream.SerializeBits( integerValue, bits ) )
         {
             return false;
         }
-        if (Stream::IsReading)
+        
+        if ( Stream::IsReading )
         {
-            const float normalizedValue =
-                integerValue / float(maxIntegerValue);
+            const float normalizedValue = integerValue / float(maxIntegerValue);
             value = normalizedValue * delta + min;
         }
+        
         return true;
     }
-    */
 
     /**
         Serialize compressed floating point value (read/write/measure).

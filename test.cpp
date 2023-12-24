@@ -202,10 +202,8 @@ struct TestObject
         for ( int i = 0; i < data.numItems; ++i )
             data.items[i] = i + 10;
 
-        // todo: bring back
-        //data.compressed_float_value = 2.13f;
-        //data.float_value = 3.1415926f;
-
+        data.compressed_float_value = 2.13f;
+        data.float_value = 3.1415926f;
         data.double_value = 1 / 3.0;
         data.uint64_value = 0x1234567898765432L;
 
@@ -239,13 +237,9 @@ struct TestObject
         for ( int i = 0; i < data.numItems; ++i )
             serialize_bits( stream, data.items[i], 8 );
 
-        // todo
-        // serialize_float( stream, data.float_value );
+        serialize_float( stream, data.float_value );
 
-        // todo: var ints
-
-        // todo
-        // serialize_compressed_float(stream, data.compressed_float_value, 0, 10, 0.01);
+        serialize_compressed_float(stream, data.compressed_float_value, 0, 10, 0.01);
 
         serialize_double( stream, data.double_value );
 

@@ -1,2 +1,2 @@
 # serialize
-A bitpacked serializer for C++
+A bitpacking serializer for C++
