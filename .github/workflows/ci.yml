@@ -1,4 +1,4 @@
-name: CI
+name: CI 
 
 on: [push, pull_request]
 
@@ -39,8 +39,8 @@ jobs:
       if: runner.os == 'Windows'
       run: |
         premake5 vs2019
-        msbuild reliable.sln -nologo -m -t:Clean  -p:Configuration=${{ matrix.configuration }}
-        msbuild reliable.sln -nologo -m -p:Configuration=${{ matrix.configuration }}
+        msbuild serialize.sln -nologo -m -t:Clean  -p:Configuration=${{ matrix.configuration }}
+        msbuild serialize.sln -nologo -m -p:Configuration=${{ matrix.configuration }}
     - name: Test (vs2019)
       if: runner.os == 'Windows'
       run: "& ./bin/${{ matrix.configuration }}/test.exe"
