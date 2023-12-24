@@ -1,5 +1,5 @@
-How to build reliable
-=====================
+How to build serialize
+======================
 
 ## Building on Windows
 
@@ -11,7 +11,7 @@ Once you have Visual Studio installed, go to the command line under the reliable
 
     premake5 vs2019
 
-Open the generated reliable.sln file.
+Open the generated serialize.sln file.
 
 Now you can build the library and run individual test programs as you would for any other Visual Studio solution.
 
@@ -19,7 +19,7 @@ Now you can build the library and run individual test programs as you would for 
 
 First, download and install [premake 5](https://premake.github.io/download.html).
 
-Now go to the command line under the reliable directory and enter:
+Now go to the command line under the serialize directory and enter:
 
     premake5 gmake
 
@@ -30,11 +30,9 @@ Which creates makefiles which you can use to build the source via:
 Then you can run binaries like this:
 
     ./bin/test
-    ./bin/stats
-    ./bin/soak
-    ./bin/fuzz
+    ./bin/examples
 
-If you have questions please create an issue at https://github.com/mas-bandwidth/reliable and I'll do my best to help you out.
+If you have questions please create an issue at https://github.com/mas-bandwidth/serialize and I'll do my best to help you out.
 
 cheers
 
