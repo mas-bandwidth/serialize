@@ -4,9 +4,9 @@
 
 **serialize** is a simple bitpacking serializer for C++.
 
-You can now write a bool with only one bit, or serialize integer values from [0,64] bits while taking up only that much space in the output buffer.
+Now you can easily write a bool with only one bit, or serialize any integer values from [0,64] bits while taking up only that many bits buffer.
 
-A template based serialization system is included so you can have a unified serialize function that performs both read and write.
+A template based serialization system is also included so you can have one serialize function that unifies read and write.
 
 # Author
 
