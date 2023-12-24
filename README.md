@@ -6,7 +6,7 @@
 
 You can now write a bool with only one bit, or serialize integer values from [0,64] bits while taking up only that much space in the output buffer.
 
-A template based serialization system is included on top of the bitpacker, so you can have a unified serialize function that performs both read and write.
+A template based serialization system is included so you can have a unified serialize function that performs both read and write.
 
 # Author
 
