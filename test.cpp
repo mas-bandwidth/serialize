@@ -172,6 +172,9 @@ struct TestData
     float compressed_float_value;
     double double_value;
     uint64_t uint64_value;
+    uint32_t varint32_value;
+    uint64_t varint64_value;
+    int int_relative;
     uint8_t bytes[17];
     char string[256];
 };
@@ -195,8 +198,6 @@ struct TestObject
         data.e = 255;
         data.f = 127;
         data.g = true;
-        data.v32 = UINT32_MAX;
-        data.v64 = UINT64_MAX;
 
         data.numItems = MaxItems / 2;
         for ( int i = 0; i < data.numItems; ++i )
@@ -206,6 +207,9 @@ struct TestObject
         data.float_value = 3.1415926f;
         data.double_value = 1 / 3.0;
         data.uint64_value = 0x1234567898765432L;
+        data.varint32_value = 123456;
+        data.varint64_value = 123456789101112;
+        data.int_relative = 5;
 
         for ( int i = 0; i < (int) sizeof( data.bytes ); ++i )
             data.bytes[i] = rand() % 255;
@@ -222,9 +226,6 @@ struct TestObject
 
         serialize_int( stream, data.c, -100, 10000 );
 
-        serialize_varint32( stream, data.v32 );
-        serialize_varint64( stream, data.v64 );
-
         serialize_bits( stream, data.d, 6 );
         serialize_bits( stream, data.e, 8 );
         serialize_bits( stream, data.f, 7 );
@@ -239,11 +240,17 @@ struct TestObject
 
         serialize_float( stream, data.float_value );
 
-        serialize_compressed_float(stream, data.compressed_float_value, 0, 10, 0.01);
+        serialize_compressed_float( stream, data.compressed_float_value, 0, 10, 0.01 );
 
         serialize_double( stream, data.double_value );
 
         serialize_uint64( stream, data.uint64_value );
+
+        serialize_varint32( stream, data.varint32_value );
+        
+        serialize_varint64( stream, data.varint64_value );
+
+        serialize_int_relative( stream, data.a, data.int_relative );
 
         serialize_bytes( stream, data.bytes, sizeof( data.bytes ) );
 

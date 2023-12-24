@@ -2042,23 +2042,6 @@ namespace serialize
         } while (0)
 
     /**
-        Serialize a safety check to the stream (read/write/measure).
-        This is a helper macro to make writing unified serialize functions easier.
-        Serialize macros returns false on error so we don't need to use exceptions for error handling on read. This is an important safety measure because packet data comes from the network and may be malicious.
-        IMPORTANT: This macro must be called inside a templated serialize function with template \<typename Stream\>. The serialize method must have a bool return value.
-        @param stream The stream object. May be a read, write or measure stream.
-     */
-
-    #define serialize_check( stream )                                                       \
-        do                                                                                  \
-        {                                                                                   \
-            if ( !stream.SerializeCheck() )                                                 \
-            {                                                                               \
-                return false;                                                               \
-            }                                                                               \
-        } while (0)
-
-    /**
         Serialize an object to the stream (read/write/measure).
         This is a helper macro to make writing unified serialize functions easier.
         Serialize macros returns false on error so we don't need to use exceptions for error handling on read. This is an important safety measure because packet data comes from the network and may be malicious.
@@ -2076,24 +2059,6 @@ namespace serialize
             }                                                                               \
         }                                                                                   \
         while(0)
-
-    /**
-        Serialize an address to the stream (read/write/measure).
-        This is a helper macro to make writing unified serialize functions easier.
-        Serialize macros returns false on error so we don't need to use exceptions for error handling on read. This is an important safety measure because packet data comes from the network and may be malicious.
-        IMPORTANT: This macro must be called inside a templated serialize function with template \<typename Stream\>. The serialize method must have a bool return value.
-        @param stream The stream object. May be a read, write or measure stream.
-        @param value The address to serialize. Must be a valid address.
-     */
-
-    #define serialize_address( stream, value )                                              \
-        do                                                                                  \
-        {                                                                                   \
-            if ( !serialize::serialize_address_internal( stream, value ) )                  \
-            {                                                                               \
-                return false;                                                               \
-            }                                                                               \
-        } while (0)
 
     template <typename Stream, typename T> bool serialize_int_relative_internal( Stream & stream, T previous, T & current )
     {
@@ -2262,67 +2227,6 @@ namespace serialize
         return true;
     }
 
-    /**
-        Serialize an ack relative to the current sequence number (read/write/measure).
-        This is a helper macro to make writing unified serialize functions easier.
-        Serialize macros returns false on error so we don't need to use exceptions for error handling on read. This is an important safety measure because packet data comes from the network and may be malicious.
-        IMPORTANT: This macro must be called inside a templated serialize function with template \<typename Stream\>. The serialize method must have a bool return value.
-        @param stream The stream object. May be a read, write or measure stream.
-        @param sequence The current sequence number.
-        @param ack The ack sequence number, which is typically near the current sequence number.
-     */
-
-    #define serialize_ack_relative( stream, sequence, ack  )                                        \
-        do                                                                                          \
-        {                                                                                           \
-            if ( !serialize::serialize_ack_relative_internal( stream, sequence, ack ) )             \
-            {                                                                                       \
-                return false;                                                                       \
-            }                                                                                       \
-        } while (0)
-
-    template <typename Stream> bool serialize_sequence_relative_internal( Stream & stream, uint16_t sequence1, uint16_t & sequence2 )
-    {
-        if ( Stream::IsWriting )
-        {
-            uint32_t a = sequence1;
-            uint32_t b = sequence2 + ( ( sequence1 > sequence2 ) ? 65536 : 0 );
-            serialize_int_relative( stream, a, b );
-        }
-        else
-        {
-            uint32_t a = sequence1;
-            uint32_t b = 0;
-            serialize_int_relative( stream, a, b );
-            if ( b >= 65536 )
-            {
-                b -= 65536;
-            }
-            sequence2 = uint16_t( b );
-        }
-
-        return true;
-    }
-
-    /**
-        Serialize a sequence number relative to another (read/write/measure).
-        This is a helper macro to make writing unified serialize functions easier.
-        Serialize macros returns false on error so we don't need to use exceptions for error handling on read. This is an important safety measure because packet data comes from the network and may be malicious.
-        IMPORTANT: This macro must be called inside a templated serialize function with template \<typename Stream\>. The serialize method must have a bool return value.
-        @param stream The stream object. May be a read, write or measure stream.
-        @param sequence1 The first sequence number to serialize relative to.
-        @param sequence2 The second sequence number to be encoded relative to the first.
-     */
-
-    #define serialize_sequence_relative( stream, sequence1, sequence2 )                             \
-        do                                                                                          \
-        {                                                                                           \
-            if ( !serialize::serialize_sequence_relative_internal( stream, sequence1, sequence2 ) ) \
-            {                                                                                       \
-                return false;                                                                       \
-            }                                                                                       \
-        } while (0)
-
     // read macros corresponding to each serialize_*. useful when you want separate read and write functions.
 
     #define read_bits( stream, value, bits )                                                \
@@ -2365,10 +2269,7 @@ namespace serialize
     #define read_align                  serialize_align
     #define read_check                  serialize_check
     #define read_object                 serialize_object
-    #define read_address                serialize_address
     #define read_int_relative           serialize_int_relative
-    #define read_ack_relative           serialize_ack_relative
-    #define read_sequence_relative      serialize_sequence_relative
 
     // write macros corresponding to each serialize_*. useful when you want separate read and write functions for some reason.
 
@@ -2402,12 +2303,8 @@ namespace serialize
     #define write_bytes                 serialize_bytes
     #define write_string                serialize_string
     #define write_align                 serialize_align
-    #define write_check                 serialize_check
     #define write_object                serialize_object
-    #define write_address               serialize_address
     #define write_int_relative          serialize_int_relative
-    #define write_ack_relative          serialize_ack_relative
-    #define write_sequence_relative     serialize_sequence_relative
 }
 
 #endif // #ifndef SERIALIZE_H
