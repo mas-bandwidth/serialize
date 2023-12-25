@@ -12,7 +12,6 @@ It has the following features:
 * Serialize floats, doubles, compressed floats, strings, byte arrays, varints, and integers relative to another integer
 * Alignment support so you can align your bitstream to a byte boundary whenever you want
 * Template based serialization system so you can write a unified serialize function instead of separate read and write functions
-* Separate read and write methods so you can still have separate read and write methods if you prefer that
 
 # Author
 
