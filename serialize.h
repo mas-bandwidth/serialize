@@ -1392,7 +1392,7 @@ namespace serialize
         bool SerializeVarint32( uint32_t & value )
         {
             int i = 0;
-            uint8_t data[6];
+            uint8_t data[8];
             uint32_t read_value;
             do {
                 if ( m_reader.WouldReadPastEnd( 8 ) )
