@@ -404,7 +404,7 @@ int main()
     {
         Packet input;
 
-        // todo: generate random input packet
+        input.packetType = rand() % NumPacketTypes;
 
         uint8_t buffer[10*1024];
 
