@@ -2520,7 +2520,8 @@ struct TestObject
         for ( int i = 0; i < (int) sizeof( data.bytes ); ++i )
             data.bytes[i] = rand() % 255;
 
-        strcpy( data.string, "hello world!" );
+        memset( data.string, 0, sizeof(data.string) );
+        strncpy( data.string, "hello world!", sizeof(data.string) - 1 );
     }
 
     template <typename Stream> bool Serialize( Stream & stream )
