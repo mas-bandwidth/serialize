@@ -25,12 +25,12 @@ Now go to the command line under the serialize directory and enter:
 
 Which creates makefiles which you can use to build the source via:
 
-    make all
+    make -j
 
 Then you can run binaries like this:
 
     ./bin/test
-    ./bin/examples
+    ./bin/example
 
 If you have questions please create an issue at https://github.com/mas-bandwidth/serialize and I'll do my best to help you out.
 

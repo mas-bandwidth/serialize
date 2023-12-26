@@ -23,6 +23,9 @@ project "test"
     files { "test.cpp", "serialize.h" }
     defines { "SERIALIZE_ENABLE_TESTS=1" }
 
+project "example"
+    files { "example.cpp", "serialize.h" }
+
 newaction
 {
     trigger     = "clean",
