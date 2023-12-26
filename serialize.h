@@ -1977,6 +1977,20 @@ struct TestContext
     int max;
 };
 
+void serialize_copy_string( char * dest, const char * source, size_t dest_size )
+{
+    serialize_assert( dest );
+    serialize_assert( source );
+    serialize_assert( dest_size >= 1 );
+    memset( dest, 0, dest_size );
+    for ( size_t i = 0; i < dest_size - 1; i++ )
+    {
+        if ( source[i] == '\0' )
+            break;
+        dest[i] = source[i];
+    }
+}
+
 struct TestObject
 {
     TestData data;
@@ -2004,8 +2018,7 @@ struct TestObject
         for ( int i = 0; i < (int) sizeof( data.bytes ); ++i )
             data.bytes[i] = rand() % 255;
 
-        memset( data.string, 0, sizeof(data.string) );
-        strncpy( data.string, "hello world!", sizeof(data.string) - 1 );
+        serialize_copy_string( data.string, "hello world!", sizeof(data.string) - 1 );
     }
 
     template <typename Stream> bool Serialize( Stream & stream )
