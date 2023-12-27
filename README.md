@@ -13,6 +13,57 @@ It has the following features:
 * Alignment support so you can align your bitstream to a byte boundary whenever you want
 * Template based serialization system so you can write a unified serialize function instead of separate read and write functions
 
+# Usage
+
+You can use the bitwriter and bitreader classes directly:
+
+```c++
+    const int BufferSize = 256;
+
+    uint8_t buffer[BufferSize];
+
+    serialize::BitWriter writer( buffer, BufferSize );
+
+    serialize_check( writer.GetData() == buffer );
+    serialize_check( writer.GetBitsWritten() == 0 );
+    serialize_check( writer.GetBytesWritten() == 0 );
+    serialize_check( writer.GetBitsAvailable() == BufferSize * 8 );
+
+    writer.WriteBits( 0, 1 );
+    writer.WriteBits( 1, 1 );
+    writer.WriteBits( 10, 8 );
+    writer.WriteBits( 255, 8 );
+    writer.WriteBits( 1000, 10 );
+    writer.WriteBits( 50000, 16 );
+    writer.WriteBits( 9999999, 32 );
+    writer.FlushBits();
+
+    const int bitsWritten = 1 + 1 + 8 + 8 + 10 + 16 + 32;
+
+    serialize_check( writer.GetBytesWritten() == 10 );
+    serialize_check( writer.GetBitsWritten() == bitsWritten );
+    serialize_check( writer.GetBitsAvailable() == BufferSize * 8 - bitsWritten );
+
+    const int bytesWritten = writer.GetBytesWritten();
+
+    serialize_check( bytesWritten == 10 );
+
+    memset( buffer + bytesWritten, 0, BufferSize - bytesWritten );
+
+    serialize::BitReader reader( buffer, bytesWritten );
+
+    serialize_check( reader.GetBitsRead() == 0 );
+    serialize_check( reader.GetBitsRemaining() == bytesWritten * 8 );
+
+    uint32_t a = reader.ReadBits( 1 );
+    uint32_t b = reader.ReadBits( 1 );
+    uint32_t c = reader.ReadBits( 8 );
+    uint32_t d = reader.ReadBits( 8 );
+    uint32_t e = reader.ReadBits( 10 );
+    uint32_t f = reader.ReadBits( 16 );
+    uint32_t g = reader.ReadBits( 32 );
+```
+
 # Author
 
 The author of this library is Glenn Fiedler.
