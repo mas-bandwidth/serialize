@@ -15,7 +15,7 @@ It has the following features:
 
 # Usage
 
-You can use the bitwriter and bitreader classes directly:
+You can use the bitpacker directly:
 
 ```c++
     const int BufferSize = 256;
@@ -23,11 +23,6 @@ You can use the bitwriter and bitreader classes directly:
     uint8_t buffer[BufferSize];
 
     serialize::BitWriter writer( buffer, BufferSize );
-
-    serialize_check( writer.GetData() == buffer );
-    serialize_check( writer.GetBitsWritten() == 0 );
-    serialize_check( writer.GetBytesWritten() == 0 );
-    serialize_check( writer.GetBitsAvailable() == BufferSize * 8 );
 
     writer.WriteBits( 0, 1 );
     writer.WriteBits( 1, 1 );
@@ -38,22 +33,9 @@ You can use the bitwriter and bitreader classes directly:
     writer.WriteBits( 9999999, 32 );
     writer.FlushBits();
 
-    const int bitsWritten = 1 + 1 + 8 + 8 + 10 + 16 + 32;
-
-    serialize_check( writer.GetBytesWritten() == 10 );
-    serialize_check( writer.GetBitsWritten() == bitsWritten );
-    serialize_check( writer.GetBitsAvailable() == BufferSize * 8 - bitsWritten );
-
     const int bytesWritten = writer.GetBytesWritten();
 
-    serialize_check( bytesWritten == 10 );
-
-    memset( buffer + bytesWritten, 0, BufferSize - bytesWritten );
-
     serialize::BitReader reader( buffer, bytesWritten );
-
-    serialize_check( reader.GetBitsRead() == 0 );
-    serialize_check( reader.GetBitsRemaining() == bytesWritten * 8 );
 
     uint32_t a = reader.ReadBits( 1 );
     uint32_t b = reader.ReadBits( 1 );
@@ -62,6 +44,68 @@ You can use the bitwriter and bitreader classes directly:
     uint32_t e = reader.ReadBits( 10 );
     uint32_t f = reader.ReadBits( 16 );
     uint32_t g = reader.ReadBits( 32 );
+```
+
+Or you can write serialize methods for your types and these handle both read and write:
+
+```c++
+struct Vector
+{
+    float x,y,z;
+
+    template <typename Stream> bool Serialize( Stream & stream )
+    {
+        serialize_float( stream, x );
+        serialize_float( stream, y );
+        serialize_float( stream, z );
+        return true;
+    }
+};
+
+struct Quaternion
+{
+    float x,y,z,w;
+
+    template <typename Stream> bool Serialize( Stream & stream )
+    {
+        serialize_float( stream, x );
+        serialize_float( stream, y );
+        serialize_float( stream, z );
+        serialize_float( stream, w );
+        return true;
+    }
+};
+
+struct RigidBody
+{
+    Vector position;
+    Quaternion orientation;
+    Vector linearVelocity;
+    Vector angularVelocity;
+    bool atRest;
+
+    template <typename Stream> bool Serialize( Stream & stream )
+    {
+        serialize_object( stream, position );
+        serialize_object( stream, orientation );
+        
+        serialize_bool( stream, atRest );
+        
+        if ( !atRest )
+        {
+            serialize_object( stream, position );
+            serialize_object( stream, orientation );
+        }
+        
+        if ( Stream::IsReading && atRest )
+        {
+            linearVelocity.x = linearVelocity.y = linearVelocity.z = 0.0;
+            angularVelocity.x = angularVelocity.y = angularVelocity.z = 0.0;
+        }
+        
+        return true;
+    }
+};
 ```
 
 # Author
