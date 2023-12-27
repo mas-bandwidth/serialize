@@ -108,6 +108,8 @@ struct RigidBody
 };
 ```
 
+See [example.cpp](example.cpp) for more examples.
+
 # Author
 
 The author of this library is Glenn Fiedler.
