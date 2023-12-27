@@ -124,48 +124,6 @@ struct Address
     }
 };
 
-enum PacketTypes
-{
-    A,
-    B,
-    C,
-    D,
-    E,
-    F,
-    NumPacketTypes,
-};
-
-const int MaxObjects = 256;
-
-struct PacketA
-{
-    int numObjects;
-    RigidBody object[MaxObjects];
-
-    template <typename Stream> bool Serialize( Stream & stream )
-    {
-        serialize_int( stream, numObjects, 0, MaxObjects );
-        for ( int i = 0; i < numObjects; i++ )
-        {
-            serialize_object( stream, object[i] );
-        }
-        return true;
-    }
-};
-
-struct PacketB
-{
-    float a,b,c;
-
-    template <typename Stream> bool Serialize( Stream & stream )
-    {
-        serialize_compressed_float( stream, a, -1.0, +1.0f, 0.01f );
-        serialize_compressed_float( stream, b, -1.0, +1.0f, 0.01f );
-        serialize_compressed_float( stream, c, -1.0, +1.0f, 0.01f );
-        return true;
-    }
-};
-
 const int MaxProperties = 1024;
 
 enum PropertyType
@@ -183,6 +141,7 @@ enum PropertyType
 struct PropertyValue
 {
     uint8_t type;
+
     union
     {
         bool bool_value;
@@ -197,6 +156,7 @@ struct PropertyValue
     template <typename Stream> bool Serialize( Stream & stream )
     {
         serialize_int( stream, type, 0, NumPropertyTypes - 1 );
+
         switch ( type )
         {
             case BoolProperty: 
@@ -241,7 +201,49 @@ struct PropertyValue
             }
             break;
         }
-        return false;
+        return true;
+    }
+};
+
+enum PacketTypes
+{
+    A,
+    B,
+    C,
+    D,
+    E,
+    F,
+    NumPacketTypes,
+};
+
+const int MaxObjects = 256;
+
+struct PacketA
+{
+    int numObjects;
+    RigidBody object[MaxObjects];
+
+    template <typename Stream> bool Serialize( Stream & stream )
+    {
+        serialize_int( stream, numObjects, 0, MaxObjects );
+        for ( int i = 0; i < numObjects; i++ )
+        {
+            serialize_object( stream, object[i] );
+        }
+        return true;
+    }
+};
+
+struct PacketB
+{
+    float x,y,z;
+
+    template <typename Stream> bool Serialize( Stream & stream )
+    {
+        serialize_compressed_float( stream, x, -1.0, +1.0f, 0.001f );
+        serialize_compressed_float( stream, y, -1.0, +1.0f, 0.001f );
+        serialize_compressed_float( stream, z, -1.0, +1.0f, 0.001f );
+        return true;
     }
 };
 
@@ -254,27 +256,7 @@ struct PacketC
     template <typename Stream> bool Serialize( Stream & stream )
     {
         serialize_int( stream, numProperties, 0, MaxProperties );
-        int lastPropertyIndex = 0;
-        for ( int i = 0; i < numProperties; i++ )
-        {
-            serialize_int_relative( stream, lastPropertyIndex, propertyIndex[i] );
-            lastPropertyIndex = propertyIndex[i];
-            serialize_object( stream, propertyValue[i] );
-        }
-        return true;
-    }
-};
-
-struct PacketD
-{
-    int numProperties;
-    int propertyIndex[MaxProperties];
-    PropertyValue propertyValue[MaxProperties];
-
-    template <typename Stream> bool Serialize( Stream & stream )
-    {
-        serialize_int( stream, numProperties, 0, MaxProperties );
-        int lastPropertyIndex = 0;
+        int lastPropertyIndex = -1;
         for ( int i = 0; i < numProperties; i++ )
         {
             serialize_int_relative( stream, lastPropertyIndex, propertyIndex[i] );
@@ -289,7 +271,7 @@ const int MaxClients = 8;
 const int MaxPlayerNameLength = 64;
 const int PlayerDataBytes = 1024;
 
-struct PacketE
+struct PacketD
 {
     int clientIndex;
     uint64_t clientId;
@@ -311,29 +293,25 @@ struct PacketE
     }
 };
 
-struct PacketF
+struct PacketE
 {
-    bool a,b,c,d,e,f,g,h,i,j,k;
+    bool i,j,k;
+    bool x,y,z;
 
     template <typename Stream> bool Serialize( Stream & stream )
     {
-        serialize_bool( stream, a );
-        serialize_bool( stream, b );
-        serialize_bool( stream, c );
-        serialize_bool( stream, d );
-        serialize_bool( stream, e );
-
-        serialize_align( stream );          // align to byte boundary
-
-        serialize_bool( stream, f );
-        serialize_bool( stream, g );
-        serialize_bool( stream, h );
-
-        serialize_align( stream );          // align to byte boundary
-
         serialize_bool( stream, i );
         serialize_bool( stream, j );
         serialize_bool( stream, k );
+
+        if ( i )
+        {
+            serialize_bool( stream, x );
+            serialize_bool( stream, y );
+            serialize_bool( stream, z );
+        }
+
+        serialize_align( stream );
 
         return true;
     }
@@ -348,7 +326,6 @@ struct Packet
         PacketC c;
         PacketD d;
         PacketE e;
-        PacketF f;
     };
 
     template <typename Stream> bool Serialize( Stream & stream )
@@ -385,45 +362,217 @@ struct Packet
                 serialize_object( stream, e );
             }
             break;
-
-            case F:
-            {
-                serialize_object( stream, f );
-            }
-            break;
         }
+
+        uint32_t check_value = 0;
+
+        if ( Stream::IsWriting )
+        {
+            check_value = 0x12345678;
+        }
+
+        serialize_bits( stream, check_value, 32 );
+
+        if ( Stream::IsReading )
+        {
+            if ( check_value != 0x12345678 )
+            {
+                printf( "error: serialize check failed\n" );
+                exit( 1 );
+            }
+        }
+
         return true;
     }
 };
 
+#include <time.h>
+
 int main()
 {
-    printf( "example\n" );
+    printf( "\nserialize example\n\n" );
 
-    for ( int i = 0; i < 32; i++ )
+    srand( time(NULL) );
+
+    for ( int i = 0; i < 10000; i++ )
     {
         Packet input;
 
+        memset( &input, 0, sizeof(input) );
+
         input.packetType = rand() % NumPacketTypes;
 
-        uint8_t buffer[10*1024];
+        switch ( input.packetType )
+        {
+            case A:
+            {
+                input.a.numObjects = rand() % ( MaxObjects + 1 );
+
+                for ( int j = 0; j < input.a.numObjects; j++ )
+                {
+                    input.a.object[j].position.x = ( rand() % 100 ) - 50;
+                    input.a.object[j].position.y = ( rand() % 100 ) - 50;
+                    input.a.object[j].position.z = ( rand() % 100 ) - 50;
+                    
+                    input.a.object[j].orientation.x = 1;
+                    input.a.object[j].orientation.y = 0;
+                    input.a.object[j].orientation.z = 0;
+                    input.a.object[j].orientation.w = 0;
+
+                    input.a.object[j].atRest = ( rand() % 2 ) == 0;
+                    
+                    if ( !input.a.object[j].atRest )
+                    {
+                        input.a.object[j].linearVelocity.x = 1.0f;
+                        input.a.object[j].linearVelocity.y = 2.0f;
+                        input.a.object[j].linearVelocity.z = 3.0f;
+              
+                        input.a.object[j].angularVelocity.x = 1.0f;
+                        input.a.object[j].angularVelocity.y = 2.0f;
+                        input.a.object[j].angularVelocity.z = 3.0f;
+                    }
+                }
+            }
+            break;
+
+            case B: 
+            {
+                input.b.x = ( ( rand() % 1000000 ) / 1000000.0f ) - 0.5f;
+                input.b.y = ( ( rand() % 1000000 ) / 1000000.0f ) - 0.5f;
+                input.b.z = ( ( rand() % 1000000 ) / 1000000.0f ) - 0.5f;
+            }
+            break;
+
+            case C:
+            {
+                input.c.numProperties = rand() % ( MaxProperties + 1 );
+
+                int propertyIndex = 0;
+
+                for ( int j = 0; j < input.c.numProperties; j++ )
+                {
+                    input.c.propertyIndex[j] = propertyIndex;
+                    propertyIndex += 1 + rand() % 10;
+                }
+
+                for ( int j = 0; j < input.c.numProperties; j++ )
+                {
+                    int propertyType = rand() % NumPropertyTypes;
+
+                    switch ( propertyType )
+                    {
+                        case BoolProperty:
+                        {
+                            input.c.propertyValue[j].bool_value = ( rand() % 2 ) == 0;
+                        }
+                        break;
+
+                        case ByteProperty:
+                        {
+                            input.c.propertyValue[j].byte_value = rand() % 256;
+                        }
+                        break;
+
+                        case ShortProperty:
+                        {
+                            input.c.propertyValue[j].short_value = rand() % 655356;
+                        }
+                        break;
+
+                        case IntProperty:
+                        {
+                            input.c.propertyValue[j].int_value = uint32_t( rand() );
+                        }
+                        break;
+
+                        case LongProperty:
+                        {
+                            input.c.propertyValue[j].long_value = uint64_t( rand() );
+                            input.c.propertyValue[j].long_value <<= 32;
+                            input.c.propertyValue[j].long_value |= uint64_t( rand() );
+                        }
+                        break;
+
+                        case FloatProperty:
+                        {
+                            input.c.propertyValue[j].float_value = uint32_t( rand() % 10000000 ) / 1000.0f;
+                        }
+                        break;
+
+                        case DoubleProperty:
+                        {
+                            input.c.propertyValue[j].double_value = uint32_t( rand() % 10000000 ) / 1000.0;
+                        }
+                        break;
+                    }
+
+                    input.c.propertyValue[j].type = propertyType;
+                }
+            }
+            break;
+
+            case D:
+            {
+                input.d.clientIndex = rand() % MaxClients;
+                input.d.clientId = ( uint64_t( rand() ) << 32 ) | uint64_t( rand() );
+                serialize_copy_string( input.d.playerName, "Hingle McCringleberry", sizeof(input.d.playerName) );
+                input.d.hasPlayerData = ( rand() % 2 ) == 0;
+                for ( int j = 0; j < PlayerDataBytes; j++ )
+                {
+                    input.d.playerData[j] = rand() % 256;
+                }
+            }
+            break;
+
+            case E:
+            {
+                input.e.i = ( ( rand() % 2 ) == 0 ) ? true : false;
+                input.e.j = ( ( rand() % 2 ) == 0 ) ? true : false;
+                input.e.k = ( ( rand() % 2 ) == 0 ) ? true : false;
+                input.e.x = ( ( rand() % 2 ) == 0 ) ? true : false;
+                input.e.y = ( ( rand() % 2 ) == 0 ) ? true : false;
+                input.e.z = ( ( rand() % 2 ) == 0 ) ? true : false;
+            }
+            break;
+        }
+
+        uint8_t buffer[100*1024];
 
         serialize::WriteStream writeStream( buffer, sizeof(buffer) );
-        input.Serialize( writeStream );
+        if ( !input.Serialize( writeStream ) )
+        {
+            printf( "error: serialize write failed\n" );
+            exit( 1 );
+        }
         writeStream.Flush();
 
         const int bytesWritten = writeStream.GetBytesProcessed();
 
         Packet output;
         serialize::ReadStream readStream( buffer, bytesWritten );
-        output.Serialize( readStream );
+        if ( !output.Serialize( readStream ) )
+        {
+            printf( "error: serialize read failed\n" );
+            exit( 1 );
+        }
 
         const int bytesRead = readStream.GetBytesProcessed();
 
-        printf( "%d: wrote %d bytes, read %d bytes\n", i, bytesWritten, bytesRead );
+        const char * packetTypeString[] = {
+            "packet type a",
+            "packet type b",
+            "packet type c",
+            "packet type d",
+            "packet type e",
+            "packet type f",
+        };
+
+        printf( "%d: %s - wrote %d bytes, read %d bytes\n", i, packetTypeString[input.packetType], bytesWritten, bytesRead );
 
         serialize_assert( bytesWritten == bytesRead );
     }
+
+    printf( "\nSuccess!\n\n" );
 
     return 0;
 }

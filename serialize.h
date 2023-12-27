@@ -1797,6 +1797,20 @@ namespace serialize
     #define write_int_relative          serialize_int_relative
 }
 
+inline void serialize_copy_string( char * dest, const char * source, size_t dest_size )
+{
+    serialize_assert( dest );
+    serialize_assert( source );
+    serialize_assert( dest_size >= 1 );
+    memset( dest, 0, dest_size );
+    for ( size_t i = 0; i < dest_size - 1; i++ )
+    {
+        if ( source[i] == '\0' )
+            break;
+        dest[i] = source[i];
+    }
+}
+
 #if SERIALIZE_ENABLE_TESTS
 
 #include <time.h>
@@ -1956,20 +1970,6 @@ struct TestContext
     int min;
     int max;
 };
-
-void serialize_copy_string( char * dest, const char * source, size_t dest_size )
-{
-    serialize_assert( dest );
-    serialize_assert( source );
-    serialize_assert( dest_size >= 1 );
-    memset( dest, 0, dest_size );
-    for ( size_t i = 0; i < dest_size - 1; i++ )
-    {
-        if ( source[i] == '\0' )
-            break;
-        dest[i] = source[i];
-    }
-}
 
 struct TestObject
 {
