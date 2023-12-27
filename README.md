@@ -18,32 +18,32 @@ It has the following features:
 You can use the bitpacker directly:
 
 ```c++
-    const int BufferSize = 256;
+const int BufferSize = 256;
 
-    uint8_t buffer[BufferSize];
+uint8_t buffer[BufferSize];
 
-    serialize::BitWriter writer( buffer, BufferSize );
+serialize::BitWriter writer( buffer, BufferSize );
 
-    writer.WriteBits( 0, 1 );
-    writer.WriteBits( 1, 1 );
-    writer.WriteBits( 10, 8 );
-    writer.WriteBits( 255, 8 );
-    writer.WriteBits( 1000, 10 );
-    writer.WriteBits( 50000, 16 );
-    writer.WriteBits( 9999999, 32 );
-    writer.FlushBits();
+writer.WriteBits( 0, 1 );
+writer.WriteBits( 1, 1 );
+writer.WriteBits( 10, 8 );
+writer.WriteBits( 255, 8 );
+writer.WriteBits( 1000, 10 );
+writer.WriteBits( 50000, 16 );
+writer.WriteBits( 9999999, 32 );
+writer.FlushBits();
 
-    const int bytesWritten = writer.GetBytesWritten();
+const int bytesWritten = writer.GetBytesWritten();
 
-    serialize::BitReader reader( buffer, bytesWritten );
+serialize::BitReader reader( buffer, bytesWritten );
 
-    uint32_t a = reader.ReadBits( 1 );
-    uint32_t b = reader.ReadBits( 1 );
-    uint32_t c = reader.ReadBits( 8 );
-    uint32_t d = reader.ReadBits( 8 );
-    uint32_t e = reader.ReadBits( 10 );
-    uint32_t f = reader.ReadBits( 16 );
-    uint32_t g = reader.ReadBits( 32 );
+uint32_t a = reader.ReadBits( 1 );
+uint32_t b = reader.ReadBits( 1 );
+uint32_t c = reader.ReadBits( 8 );
+uint32_t d = reader.ReadBits( 8 );
+uint32_t e = reader.ReadBits( 10 );
+uint32_t f = reader.ReadBits( 16 );
+uint32_t g = reader.ReadBits( 32 );
 ```
 
 Or you can write serialize methods for your types and these handle both read and write:
