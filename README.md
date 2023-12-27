@@ -46,7 +46,7 @@ uint32_t f = reader.ReadBits( 16 );
 uint32_t g = reader.ReadBits( 32 );
 ```
 
-Or you can write serialize methods for your types and these handle both read and write:
+Or you can write serialize methods for your types:
 
 ```c++
 struct Vector
