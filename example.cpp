@@ -68,8 +68,8 @@ struct RigidBody
         
         if ( !atRest )
         {
-            serialize_object( stream, position );
-            serialize_object( stream, orientation );
+            serialize_object( stream, linearVelocity );
+            serialize_object( stream, angularVelocity );
         }
         
         if ( Stream::IsReading && atRest )
