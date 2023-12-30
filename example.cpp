@@ -63,21 +63,17 @@ struct RigidBody
     {
         serialize_object( stream, position );
         serialize_object( stream, orientation );
-        
         serialize_bool( stream, atRest );
-        
         if ( !atRest )
         {
             serialize_object( stream, linearVelocity );
             serialize_object( stream, angularVelocity );
-        }
-        
-        if ( Stream::IsReading && atRest )
+        }        
+        else if ( Stream::IsReading )
         {
             linearVelocity.x = linearVelocity.y = linearVelocity.z = 0.0;
             angularVelocity.x = angularVelocity.y = angularVelocity.z = 0.0;
-        }
-        
+        }        
         return true;
     }
 };
