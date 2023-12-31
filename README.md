@@ -104,7 +104,7 @@ struct RigidBody
 };
 ```
 
-And these serialize methods will handle both read and write.
+And the serialize methods handle both read and write.
 
 See [example.cpp](example.cpp) for more examples.
 
