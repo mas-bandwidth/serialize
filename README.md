@@ -4,6 +4,8 @@
 
 **serialize** is a simple bitpacking serializer for C++.
 
+![image](https://github.com/mas-bandwidth/serialize/assets/696656/dc36cc53-3382-4a63-888e-6dbb53dda92d)
+
 It has the following features:
 
 * Serialize a bool with only one bit
