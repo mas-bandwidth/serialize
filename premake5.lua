@@ -20,11 +20,11 @@ solution "Serialize"
         defines { "SERIALIZE_RELEASE" }
 
 project "test"
-    files { "test.cpp", "serialize.h" }
+    files { "test.cpp", "include/serialize.h" }
     defines { "SERIALIZE_ENABLE_TESTS=1" }
 
 project "example"
-    files { "example.cpp", "serialize.h" }
+    files { "example.cpp", "include/serialize.h" }
 
 newaction
 {
