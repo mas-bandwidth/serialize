@@ -1895,7 +1895,7 @@ inline void test_bitpacker()
 
     serialize_check( bytesWritten == 10 );
 
-    memset( buffer + bytesWritten, 0, BufferSize - bytesWritten );
+    memset( buffer, 0, bytesWritten );
 
     serialize::BitReader reader( buffer, bytesWritten );
 
