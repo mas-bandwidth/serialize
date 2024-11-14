@@ -27,6 +27,12 @@
 
 /** @file */
 
+#if defined(_MSC_VER)
+#define serialize_restrict __restrict
+#else // #if defined(_MSC_VER)
+#define serialize_restrict __restrict__
+#endif // #if defined(_MSC_VER)
+
 #ifndef serialize_assert
 #include <assert.h>
 #define serialize_assert assert
@@ -352,7 +358,7 @@ namespace serialize
             memset( (void*) this, 0, sizeof(BitWriter) );
         }
 
-        void Initialize( void * __restrict__ data, int bytes )
+        void Initialize( void * serialize_restrict data, int bytes )
         {
             serialize_assert( data );
             serialize_assert( ( bytes % 4 ) == 0 );
@@ -372,7 +378,7 @@ namespace serialize
             @param bytes The size of the buffer in bytes. Must be a multiple of 4, because the bitpacker reads and writes memory as dwords, not bytes.
          */
 
-        BitWriter( void * __restrict__ data, int bytes ) : m_data( (uint32_t*) data ), m_numWords( bytes / 4 )
+        BitWriter( void * serialize_restrict data, int bytes ) : m_data( (uint32_t*) data ), m_numWords( bytes / 4 )
         {
             serialize_assert( data );
             serialize_assert( ( bytes % 4 ) == 0 );
@@ -444,7 +450,7 @@ namespace serialize
             @see BitReader::ReadBytes
          */
 
-        void WriteBytes( const uint8_t * __restrict__ data, int bytes )
+        void WriteBytes( const uint8_t * serialize_restrict data, int bytes )
         {
             serialize_assert( GetAlignBits() == 0 );
             serialize_assert( m_bitsWritten + bytes * 8 <= m_numBits );
@@ -590,7 +596,7 @@ namespace serialize
             m_wordIndex = 0;
         }
 
-        void Initialize( const void * __restrict__ data, int bytes )
+        void Initialize( const void * serialize_restrict data, int bytes )
         {
             serialize_assert( data );
             m_data = (const uint32_t*) data;
@@ -615,9 +621,9 @@ namespace serialize
          */
 
 #ifdef SERIALIZE_DEBUG
-        BitReader( const void * __restrict__ data, int bytes ) : m_data( (const uint32_t*) data ), m_numBytes( bytes ), m_numWords( ( bytes + 3 ) / 4 )
+        BitReader( const void * serialize_restrict data, int bytes ) : m_data( (const uint32_t*) data ), m_numBytes( bytes ), m_numWords( ( bytes + 3 ) / 4 )
 #else // #ifdef SERIALIZE_DEBUG
-        BitReader( const void * __restrict__ data, int bytes ) : m_data( (const uint32_t*) data ), m_numBytes( bytes )
+        BitReader( const void * serialize_restrict data, int bytes ) : m_data( (const uint32_t*) data ), m_numBytes( bytes )
 #endif // #ifdef SERIALIZE_DEBUG
         {
             serialize_assert( data );
@@ -706,7 +712,7 @@ namespace serialize
             @see BitWriter::WriteBytes
          */
 
-        void ReadBytes( uint8_t * __restrict__ data, int bytes )
+        void ReadBytes( uint8_t * serialize_restrict data, int bytes )
         {
             serialize_assert( GetAlignBits() == 0 );
             serialize_assert( m_bitsRead + bytes * 8 <= m_numBits );
@@ -778,16 +784,16 @@ namespace serialize
 
     private:
 
-        const uint32_t * __restrict__ m_data;       ///< The bitpacked data we're reading as a dword array.
-        uint64_t m_scratch;                         ///< The scratch value. New data is read in 32 bits at a top to the left of this buffer, and data is read off to the right.
-        int m_numBits;                              ///< Number of bits to read in the buffer. Of course, we can't *really* know this so it's actually m_numBytes * 8.
-        int m_numBytes;                             ///< Number of bytes to read in the buffer. We know this, and this is the non-rounded up version.
+        const uint32_t * serialize_restrict m_data;         ///< The bitpacked data we're reading as a dword array.
+        uint64_t m_scratch;                                 ///< The scratch value. New data is read in 32 bits at a top to the left of this buffer, and data is read off to the right.
+        int m_numBits;                                      ///< Number of bits to read in the buffer. Of course, we can't *really* know this so it's actually m_numBytes * 8.
+        int m_numBytes;                                     ///< Number of bytes to read in the buffer. We know this, and this is the non-rounded up version.
 #ifdef SERIALIZE_DEBUG
-        int m_numWords;                             ///< Number of words to read in the buffer. This is rounded up to the next word if necessary.
+        int m_numWords;                                     ///< Number of words to read in the buffer. This is rounded up to the next word if necessary.
 #endif // #ifdef SERIALIZE_DEBUG
-        int m_bitsRead;                             ///< Number of bits read from the buffer so far.
-        int m_scratchBits;                          ///< Number of bits currently in the scratch value. If the user wants to read more bits than this, we have to go fetch another dword from memory.
-        int m_wordIndex;                            ///< Index of the next word to read from memory.
+        int m_bitsRead;                                     ///< Number of bits read from the buffer so far.
+        int m_scratchBits;                                  ///< Number of bits currently in the scratch value. If the user wants to read more bits than this, we have to go fetch another dword from memory.
+        int m_wordIndex;                                    ///< Index of the next word to read from memory.
     };
 
     /**
