@@ -1892,7 +1892,12 @@ namespace serialize
             write_bits( stream, int64_value, 64 );                                          \
         } while (0)
 
-    #define write_bytes                 serialize_bytes
+    #define write_bytes( stream, value )                                                    \
+        do                                                                                  \
+        {                                                                                   \
+            stream.SerializeBytes( data, bytes );                                           \
+        } while (0)
+
     #define write_string                serialize_string
     #define write_align                 serialize_align
     #define write_object                serialize_object
@@ -2211,10 +2216,10 @@ inline void test_read_write()
         write_float( writeStream, 100.0f );
         write_double( writeStream, 1000000000.0f );
 
-        /*
-        char * data = { 1, 2, 3, 4, 5 };
+        char data[] = { 1, 2, 3, 4, 5 };
         write_bytes( writeStream, data, 5 );
 
+        /*
         write_string
 
         write_align
