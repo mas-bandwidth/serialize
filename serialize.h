@@ -466,7 +466,7 @@ namespace serialize
             if ( numWords > 0 )
             {
                 serialize_assert( ( m_bitsWritten % 32 ) == 0 );
-                memcpy( &m_data[m_wordIndex], data + headBytes, numWords * 4 );
+                memcpy( (char*) &m_data[m_wordIndex], data + headBytes, numWords * 4 );
                 m_bitsWritten += numWords * 32;
                 m_wordIndex += numWords;
                 m_scratch = 0;
@@ -700,7 +700,7 @@ namespace serialize
             if ( numWords > 0 )
             {
                 serialize_assert( ( m_bitsRead % 32 ) == 0 );
-                memcpy( data + headBytes, &m_data[m_wordIndex], numWords * 4 );
+                memcpy( (char*) data + headBytes, &m_data[m_wordIndex], numWords * 4 );
                 m_bitsRead += numWords * 32;
                 m_wordIndex += numWords;
                 m_scratchBits = 0;
@@ -1361,12 +1361,12 @@ namespace serialize
         uint32_t int_value;
         if ( Stream::IsWriting )
         {
-            memcpy( &int_value, &value, 4 );
+            memcpy( (char*) &int_value, &value, 4 );
         }
         bool result = stream.SerializeBits( int_value, 32 );
         if ( Stream::IsReading )
         {
-            memcpy( &value, &int_value, 4 );
+            memcpy( (char*) &value, &int_value, 4 );
         }
         return result;
     }
@@ -1389,11 +1389,7 @@ namespace serialize
             }                                                                       \
         } while (0)
 
-    template <typename Stream> bool serialize_compressed_float_internal(Stream &stream,
-                                             float &value,
-                                             float min,
-                                             float max,
-                                             float res)
+    template <typename Stream> bool serialize_compressed_float_internal( Stream & stream, float & value, float min, float max, float res )
     {
         const float delta = max - min;
 
@@ -1433,13 +1429,14 @@ namespace serialize
         @param stream The stream object. May be a read, write or measure stream.
         @param value The float value to serialize.
      */
-    #define serialize_compressed_float(stream, value, min, max, res)                       \
-    do                                                                                     \
-    {                                                                                      \
-        if (!serialize::serialize_compressed_float_internal(stream, value, min, max, res)) \
-        {                                                                                  \
-            return false;                                                                  \
-        }                                                                                  \
+
+    #define serialize_compressed_float(stream, value, min, max, res)                                \
+    do                                                                                              \
+    {                                                                                               \
+        if ( !serialize::serialize_compressed_float_internal( stream, value, min, max, res) )       \
+        {                                                                                           \
+            return false;                                                                           \
+        }                                                                                           \
     } while (0)
 
     template <typename Stream> bool serialize_double_internal( Stream & stream, double & value )
@@ -1484,6 +1481,24 @@ namespace serialize
     {
         return stream.SerializeBytes( data, bytes );
     }
+
+    /**
+        Serialize unsigned 8 bit integer (read/write/measure).
+        IMPORTANT: This macro must be called inside a templated serialize function with template \<typename Stream\>. The serialize method must have a bool return value.
+        @param stream The stream object. May be a read, write or measure stream.
+        @param value The unsigned 16 bit integer value.
+     */
+
+    #define serialize_uint8( stream, value ) serialize_bits( stream, value, 8 );
+
+    /**
+        Serialize unsigned 16 bit integer (read/write/measure).
+        IMPORTANT: This macro must be called inside a templated serialize function with template \<typename Stream\>. The serialize method must have a bool return value.
+        @param stream The stream object. May be a read, write or measure stream.
+        @param value The unsigned 16 bit integer value.
+     */
+
+    #define serialize_uint16( stream, value ) serialize_bits( stream, value, 16 );
 
     /**
         Serialize unsigned 32 bit integer (read/write/measure).
@@ -1859,8 +1874,24 @@ namespace serialize
     #define write_uint32( stream, value )       write_bits( stream, value, 32 )
     #define write_uint64( stream, value )       write_bits( stream, value, 64 )
 
-    #define write_float                 serialize_float
-    #define write_double                serialize_double
+    #define write_float( stream, value )                                                    \
+        do                                                                                  \
+        {                                                                                   \
+            float float_value = (float) value;                                              \
+            uint32_t int_value;                                                             \
+            memcpy( (char*) &int_value, &float_value, 4 );                                  \
+            stream.SerializeBits( int_value, 32 );                                          \
+        } while (0)
+
+    #define write_double( stream, value )                                                   \
+        do                                                                                  \
+        {                                                                                   \
+            double double_value = (double) value;                                           \
+            uint64_t int64_value;                                                           \
+            memcpy( (char*) &int64_value, &double_value, 8 );                               \
+            write_bits( stream, int64_value, 64 );                                          \
+        } while (0)
+
     #define write_bytes                 serialize_bytes
     #define write_string                serialize_string
     #define write_align                 serialize_align
@@ -2030,6 +2061,9 @@ struct TestData
     float float_value;
     float compressed_float_value;
     double double_value;
+    uint8_t uint8_value;
+    uint16_t uint16_value;
+    uint32_t uint32_value;
     uint64_t uint64_value;
     int int_relative;
     uint8_t bytes[17];
@@ -2063,6 +2097,9 @@ struct TestObject
         data.compressed_float_value = 2.13f;
         data.float_value = 3.1415926f;
         data.double_value = 1 / 3.0;
+        data.uint8_value = 123;
+        data.uint16_value = 0x1234;
+        data.uint32_value = 0x12345678;
         data.uint64_value = 0x1234567898765432L;
         data.int_relative = 5;
 
@@ -2099,7 +2136,10 @@ struct TestObject
 
         serialize_double( stream, data.double_value );
 
-        serialize_bits( stream, data.uint64_value, 64 );
+        serialize_uint8( stream, data.uint8_value );
+        serialize_uint16( stream, data.uint16_value );
+        serialize_uint32( stream, data.uint32_value );
+        serialize_uint64( stream, data.uint64_value );
 
         serialize_int_relative( stream, data.a, data.int_relative );
 
@@ -2168,10 +2208,10 @@ inline void test_read_write()
         write_uint16( writeStream, 65535 );
         write_uint32( writeStream, 0xFFFFFFFF );
         write_uint32( writeStream, 0xFFFFFFFFFFFFFFFFULL );
-        /*
-        write_float( writeStream, 1.0f );
-        write_double( writeStream, 1.0f );
+        write_float( writeStream, 100.0f );
+        write_double( writeStream, 1000000000.0f );
 
+        /*
         char * data = { 1, 2, 3, 4, 5 };
         write_bytes( writeStream, data, 5 );
 
