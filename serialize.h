@@ -2453,7 +2453,7 @@ inline void test_read_write()
 
 inline void serialize_test()
 {
-    while ( 1 )
+    // while ( 1 )
     {
         SERIALIZE_RUN_TEST( test_endian );
         SERIALIZE_RUN_TEST( test_bitpacker );
