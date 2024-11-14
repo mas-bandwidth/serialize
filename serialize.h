@@ -1905,15 +1905,16 @@ namespace serialize
     #define write_bits( stream, value, bits )                                               \
         do                                                                                  \
         {                                                                                   \
+            uint64_t uint64_value = value;                                                  \
             if ( bits <= 32 )                                                               \
             {                                                                               \
-                uint32_t uint32_value = (uint32_t) value;                                   \
+                uint32_t uint32_value = (uint32_t) uint64_value;                            \
                 stream.SerializeBits( uint32_value, bits );                                 \
             }                                                                               \
             else                                                                            \
             {                                                                               \
-                uint32_t lo = uint32_t( uint64_t(value) & 0xFFFFFFFF );                     \
-                uint32_t hi = uint32_t( uint64_t(value) >> 32 );                            \
+                uint32_t lo = uint32_t( uint64_value & 0xFFFFFFFF );                        \
+                uint32_t hi = uint32_t( uint64_value >> 32 );                               \
                 stream.SerializeBits( lo, 32 );                                             \
                 stream.SerializeBits( hi, bits - 32 );                                      \
             }                                                                               \
