@@ -1892,15 +1892,35 @@ namespace serialize
             write_bits( stream, int64_value, 64 );                                          \
         } while (0)
 
-    #define write_bytes( stream, value )                                                    \
+    #define write_bytes( stream, data, bytes )                                              \
         do                                                                                  \
         {                                                                                   \
-            stream.SerializeBytes( data, bytes );                                           \
+            const uint8_t * data_ptr = (const uint8_t*) data;                               \
+            stream.SerializeBytes( data_ptr, bytes );                                       \
         } while (0)
 
-    #define write_string                serialize_string
-    #define write_align                 serialize_align
-    #define write_object                serialize_object
+    #define write_string( stream, string, buffer_size )                                     \
+        do                                                                                  \
+        {                                                                                   \
+            int length = (int) strlen( string );                                            \
+            serialize_assert( length < buffer_size );                                       \
+            write_int( stream, length, 0, buffer_size - 1 );                                \
+            write_bytes( stream, (uint8_t*)string, length );                                \
+        } while (0)
+
+    #define write_align( stream )                                                           \
+        do                                                                                  \
+        {                                                                                   \
+            stream.SerializeAlign();                                                        \
+        } while (0)
+
+    #define write_object( stream, object )                                                  \
+        do                                                                                  \
+        {                                                                                   \
+            object.Serialize( stream );                                                     \
+        }                                                                                   \
+        while(0)
+
     #define write_int_relative          serialize_int_relative
 }
 
@@ -2198,7 +2218,7 @@ inline void test_serialize()
 
 inline void test_read_write()
 {
-    const int BufferSize = 1024;
+    const int BufferSize = 10 * 1024;
 
     uint8_t buffer[BufferSize];
 
@@ -2216,14 +2236,26 @@ inline void test_read_write()
         write_float( writeStream, 100.0f );
         write_double( writeStream, 1000000000.0f );
 
-        char data[] = { 1, 2, 3, 4, 5 };
+        char data[5] = { 1, 2, 3, 4, 5 };
         write_bytes( writeStream, data, 5 );
 
-        /*
-        write_string
+        const char * string = "hello";
+        write_string( writeStream, string, 10 );
 
-        write_align
-        write_object
+        write_align( writeStream );
+
+        TestContext context;
+        context.min = -10;
+        context.max = +10;
+
+        writeStream.SetContext( &context );
+
+        TestObject object;
+        object.Init();
+
+        write_object( writeStream, object );
+
+        /*
         write_int_relative
         */
         // ...
@@ -2233,6 +2265,11 @@ inline void test_read_write()
         const int bytesWritten = writeStream.GetBytesProcessed();
 
         memset( buffer + bytesWritten, 0, BufferSize - bytesWritten );
+    }
+
+    // read from the buffer
+    {
+        // todo
     }
 }
 
