@@ -1868,8 +1868,27 @@ namespace serialize
 
     #define read_float                  serialize_float
     #define read_double                 serialize_double
-    #define read_bytes                  serialize_bytes
-    #define read_string                 serialize_string
+
+    #define read_bytes( stream, data, bytes )                                               \
+        do                                                                                  \
+        {                                                                                   \
+            uint8_t * data_ptr = (uint8_t*) data;                                           \
+            if ( !stream.SerializeBytes( data_ptr, bytes ) )                                \
+            {                                                                               \
+                return false;                                                               \
+            }                                                                               \
+        } while (0)
+
+    #define read_string( stream, string, buffer_size )                                      \
+        do                                                                                  \
+        {                                                                                   \
+            char * string_ptr = (char*) string;                                             \
+            if ( !serialize_string_internal( stream, string_ptr, buffer_size ) )            \
+            {                                                                               \
+                return false;                                                               \
+            }                                                                               \
+        } while (0)
+
     #define read_align                  serialize_align
     #define read_check                  serialize_check
     #define read_object                 serialize_object
@@ -2170,7 +2189,7 @@ struct TestObject
         data.int_relative = 5;
 
         for ( int i = 0; i < (int) sizeof( data.bytes ); ++i )
-            data.bytes[i] = rand() % 255;
+            data.bytes[i] = (uint8_t) ( i + 5 ) * 13;
 
         serialize_copy_string( data.string, "hello world!", sizeof(data.string) - 1 );
     }
@@ -2259,39 +2278,108 @@ inline void test_serialize()
 
 bool ReadFunction( serialize::ReadStream & readStream )
 {
-    (void) readStream;
+    // IMPORTANT: You wouldn't normally write a read function like this, but I'm just checking each value as it's read in
+    // Note that the only thing the read function has to have is to return bool: true on success, false on failing to read.
+    // This is important because protects you from maliciously crafted packets.
 
-    /*
-    write_bits( writeStream, 13, 4 );
-    write_bool( writeStream, true );
-    write_uint8( writeStream, 255 );
-    write_uint16( writeStream, 65535 );
-    write_uint32( writeStream, 0xFFFFFFFF );
-    write_uint32( writeStream, 0xFFFFFFFFFFFFFFFFULL );
-    write_float( writeStream, 100.0f );
-    write_double( writeStream, 1000000000.0f );
+    {
+        uint32_t value;
+        read_bits( readStream, value, 4 );
+        serialize_check( value == 13 );
+    }
 
-    char data[5] = { 1, 2, 3, 4, 5 };
-    write_bytes( writeStream, data, 5 );
+    {
+        bool value;
+        read_bool( readStream, value );
+        serialize_check( value == true );
+    }
 
-    const char * string = "hello";
-    write_string( writeStream, string, 10 );
+    {
+        uint8_t value;
+        read_uint8( readStream, value );
+        serialize_check( value == 255 );
+    }
 
-    write_align( writeStream );
+    {
+        uint16_t value;
+        read_uint16( readStream, value );
+        serialize_check( value == 65535 );
+    }
+
+    {
+        uint32_t value;
+        read_uint32( readStream, value );
+        serialize_check( value == 0xFFFFFFFF );
+    }
+
+    {
+        uint64_t value;
+        read_uint64( readStream, value );
+        serialize_check( value == 0xFFFFFFFFFFFFFFFFULL );      // i am very full
+    }
+
+    {
+        int value;
+        read_int( readStream, value, 10, 90 );
+        serialize_check( value == 55 );
+    }
+
+    {
+        float value;
+        read_float( readStream, value );
+        serialize_check( value == 100.0f );
+    }
+
+    {
+        double value;
+        read_double( readStream, value );
+        serialize_check( value == 1000000000.0 );
+    }
+
+    {
+        char value[5];
+        read_bytes( readStream, value, 5 );
+        serialize_check( value[0] == 1 );
+        serialize_check( value[1] == 2 );
+        serialize_check( value[2] == 3 );
+        serialize_check( value[3] == 4 );
+        serialize_check( value[4] == 5 );
+    }
+
+    {
+        char string[10];
+        read_string( readStream, string, 10 );
+        serialize_check( string[0] == 'h' );
+        serialize_check( string[1] == 'e' );
+        serialize_check( string[2] == 'l' );
+        serialize_check( string[3] == 'l' );
+        serialize_check( string[4] == 'o' );
+        serialize_check( string[5] == '\0' );
+    }
+
+    read_align( readStream );
 
     TestContext context;
     context.min = -10;
     context.max = +10;
 
-    writeStream.SetContext( &context );
+    readStream.SetContext( &context );
+    {
+        TestObject expectedObject;
+        expectedObject.Init();
 
-    TestObject object;
-    object.Init();
+        TestObject readObject;
 
-    write_object( writeStream, object );
+        read_object( readStream, readObject );
 
-    write_int_relative( writeStream, 100, 105 );
-    */
+        serialize_check( readObject == expectedObject );
+    }
+
+    {
+        int value;
+        read_int_relative( readStream, 100, value );
+        serialize_check( value == 105 );
+    }
 
     return true;
 }
@@ -2314,7 +2402,8 @@ inline void test_read_write()
         write_uint8( writeStream, 255 );
         write_uint16( writeStream, 65535 );
         write_uint32( writeStream, 0xFFFFFFFF );
-        write_uint32( writeStream, 0xFFFFFFFFFFFFFFFFULL );
+        write_uint64( writeStream, 0xFFFFFFFFFFFFFFFFULL );
+        write_int( writeStream, 55, 10, 90 );
         write_float( writeStream, 100.0f );
         write_double( writeStream, 1000000000.0f );
 
@@ -2349,7 +2438,7 @@ inline void test_read_write()
     // read from the buffer
     {
         serialize::ReadStream readStream;
-        readStream.Initialize( buffer, BufferSize );
+        readStream.Initialize( buffer, bytesWritten );
         serialize_check( ReadFunction( readStream ) );
     }
 }
@@ -2364,7 +2453,7 @@ inline void test_read_write()
 
 inline void serialize_test()
 {
-    // while ( 1 )
+    while ( 1 )
     {
         SERIALIZE_RUN_TEST( test_endian );
         SERIALIZE_RUN_TEST( test_bitpacker );
