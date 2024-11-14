@@ -579,6 +579,32 @@ namespace serialize
     {
     public:
 
+        BitReader()
+        {
+            m_data = NULL;
+            m_numBytes = 0;
+            m_numBits = m_numBytes * 8;
+            m_bitsRead = 0;
+            m_scratch = 0;
+            m_scratchBits = 0;
+            m_wordIndex = 0;
+        }
+
+        void Initialize( const void * __restrict__ data, int bytes )
+        {
+            serialize_assert( data );
+            m_data = (const uint32_t*) data;
+            m_numBytes = bytes;
+#ifdef SERIALIZE_DEBUG
+            m_numWords = ( bytes + 3 ) / 4;
+#endif // #ifdef SERIALIZE_DEBUG
+            m_numBits = m_numBytes * 8;
+            m_bitsRead = 0;
+            m_scratch = 0;
+            m_scratchBits = 0;
+            m_wordIndex = 0;            
+        }
+
         /**
             Bit reader constructor.
             Non-multiples of four buffer sizes are supported, as this naturally tends to occur when packets are read from the network.
@@ -589,7 +615,7 @@ namespace serialize
          */
 
 #ifdef SERIALIZE_DEBUG
-        BitReader( const void * __restrict__ data, int bytes ) : m_data( (const uint32_t*) data ), m_numBytes( bytes ), m_numWords( ( bytes + 3 ) / 4)
+        BitReader( const void * __restrict__ data, int bytes ) : m_data( (const uint32_t*) data ), m_numBytes( bytes ), m_numWords( ( bytes + 3 ) / 4 )
 #else // #ifdef SERIALIZE_DEBUG
         BitReader( const void * __restrict__ data, int bytes ) : m_data( (const uint32_t*) data ), m_numBytes( bytes )
 #endif // #ifdef SERIALIZE_DEBUG
@@ -992,6 +1018,16 @@ namespace serialize
 
         enum { IsWriting = 0 };
         enum { IsReading = 1 };
+
+        ReadStream()
+        {
+            // ...
+        }
+
+        void Initialize( const uint8_t * buffer, int bytes )
+        {
+            m_reader.Initialize( buffer, bytes );
+        }
 
         /**
             Read stream constructor.
@@ -1921,7 +1957,12 @@ namespace serialize
         }                                                                                   \
         while(0)
 
-    #define write_int_relative          serialize_int_relative
+    #define write_int_relative( stream, previous, current )                                 \
+        do                                                                                  \
+        {                                                                                   \
+            int current_value = (int) current;                                              \
+            serialize::serialize_int_relative_internal( stream, previous, current_value );  \
+        } while (0)
 }
 
 inline void serialize_copy_string( char * dest, const char * source, size_t dest_size )
@@ -2222,6 +2263,8 @@ inline void test_read_write()
 
     uint8_t buffer[BufferSize];
 
+    int bytesWritten = 0;
+
     // write to the buffer
     {
         serialize::WriteStream writeStream;
@@ -2255,20 +2298,20 @@ inline void test_read_write()
 
         write_object( writeStream, object );
 
-        /*
-        write_int_relative
-        */
-        // ...
+        write_int_relative( writeStream, 100, 105 );
 
         writeStream.Flush();
 
-        const int bytesWritten = writeStream.GetBytesProcessed();
+        bytesWritten = writeStream.GetBytesProcessed();
 
         memset( buffer + bytesWritten, 0, BufferSize - bytesWritten );
     }
 
     // read from the buffer
     {
+        serialize::ReadStream readStream;
+        readStream.Initialize( buffer, BufferSize );
+
         // todo
     }
 }
