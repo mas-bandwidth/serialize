@@ -2257,6 +2257,45 @@ inline void test_serialize()
     serialize_check( readObject == writeObject );
 }
 
+bool ReadFunction( serialize::ReadStream & readStream )
+{
+    (void) readStream;
+
+    /*
+    write_bits( writeStream, 13, 4 );
+    write_bool( writeStream, true );
+    write_uint8( writeStream, 255 );
+    write_uint16( writeStream, 65535 );
+    write_uint32( writeStream, 0xFFFFFFFF );
+    write_uint32( writeStream, 0xFFFFFFFFFFFFFFFFULL );
+    write_float( writeStream, 100.0f );
+    write_double( writeStream, 1000000000.0f );
+
+    char data[5] = { 1, 2, 3, 4, 5 };
+    write_bytes( writeStream, data, 5 );
+
+    const char * string = "hello";
+    write_string( writeStream, string, 10 );
+
+    write_align( writeStream );
+
+    TestContext context;
+    context.min = -10;
+    context.max = +10;
+
+    writeStream.SetContext( &context );
+
+    TestObject object;
+    object.Init();
+
+    write_object( writeStream, object );
+
+    write_int_relative( writeStream, 100, 105 );
+    */
+
+    return true;
+}
+
 inline void test_read_write()
 {
     const int BufferSize = 10 * 1024;
@@ -2311,8 +2350,7 @@ inline void test_read_write()
     {
         serialize::ReadStream readStream;
         readStream.Initialize( buffer, BufferSize );
-
-        // todo
+        serialize_check( ReadFunction( readStream ) );
     }
 }
 
