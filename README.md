@@ -1,5 +1,3 @@
-[![Build status](https://github.com/mas-bandwidth/serialize/workflows/CI/badge.svg)](https://github.com/mas-bandwidth/serialize/actions?query=workflow%3ACI)
-
 # Introduction
 
 **serialize** is a simple bitpacking serializer for C++.
