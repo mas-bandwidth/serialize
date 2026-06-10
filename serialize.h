@@ -1,4 +1,4 @@
-/*
+﻿/*
     serialize
 
     Copyright © 2016 - 2024, Mas Bandwidth LLC.
@@ -1591,6 +1591,24 @@ namespace serialize
         return true;
     }
 
+    template <typename Stream> bool serialize_wstring_internal( Stream & stream, wchar_t * string, int buffer_size )
+    {
+        int length = 0;
+        if ( Stream::IsWriting )
+        {
+            length = (int) wcslen( string );
+            serialize_assert( length < buffer_size );
+        }
+
+        serialize_int( stream, length, 0, buffer_size - 1 );
+        serialize_bytes( stream, (uint8_t*)string, length * sizeof(wchar_t) );
+        if ( Stream::IsReading )
+        {
+            string[length] = L'\0';
+        }
+        return true;
+    }
+
     /**
         Serialize a string to the stream (read/write/measure).
         This is a helper macro to make writing unified serialize functions easier.
@@ -1605,6 +1623,15 @@ namespace serialize
         do                                                                                  \
         {                                                                                   \
             if ( !serialize::serialize_string_internal( stream, string, buffer_size ) )     \
+            {                                                                               \
+                return false;                                                               \
+            }                                                                               \
+        } while (0)
+    
+    #define serialize_wstring( stream, string, buffer_size )                                \
+        do                                                                                  \
+        {                                                                                   \
+            if ( !serialize::serialize_wstring_internal( stream, string, buffer_size ) )    \
             {                                                                               \
                 return false;                                                               \
             }                                                                               \
@@ -1890,6 +1917,16 @@ namespace serialize
             }                                                                               \
         } while (0)
 
+    #define read_wstring( stream, string, buffer_size )                                      \
+        do                                                                                   \
+        {                                                                                    \
+            wchar_t * string_ptr = (wchar_t*) string;                                        \
+            if ( !serialize_wstring_internal( stream, string_ptr, buffer_size ) )            \
+            {                                                                                \
+                return false;                                                                \
+            }                                                                                \
+        } while (0)
+
     #define read_align                  serialize_align
     #define read_check                  serialize_check
     #define read_object                 serialize_object
@@ -1965,6 +2002,15 @@ namespace serialize
             write_bytes( stream, (uint8_t*)string, length );                                \
         } while (0)
 
+    #define write_wstring( stream, string, buffer_size )                                    \
+        do                                                                                  \
+        {                                                                                   \
+            int length = (int) wcslen( string );                                            \
+            serialize_assert( length < buffer_size );                                       \
+            write_int( stream, length, 0, buffer_size - 1 );                                \
+            write_bytes( stream, (uint8_t*)string, length * sizeof(wchar_t) );              \
+        } while (0)
+
     #define write_align( stream )                                                           \
         do                                                                                  \
         {                                                                                   \
@@ -1995,6 +2041,20 @@ inline void serialize_copy_string( char * dest, const char * source, size_t dest
     for ( size_t i = 0; i < dest_size - 1; i++ )
     {
         if ( source[i] == '\0' )
+            break;
+        dest[i] = source[i];
+    }
+}
+
+inline void serialize_copy_wstring( wchar_t* dest, const wchar_t* source, size_t dest_size )
+{
+    serialize_assert( dest );
+    serialize_assert( source );
+    serialize_assert( dest_size >= 1 );
+    memset( dest, 0, dest_size * sizeof(wchar_t) );
+    for ( size_t i = 0; i < dest_size - 1; i++ )
+    {
+        if ( source[i] == L'\0' )
             break;
         dest[i] = source[i];
     }
@@ -2155,6 +2215,7 @@ struct TestData
     int int_relative;
     uint8_t bytes[17];
     char string[256];
+    wchar_t wstring[256];
 };
 
 struct TestContext
@@ -2194,6 +2255,8 @@ struct TestObject
             data.bytes[i] = (uint8_t) ( i + 5 ) * 13;
 
         serialize_copy_string( data.string, "hello world!", sizeof(data.string) - 1 );
+
+        serialize_copy_wstring( data.wstring, L"привіт, світ!", sizeof(data.wstring) / sizeof(wchar_t) - 1 );
     }
 
     template <typename Stream> bool Serialize( Stream & stream )
@@ -2233,6 +2296,7 @@ struct TestObject
         serialize_bytes( stream, data.bytes, sizeof( data.bytes ) );
 
         serialize_string( stream, data.string, sizeof( data.string ) );
+        serialize_wstring( stream, data.wstring, sizeof( data.wstring ) / sizeof( wchar_t ) );
 
         return true;
     }
@@ -2359,6 +2423,17 @@ bool ReadFunction( serialize::ReadStream & readStream )
         serialize_check( string[5] == '\0' );
     }
 
+    {
+        wchar_t wstring[20];
+        read_wstring( readStream, wstring, 20 );
+        serialize_check( wstring[0] == L'п' );
+        serialize_check( wstring[1] == L'р' );
+        serialize_check( wstring[2] == L'и' );
+        serialize_check( wstring[3] == L'в' );
+        serialize_check( wstring[4] == L'і' );
+        serialize_check( wstring[5] == L'т' );
+    }
+
     read_align( readStream );
 
     TestContext context;
@@ -2414,6 +2489,9 @@ inline void test_read_write()
 
         const char * string = "hello";
         write_string( writeStream, string, 10 );
+
+        wchar_t * wstring = L"привіт";
+        write_wstring( writeStream, wstring, 20 );
 
         write_align( writeStream );
 
