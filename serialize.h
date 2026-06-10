@@ -38,6 +38,8 @@
 #define serialize_assert assert
 #endif // #ifndef serialize_assert
 
+#include <cwchar>
+
 #if defined(_MSC_VER) && !defined(_CRT_SECURE_NO_WARNINGS)
 #define _CRT_SECURE_NO_WARNINGS
 #endif
@@ -2046,7 +2048,7 @@ inline void serialize_copy_string( char * dest, const char * source, size_t dest
     }
 }
 
-inline void serialize_copy_wstring( wchar_t* dest, const wchar_t* source, size_t dest_size )
+inline void serialize_copy_wstring( wchar_t * dest, const wchar_t * source, size_t dest_size )
 {
     serialize_assert( dest );
     serialize_assert( source );
@@ -2490,7 +2492,7 @@ inline void test_read_write()
         const char * string = "hello";
         write_string( writeStream, string, 10 );
 
-        wchar_t * wstring = L"привіт";
+        const wchar_t * wstring = L"привіт";
         write_wstring( writeStream, wstring, 20 );
 
         write_align( writeStream );
