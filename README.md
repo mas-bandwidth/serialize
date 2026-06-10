@@ -11,7 +11,7 @@ It has the following features:
 * Serialize signed integer values with [min,max] writing only the required bits to the buffer
 * Serialize floats, doubles, compressed floats, strings, byte arrays, and integers relative to another integer
 * Alignment support so you can align your bitstream to a byte boundary whenever you want
-* Template-based serialization system lets you write one function that handles both read and write
+* Template-based serialization lets you write one function that handles read and write
 
 # Usage
 
