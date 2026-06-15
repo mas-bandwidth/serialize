@@ -104,7 +104,7 @@ struct RigidBody
 };
 ```
 
-See [example.cpp](example.cpp) for more examples.
+See [example.cpp](example.cpp) for more.
 
 # Author
 
