@@ -2782,7 +2782,9 @@ inline void test_compressed_float_validation()
         uint8_t buffer[8] = { 0 };
 
         serialize::WriteStream writeStream( buffer, sizeof(buffer) );
-        float written = (float) NAN;
+        uint32_t nan_bits = 0x7fc00000;                 // quiet NaN bit pattern, built without the NAN macro (finite-math builds reject it)
+        float written = 0.0f;
+        memcpy( &written, &nan_bits, 4 );
         serialize_check( serialize::serialize_compressed_float_internal( writeStream, written, 0.0f, 10.0f, 0.01f ) == true );
         writeStream.Flush();
 
