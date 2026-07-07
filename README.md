@@ -106,6 +106,13 @@ struct RigidBody
 
 See [example.cpp](example.cpp) for more.
 
+# Limitations
+
+* Buffers must be aligned to 4 bytes, because the bitpacker reads and writes memory as dwords.
+* Write buffer sizes must be a multiple of 4 bytes. Read buffer sizes may be any number of bytes, but the underlying allocation must round up to the next multiple of 4 bytes, because the bit reader reads dwords from memory.
+* Buffers up to 256 megabytes are supported, because bit counts are stored in 32 bit signed integers.
+* Wide strings are serialized as 32 bits per character, so streams are compatible between platforms with 2 and 4 byte wchar_t, but code points above 0xFFFF are not translated between UTF-16 and UTF-32 platforms.
+
 # Author
 
 The author of this library is Glenn Fiedler.
