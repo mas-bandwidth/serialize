@@ -1,5 +1,3 @@
-[![Build status](https://github.com/mas-bandwidth/serialize/workflows/CI/badge.svg)](https://github.com/mas-bandwidth/serialize/actions?query=workflow%3ACI)
-
 # Introduction
 
 **serialize** is a simple bitpacking serializer for C++.
@@ -13,7 +11,7 @@ It has the following features:
 * Serialize signed integer values with [min,max] writing only the required bits to the buffer
 * Serialize floats, doubles, compressed floats, strings, byte arrays, and integers relative to another integer
 * Alignment support so you can align your bitstream to a byte boundary whenever you want
-* Template-based serialization system lets you write one function that does both read and write
+* Optional template-based serialization so you can write one function that handles both read and write
 
 # Usage
 
@@ -106,7 +104,7 @@ struct RigidBody
 };
 ```
 
-See [example.cpp](example.cpp) for more examples.
+See [example.cpp](example.cpp) for more.
 
 # Author
 
