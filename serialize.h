@@ -1726,7 +1726,8 @@ namespace serialize
         {
             if ( Stream::IsReading )
             {
-                current = previous + 1;
+                // reconstruct in the unsigned domain: previous + difference overflows signed arithmetic near the type maximum
+                current = T( uint32_t( previous ) + 1 );
             }
             return true;
         }
@@ -1742,7 +1743,8 @@ namespace serialize
             serialize_int( stream, difference, 2, 6 );
             if ( Stream::IsReading )
             {
-                current = previous + difference;
+                // reconstruct in the unsigned domain: previous + difference overflows signed arithmetic near the type maximum
+                current = T( uint32_t( previous ) + difference );
             }
             return true;
         }
@@ -1758,7 +1760,8 @@ namespace serialize
             serialize_int( stream, difference, 7, 23 );
             if ( Stream::IsReading )
             {
-                current = previous + difference;
+                // reconstruct in the unsigned domain: previous + difference overflows signed arithmetic near the type maximum
+                current = T( uint32_t( previous ) + difference );
             }
             return true;
         }
@@ -1774,7 +1777,8 @@ namespace serialize
             serialize_int( stream, difference, 24, 280 );
             if ( Stream::IsReading )
             {
-                current = previous + difference;
+                // reconstruct in the unsigned domain: previous + difference overflows signed arithmetic near the type maximum
+                current = T( uint32_t( previous ) + difference );
             }
             return true;
         }
@@ -1790,7 +1794,8 @@ namespace serialize
             serialize_int( stream, difference, 281, 4377 );
             if ( Stream::IsReading )
             {
-                current = previous + difference;
+                // reconstruct in the unsigned domain: previous + difference overflows signed arithmetic near the type maximum
+                current = T( uint32_t( previous ) + difference );
             }
             return true;
         }
@@ -1806,7 +1811,8 @@ namespace serialize
             serialize_int( stream, difference, 4378, 69914 );
             if ( Stream::IsReading )
             {
-                current = previous + difference;
+                // reconstruct in the unsigned domain: previous + difference overflows signed arithmetic near the type maximum
+                current = T( uint32_t( previous ) + difference );
             }
             return true;
         }
@@ -2704,6 +2710,30 @@ inline void test_int_relative_validation()
         int current = 0;
         serialize_check( serialize::serialize_int_relative_internal( readStream, previous, current ) == true );
         serialize_check( current == written );
+    }
+
+    // read side reconstructs current = previous + difference; a large previous overflows signed arithmetic.
+    // this must wrap in the unsigned domain rather than invoke undefined behavior.
+    {
+        // difference of 1 exercises the oneBit branch, difference of 5 exercises a bucket branch
+        const int differences[] = { 1, 5 };
+
+        for ( int d = 0; d < (int) ( sizeof(differences) / sizeof(differences[0]) ); d++ )
+        {
+            uint8_t buffer[8] = { 0 };
+
+            serialize::WriteStream writeStream( buffer, sizeof(buffer) );
+            int prevWrite = 10;
+            int curWrite = prevWrite + differences[d];
+            serialize_check( serialize::serialize_int_relative_internal( writeStream, prevWrite, curWrite ) == true );
+            writeStream.Flush();
+
+            serialize::ReadStream readStream( buffer, sizeof(buffer) );
+            int previous = INT32_MAX;                        // previous + difference exceeds INT32_MAX
+            int current = 0;
+            serialize_check( serialize::serialize_int_relative_internal( readStream, previous, current ) == true );
+            serialize_check( current == int32_t( uint32_t( INT32_MAX ) + uint32_t( differences[d] ) ) );
+        }
     }
 }
 
