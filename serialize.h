@@ -1449,7 +1449,16 @@ namespace serialize
         
         if ( Stream::IsWriting )
         {
-            float normalizedValue = clamp( (value - min) / delta, 0.0f, 1.0f );
+            // clamp with the !>= / !<= form so a NaN value is forced into range instead of reaching the uint32 cast below
+            float normalizedValue = (value - min) / delta;
+            if ( !( normalizedValue >= 0.0f ) )
+            {
+                normalizedValue = 0.0f;
+            }
+            else if ( !( normalizedValue <= 1.0f ) )
+            {
+                normalizedValue = 1.0f;
+            }
             integerValue = (uint32_t) floor( normalizedValue * maxIntegerValue + 0.5f );
         }
 
@@ -2766,6 +2775,21 @@ inline void test_compressed_float_validation()
         float value = 0.0f;
         serialize_check( serialize::serialize_compressed_float_internal( readStream, value, 0.0f, 10000000000.0f, 1.0f ) == true );
         serialize_check( fabs( value - written ) <= 4096.0f );
+    }
+
+    // a NaN value must not reach the uint32 cast (clamp comparisons are all false for NaN)
+    {
+        uint8_t buffer[8] = { 0 };
+
+        serialize::WriteStream writeStream( buffer, sizeof(buffer) );
+        float written = (float) NAN;
+        serialize_check( serialize::serialize_compressed_float_internal( writeStream, written, 0.0f, 10.0f, 0.01f ) == true );
+        writeStream.Flush();
+
+        serialize::ReadStream readStream( buffer, sizeof(buffer) );
+        float value = -1.0f;
+        serialize_check( serialize::serialize_compressed_float_internal( readStream, value, 0.0f, 10.0f, 0.01f ) == true );
+        serialize_check( value >= 0.0f && value <= 10.0f );      // NaN clamps to the low end of the range
     }
 }
 
