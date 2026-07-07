@@ -181,7 +181,7 @@ struct PropertyValue
 
             case LongProperty:
             {
-                serialize_bits( stream, int_value, 64 );
+                serialize_bits( stream, long_value, 64 );
             }
             break;
 
@@ -471,7 +471,7 @@ int main()
 
                         case ShortProperty:
                         {
-                            input.c.propertyValue[j].short_value = rand() % 655356;
+                            input.c.propertyValue[j].short_value = rand() % 65536;
                         }
                         break;
 
@@ -513,9 +513,12 @@ int main()
                 input.d.clientId = ( uint64_t( rand() ) << 32 ) | uint64_t( rand() );
                 serialize_copy_string( input.d.playerName, "Hingle McCringleberry", sizeof(input.d.playerName) );
                 input.d.hasPlayerData = ( rand() % 2 ) == 0;
-                for ( int j = 0; j < PlayerDataBytes; j++ )
+                if ( input.d.hasPlayerData )
                 {
-                    input.d.playerData[j] = rand() % 256;
+                    for ( int j = 0; j < PlayerDataBytes; j++ )
+                    {
+                        input.d.playerData[j] = rand() % 256;
+                    }
                 }
             }
             break;
@@ -525,9 +528,12 @@ int main()
                 input.e.i = ( ( rand() % 2 ) == 0 ) ? true : false;
                 input.e.j = ( ( rand() % 2 ) == 0 ) ? true : false;
                 input.e.k = ( ( rand() % 2 ) == 0 ) ? true : false;
-                input.e.x = ( ( rand() % 2 ) == 0 ) ? true : false;
-                input.e.y = ( ( rand() % 2 ) == 0 ) ? true : false;
-                input.e.z = ( ( rand() % 2 ) == 0 ) ? true : false;
+                if ( input.e.i )
+                {
+                    input.e.x = ( ( rand() % 2 ) == 0 ) ? true : false;
+                    input.e.y = ( ( rand() % 2 ) == 0 ) ? true : false;
+                    input.e.z = ( ( rand() % 2 ) == 0 ) ? true : false;
+                }
             }
             break;
         }
@@ -545,6 +551,7 @@ int main()
         const int bytesWritten = writeStream.GetBytesProcessed();
 
         Packet output;
+        memset( &output, 0, sizeof(output) );
         serialize::ReadStream readStream( buffer, bytesWritten );
         if ( !output.Serialize( readStream ) )
         {
@@ -553,6 +560,23 @@ int main()
         }
 
         const int bytesRead = readStream.GetBytesProcessed();
+
+        if ( input.packetType == B )
+        {
+            // compressed floats are quantized, so compare with a tolerance of the resolution
+            if ( fabs( input.b.x - output.b.x ) > 0.001f ||
+                 fabs( input.b.y - output.b.y ) > 0.001f ||
+                 fabs( input.b.z - output.b.z ) > 0.001f )
+            {
+                printf( "error: packet read back does not match packet written\n" );
+                exit( 1 );
+            }
+        }
+        else if ( memcmp( &input, &output, sizeof(Packet) ) != 0 )
+        {
+            printf( "error: packet read back does not match packet written\n" );
+            exit( 1 );
+        }
 
         const char * packetTypeString[] = {
             "packet type a",
