@@ -28,6 +28,21 @@ jobs:
       - name: Test
         run: ctest --test-dir build --build-config ${{ matrix.build_type }} --output-on-failure
 
+  fuzz:
+    name: fuzz (libFuzzer)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Debug -DSERIALIZE_FUZZ=ON -DCMAKE_CXX_COMPILER=clang++
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Fuzz
+        run: ./build/bin/fuzz -max_total_time=60 -timeout=10 -print_final_stats=1
+
   sanitizers:
     name: asan + ubsan
     runs-on: ubuntu-24.04

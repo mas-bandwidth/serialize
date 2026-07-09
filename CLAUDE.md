@@ -13,7 +13,9 @@ Build: `cmake -B build && cmake --build build --config Release`, test with
 `ctest --test-dir build --build-config Release`. Tests live in serialize.h
 behind `SERIALIZE_ENABLE_TESTS`. CI (.github/workflows/ci.yml) builds and
 tests Debug + Release on Linux (ubuntu-24.04), macOS Apple Silicon
-(macos-15), and Windows x64 (windows-2025), plus an ASan+UBSan job on Linux.
+(macos-15), and Windows x64 (windows-2025), plus ASan+UBSan and libFuzzer
+jobs on Linux. The fuzz harness ([fuzz.cpp](fuzz.cpp), clang only, built via
+`-DSERIALIZE_FUZZ=ON`) drives all ReadStream primitives with hostile bytes.
 
 ## Honest assessment
 
@@ -77,11 +79,6 @@ tests Debug + Release on Linux (ubuntu-24.04), macOS Apple Silicon
   4244)` with no push/pop ([serialize.h:112](serialize.h:112)) alters warning
   state for every MSVC translation unit that includes it, and the header pulls
   in a broad set of libc headers.
-- **Doc drift from the parent project**: `WriteStream`/`ReadStream`
-  constructor docs describe an `allocator` parameter that doesn't exist
-  ([serialize.h:889](serialize.h:889), [serialize.h:1043](serialize.h:1043)),
-  and `BaseStream::SetContext` talks about "connection packets" from
-  yojimbo's context.
 - Minor: `BitWriter()` zeroing itself via `memset(this, ...)`
   ([serialize.h:361](serialize.h:361)) is fragile if a non-trivial member is
   ever added; default-constructed streams have no guard against use before
@@ -101,7 +98,8 @@ tests Debug + Release on Linux (ubuntu-24.04), macOS Apple Silicon
 Small, mature, and does one thing well. The reader-side safety work and the
 adversarial tests are the standout strengths. The risks are concentrated in
 the documented-but-sharp buffer contracts (unchecked writes in release, the
-round-up-to-4 read contract, writer alignment). The cheapest remaining
-high-value improvements are fixing the copied-from-yojimbo doc comments and
-a libFuzzer harness over `ReadStream` — the design is already fuzz-friendly,
-so that one is nearly free.
+round-up-to-4 read contract, writer alignment). Those are inherent to the
+design and documented; everything cheap to fix around them (CI, sanitizers,
+fuzzing, doc drift) has been done. Worthwhile future work would be extended
+fuzz runs (the CI job is a 60-second smoke) and a seed corpus built from the
+test vectors.

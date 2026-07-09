@@ -812,8 +812,8 @@ namespace serialize
 
         /**
             Set a context on the stream.
-            Contexts are used by the library supply data that is needed to read and write packets.
-            Specifically, this context is used by the connection to supply data needed to read and write connection packets.
+            The context lets you pass data through to your serialize functions, for example lookup tables or min/max ranges needed to read and write values.
+            Call BaseStream::GetContext inside your serialize method to retrieve it.
          */
 
         void SetContext( void * context )
@@ -884,9 +884,8 @@ namespace serialize
 
         /**
             Write stream constructor.
-            @param buffer The buffer to write to.
+            @param buffer The buffer to write to. Must be aligned to 4 bytes, because the bit writer writes to memory as dwords.
             @param bytes The number of bytes in the buffer. Must be a multiple of four.
-            @param allocator The allocator to use for stream allocations. This lets you dynamically allocate memory as you read and write packets.
          */
 
         WriteStream( uint8_t * buffer, int bytes ) : m_writer( buffer, bytes ) {}
@@ -1040,7 +1039,6 @@ namespace serialize
             Read stream constructor.
             @param buffer The buffer to read from.
             @param bytes The number of bytes in the buffer. May be a non-multiple of four, however if it is, the underlying buffer allocated should be large enough to read the any remainder bytes as a dword.
-            @param allocator The allocator to use for stream allocations. This lets you dynamically allocate memory as you read and write packets.
          */
 
         ReadStream( const uint8_t * buffer, int bytes ) : m_reader( buffer, bytes ) {}
@@ -1172,7 +1170,6 @@ namespace serialize
 
         /**
             Measure stream constructor.
-            @param allocator The allocator to use for stream allocations. This lets you dynamically allocate memory as you read and write packets.
          */
 
         explicit MeasureStream() : m_bitsWritten(0) {}

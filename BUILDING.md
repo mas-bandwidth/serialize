@@ -29,6 +29,16 @@ On Windows the binaries are under `build\bin\Release`, and you can open the gene
 
 Debug builds define `SERIALIZE_DEBUG`, which enables asserts and extra bounds checking. Release builds define `SERIALIZE_RELEASE`.
 
+## Fuzzing
+
+A libFuzzer harness for the read side lives in `fuzz.cpp`. It needs clang (Apple clang doesn't ship the libFuzzer runtime, so use Linux or Homebrew LLVM on MacOS):
+
+    cmake -B build-fuzz -DCMAKE_BUILD_TYPE=Debug -DSERIALIZE_FUZZ=ON -DCMAKE_CXX_COMPILER=clang++
+    cmake --build build-fuzz
+    ./build-fuzz/bin/fuzz
+
+Build it in Debug so asserts stay enabled: reads from a `ReadStream` must fail by returning false, never by tripping an assert, and the fuzzer treats an assert as a crash. CI runs this harness for 60 seconds on every push.
+
 If you have questions please create an issue at https://github.com/mas-bandwidth/serialize and I'll do my best to help you out.
 
 cheers

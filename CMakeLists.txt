@@ -37,3 +37,12 @@ endforeach()
 
 enable_testing()
 add_test(NAME test COMMAND serialize_test)
+
+# libFuzzer harness for the read side. requires clang. build in Debug so asserts stay live.
+option(SERIALIZE_FUZZ "Build the libFuzzer harness (requires clang)" OFF)
+if(SERIALIZE_FUZZ)
+    add_executable(fuzz fuzz.cpp serialize.h)
+    target_link_libraries(fuzz PRIVATE serialize)
+    target_compile_options(fuzz PRIVATE -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer)
+    target_link_options(fuzz PRIVATE -fsanitize=fuzzer,address,undefined)
+endif()
