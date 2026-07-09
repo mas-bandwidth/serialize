@@ -21,6 +21,16 @@ Or run the binaries directly:
 
 On Windows the binaries are under `build\bin\Release`, and you can open the generated `build\serialize.sln` in Visual Studio if you prefer to work there.
 
+## Installing with Homebrew (macOS)
+
+```
+brew tap mas-bandwidth/tap
+brew trust mas-bandwidth/tap      # one time, Homebrew 6 and newer
+brew install serialize
+```
+
+This installs `serialize.h` and the CMake package config, so both `#include <serialize.h>` and `find_package(serialize CONFIG)` work out of the box.
+
 ## Using serialize in your project
 
 serialize is a single header. The simplest thing is to copy `serialize.h` into your project.
