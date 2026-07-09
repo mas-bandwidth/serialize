@@ -71,18 +71,6 @@ change for previously written data.
 
 ### Sharp edges and weaknesses
 
-- **BitReader may read up to 3 bytes past a non-multiple-of-4 buffer.** The
-  constructor doc says the allocation must round up to 4 bytes
-  ([serialize.h:620](serialize.h:620)), but a caller who hands it an exactly
-  sized buffer has an out-of-bounds read that ASan will flag. The contract is
-  documented; it's still easy to miss.
-- **The macro API is a loaded weapon.** `serialize_*` macros hide
-  `return false` and require being called inside a `template <typename
-  Stream>` function returning bool — documented, but surprising control flow.
-  ~30 macros (`serialize_int`, `read_bits`, `write_object`, ...) land in the
-  global macro namespace despite being defined inside `namespace serialize`.
-  (Not a collision risk for yojimbo: yojimbo depends on serialize.h
-  directly — these are its macros.)
 - Minor: the header pulls in a broad set of libc headers. (The MSVC
   `#pragma warning(disable: 4127, 4244)` is now push/pop'd so warning state
   no longer leaks into consumers — code using the serialize macros compiles
@@ -91,6 +79,10 @@ change for previously written data.
   repo's own executables do. `BitWriter` uses member initializers rather
   than `memset(this, ...)`, and using a stream before `Initialize()` now
   fires an explicit debug assert.)
+
+Everything else formerly listed here — unchecked writes in release, the
+round-up-to-4 read contract, the macro control flow — turned out to be
+intentional design, recorded under "Known limits" below.
 
 ### Known limits (documented, by design)
 
@@ -101,6 +93,20 @@ change for previously written data.
   validates at runtime in release and drops invalid data, because asserts
   are not enough at the trust boundary. Do not propose hardened/checked
   write modes.
+- **The serialize macros hide `return false` on purpose.** When reading a
+  packet, invalid data must abort the entire serialize function
+  immediately — never carrying on deeper into the serialization or into a
+  loop bounded by malicious data. The library is low-level C-style and
+  chooses not to use exceptions, so early-return macros are the pragmatic
+  mechanism. Serialize functions must be `template <typename Stream>`
+  returning bool (documented). Do not propose redesigns (exceptions, error
+  codes). The ~30 macros land in the global macro namespace; not a
+  collision risk for yojimbo, which depends on serialize.h directly.
+- **BitReader may read up to 3 bytes past a non-multiple-of-4 buffer** —
+  the allocation must round up to 4 bytes
+  ([serialize.h:620](serialize.h:620)), which keeps the word refill
+  branch-free. Documented on the constructor; read it when allocating
+  receive buffers. Do not propose removing this contract.
 - Max buffer 256 MB (bit counts held in signed 32-bit ints).
 - `serialize_int_relative` requires strictly increasing values.
 - `wstring` wire format is 32 bits per character — portable across 2/4-byte
@@ -110,11 +116,12 @@ change for previously written data.
 ### Bottom line
 
 Small, mature, and does one thing well. The reader-side safety work and the
-adversarial tests are the standout strengths. The buffer contracts
-(unchecked writes in release, the round-up-to-4 read contract) are
-intentional design — debug asserts plus caller responsibility — and the
-place for a new user to read the docs carefully; everything cheap to fix
-around them (CI, sanitizers, fuzzing, doc drift) has been done. Fuzz coverage: a 60-second smoke on every
+adversarial tests are the standout strengths. The contracts (unchecked
+writes in release, the round-up-to-4 read contract, early-return serialize
+macros) are intentional design — debug asserts plus caller responsibility
+on the trusted side, immediate validated abort on the network side — and
+the place for a new user to read the docs carefully; everything cheap to
+fix around them (CI, sanitizers, fuzzing, doc drift) has been done. Fuzz coverage: a 60-second smoke on every
 push, plus a nightly 1-hour run (.github/workflows/nightly-fuzz.yml) whose
 corpus accumulates across runs via the actions cache and which uploads crash
 reproducers as artifacts on failure.
