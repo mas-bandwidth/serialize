@@ -1,36 +1,33 @@
 How to build serialize
 ======================
 
-## Building on Windows
+serialize builds with [CMake](https://cmake.org) (3.16 or newer) on Windows, MacOS and Linux.
 
-Download [premake 5](https://premake.github.io/download.html) and copy the **premake5** executable somewhere in your path.
+## Building
 
-You need Visual Studio to build the source code. If you don't have Visual Studio 2019 you can [download the community edition for free](https://visualstudio.microsoft.com/thank-you-downloading-visual-studio/?sku=Community&rel=16).
+Go to the command line under the serialize directory and enter:
 
-Once you have Visual Studio installed, go to the command line under the serialize directory and type:
+    cmake -B build
+    cmake --build build --config Release
 
-    premake5 vs2019
+Then run the tests:
 
-Open the generated serialize.sln file.
+    ctest --test-dir build --build-config Release --output-on-failure
 
-Now you can build the library and run individual test programs as you would for any other Visual Studio solution.
+Or run the binaries directly:
 
-## Building on MacOS and Linux
+    ./build/bin/test
+    ./build/bin/example
 
-First, download and install [premake 5](https://premake.github.io/download.html).
+On Windows the binaries are under `build\bin\Release`, and you can open the generated `build\serialize.sln` in Visual Studio if you prefer to work there.
 
-Now go to the command line under the serialize directory and enter:
+## Debug builds
 
-    premake5 gmake
+    cmake -B build-debug -DCMAKE_BUILD_TYPE=Debug
+    cmake --build build-debug --config Debug
+    ctest --test-dir build-debug --build-config Debug --output-on-failure
 
-Which creates makefiles which you can use to build the source via:
-
-    make -j
-
-Then you can run binaries like this:
-
-    ./bin/test
-    ./bin/example
+Debug builds define `SERIALIZE_DEBUG`, which enables asserts and extra bounds checking. Release builds define `SERIALIZE_RELEASE`.
 
 If you have questions please create an issue at https://github.com/mas-bandwidth/serialize and I'll do my best to help you out.
 
