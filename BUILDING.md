@@ -21,6 +21,21 @@ Or run the binaries directly:
 
 On Windows the binaries are under `build\bin\Release`, and you can open the generated `build\serialize.sln` in Visual Studio if you prefer to work there.
 
+## Using serialize in your project
+
+serialize is a single header. The simplest thing is to copy `serialize.h` into your project.
+
+If you use CMake, you can consume it as a target instead — via FetchContent:
+
+    include(FetchContent)
+    FetchContent_Declare(serialize GIT_REPOSITORY https://github.com/mas-bandwidth/serialize.git GIT_TAG main)
+    FetchContent_MakeAvailable(serialize)
+    target_link_libraries(your_target PRIVATE serialize::serialize)
+
+or via `add_subdirectory`, or install it (`cmake --install build`) and use `find_package(serialize CONFIG REQUIRED)`. In all cases the `serialize::serialize` target carries only the include path: none of this repo's warning or fast-math flags leak into your build, and the test/example/benchmark targets are only built when serialize is the top level project.
+
+The library version is available as `SERIALIZE_VERSION` (and `SERIALIZE_VERSION_MAJOR/MINOR/PATCH`) after including the header.
+
 ## Debug builds
 
     cmake -B build-debug -DCMAKE_BUILD_TYPE=Debug

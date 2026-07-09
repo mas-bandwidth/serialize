@@ -129,13 +129,14 @@ Done:
   with GCC and run the full test suite under QEMU, exercising the
   bswap/`host_to_network` path; the golden wire-format test proves the
   wire bytes are identical to the little-endian platforms.
+- ~~CMake consumer-friendliness~~ — the `serialize::serialize` INTERFACE
+  target carries only the include path; dev targets and flags are gated
+  behind `SERIALIZE_BUILD_TESTS` (defaults on only when top-level);
+  install rules + package config support `find_package(serialize CONFIG)`;
+  `SERIALIZE_VERSION` macros in the header track the release tags
+  (v1.2.5 was current when this landed; the header now says 1.3.0).
 
-Remaining:
-
-1. **CMake consumer-friendliness.** FetchContent/add_subdirectory consumers
-   currently inherit the test/example/fuzz targets and global compile
-   flags. Guard those behind `PROJECT_IS_TOP_LEVEL`, scope flags to
-   targets, add a `SERIALIZE_VERSION` define plus git tags.
+The roadmap is done. Nothing is currently planned.
 
 Deliberately not doing: changing the reader's round-up-to-4 allocation
 contract (owner decision: it is an intentional part of the design — do not
