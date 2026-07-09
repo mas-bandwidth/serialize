@@ -28,8 +28,6 @@ extern void serialize_test();
 
 int main()
 {
-    srand( time( NULL ) );
-
     printf( "\n" );
 
     serialize_test();

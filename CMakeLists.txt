@@ -51,7 +51,9 @@ endif()
 if(SERIALIZE_BUILD_TESTS OR SERIALIZE_FUZZ)
     # same flags as the historical premake build: extra warnings, fast float, no rtti
     if(MSVC)
-        set(SERIALIZE_DEV_FLAGS /W4 /fp:fast /GR-)
+        # 4127/4244 are opted back in here: the header now push/pops them, and this repo's own
+        # executables use the same implicit-narrowing style as the header
+        set(SERIALIZE_DEV_FLAGS /W4 /fp:fast /GR- /wd4127 /wd4244)
     else()
         set(SERIALIZE_DEV_FLAGS -Wall -Wextra -ffast-math -fno-rtti)
     endif()

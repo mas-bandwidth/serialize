@@ -83,14 +83,14 @@ change for previously written data.
   global macro namespace despite being defined inside `namespace serialize`.
   (Not a collision risk for yojimbo: yojimbo depends on serialize.h
   directly — these are its macros.)
-- **Header hygiene leaks into consumers**: `#pragma warning(disable: 4127,
-  4244)` with no push/pop ([serialize.h:112](serialize.h:112)) alters warning
-  state for every MSVC translation unit that includes it, and the header pulls
-  in a broad set of libc headers.
-- Minor: `BitWriter()` zeroing itself via `memset(this, ...)`
-  ([serialize.h:361](serialize.h:361)) is fragile if a non-trivial member is
-  ever added; default-constructed streams have no guard against use before
-  `Initialize()`; `test.cpp` seeds `srand` but nothing uses it.
+- Minor: the header pulls in a broad set of libc headers. (The MSVC
+  `#pragma warning(disable: 4127, 4244)` is now push/pop'd so warning state
+  no longer leaks into consumers — code using the serialize macros compiles
+  at the including file's warning state, so consumers who share the
+  implicit-narrowing style disable those warnings themselves, as this
+  repo's own executables do. `BitWriter` uses member initializers rather
+  than `memset(this, ...)`, and using a stream before `Initialize()` now
+  fires an explicit debug assert.)
 
 ### Known limits (documented, by design)
 

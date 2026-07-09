@@ -114,7 +114,11 @@
 #define SERIALIZE_BIG_ENDIAN 0
 #endif
 
+// implicit narrowing is a deliberate style inside this header. push/pop so the disabled
+// warnings do not leak into code that includes it. note that code using the serialize_* macros
+// compiles at the including file's warning state: disable 4127 and 4244 there if needed.
 #ifdef _MSC_VER
+#pragma warning( push )
 #pragma warning( disable : 4127 )
 #pragma warning( disable : 4244 )
 #endif // #ifdef _MSC_VER
@@ -384,10 +388,7 @@ namespace serialize
     {
     public:
 
-        BitWriter()
-        {
-            memset( (void*) this, 0, sizeof(BitWriter) );
-        }
+        BitWriter() : m_data( NULL ), m_scratch( 0 ), m_numBits( 0 ), m_numWords( 0 ), m_bitsWritten( 0 ), m_wordIndex( 0 ), m_scratchBits( 0 ) {}
 
         void Initialize( void * serialize_restrict data, int bytes )
         {
@@ -432,6 +433,7 @@ namespace serialize
 
         void WriteBits( uint32_t value, int bits )
         {
+            serialize_assert( m_data );                 // if this fires, the writer was used before Initialize
             serialize_assert( bits > 0 );
             serialize_assert( bits <= 32 );
             serialize_assert( m_bitsWritten + bits <= m_numBits );
@@ -484,6 +486,7 @@ namespace serialize
 
         void WriteBytes( const uint8_t * serialize_restrict data, int bytes )
         {
+            serialize_assert( m_data );                 // if this fires, the writer was used before Initialize
             serialize_assert( GetAlignBits() == 0 );
             serialize_assert( uint64_t(m_bitsWritten) + uint64_t(bytes) * 8 <= uint64_t(m_numBits) );
             serialize_assert( ( m_bitsWritten % 32 ) == 0 || ( m_bitsWritten % 32 ) == 8 || ( m_bitsWritten % 32 ) == 16 || ( m_bitsWritten % 32 ) == 24 );
@@ -533,6 +536,7 @@ namespace serialize
         {
             if ( m_scratchBits != 0 )
             {
+                serialize_assert( m_data );             // if this fires, the writer was used before Initialize
                 serialize_assert( m_scratchBits <= 32 );
                 serialize_assert( m_wordIndex < m_numWords );
                 const uint32_t word = host_to_network( uint32_t( m_scratch & 0xFFFFFFFF ) );
@@ -687,6 +691,7 @@ namespace serialize
 
         uint32_t ReadBits( int bits )
         {
+            serialize_assert( m_data );                 // if this fires, the reader was used before Initialize
             serialize_assert( bits > 0 );
             serialize_assert( bits <= 32 );
             serialize_assert( m_bitsRead + bits <= m_numBits );
@@ -746,6 +751,7 @@ namespace serialize
 
         void ReadBytes( uint8_t * serialize_restrict data, int bytes )
         {
+            serialize_assert( m_data );                 // if this fires, the reader was used before Initialize
             serialize_assert( GetAlignBits() == 0 );
             serialize_assert( uint64_t(m_bitsRead) + uint64_t(bytes) * 8 <= uint64_t(m_numBits) );
             serialize_assert( ( m_bitsRead % 32 ) == 0 || ( m_bitsRead % 32 ) == 8 || ( m_bitsRead % 32 ) == 16 || ( m_bitsRead % 32 ) == 24 );
@@ -3265,5 +3271,9 @@ inline void serialize_test()
 }
 
 #endif // #if SERIALIZE_ENABLE_TESTS
+
+#ifdef _MSC_VER
+#pragma warning( pop )
+#endif // #ifdef _MSC_VER
 
 #endif // #ifndef SERIALIZE_H
