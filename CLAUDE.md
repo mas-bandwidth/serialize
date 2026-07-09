@@ -80,8 +80,9 @@ change for previously written data.
   `return false` and require being called inside a `template <typename
   Stream>` function returning bool — documented, but surprising control flow.
   ~30 macros (`serialize_int`, `read_bits`, `write_object`, ...) land in the
-  global macro namespace despite being defined inside `namespace serialize`;
-  they will collide with yojimbo, which uses the same names.
+  global macro namespace despite being defined inside `namespace serialize`.
+  (Not a collision risk for yojimbo: yojimbo depends on serialize.h
+  directly — these are its macros.)
 - **Header hygiene leaks into consumers**: `#pragma warning(disable: 4127,
   4244)` with no push/pop ([serialize.h:112](serialize.h:112)) alters warning
   state for every MSVC translation unit that includes it, and the header pulls
