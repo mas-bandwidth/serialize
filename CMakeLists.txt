@@ -28,7 +28,10 @@ set_target_properties(serialize_test PROPERTIES OUTPUT_NAME test)
 add_executable(example example.cpp serialize.h)
 target_link_libraries(example PRIVATE serialize)
 
-foreach(target serialize_test example)
+add_executable(bench bench.cpp serialize.h)
+target_link_libraries(bench PRIVATE serialize)
+
+foreach(target serialize_test example bench)
     target_compile_definitions(${target} PRIVATE
         $<$<CONFIG:Debug>:SERIALIZE_DEBUG>
         $<$<NOT:$<CONFIG:Debug>>:SERIALIZE_RELEASE>

@@ -120,29 +120,29 @@ Done:
   buffers no longer need 4-byte alignment; `test_unaligned_writer` locks
   this in under the CI alignment sanitizer.
 
+- ~~Benchmark target~~ — [bench.cpp](bench.cpp) measures the raw bitpacker
+  and the stream/macro path (best-of-5 trials); CI prints indicative
+  numbers on every Release job.
+
 Remaining, in priority order:
 
-1. **Benchmark target.** The library's selling point is speed and there is
-   no way to measure it. A small bench.cpp (bits/sec through write and read
-   paths) gates perf-sensitive changes like the item below.
-2. **Remove the reader's round-up-to-4 allocation contract.** A partial
-   memcpy for the tail word would let exactly-sized buffers be read safely,
-   but it touches the hot refill path — benchmark-gated on the item above.
-3. **Big-endian CI coverage.** The bswap/`host_to_network` path is
+1. **Big-endian CI coverage.** The bswap/`host_to_network` path is
    completely untested — no CI platform is big-endian. A QEMU s390x job
    (docker/setup-qemu-action) would exercise it for real, and the golden
    wire-format test makes it meaningful.
-4. **CMake consumer-friendliness.** FetchContent/add_subdirectory consumers
+2. **CMake consumer-friendliness.** FetchContent/add_subdirectory consumers
    currently inherit the test/example/fuzz targets and global compile
    flags. Guard those behind `PROJECT_IS_TOP_LEVEL`, scope flags to
    targets, add a `SERIALIZE_VERSION` define plus git tags.
-5. **Smaller items:** Consider an opt-in hardened write mode (bounds-check
+3. **Smaller items:** Consider an opt-in hardened write mode (bounds-check
    writes in release, return false instead of memory corruption) — cuts
    against the trusted-writer philosophy, so it's the maintainer's call.
    (`serialize_ack_relative_internal`, formerly flagged here as a macro-less
    outlier, was removed as no longer needed.)
 
-Deliberately not doing: `-Wconversion`/`-Wshadow` cleanliness (high churn,
-near-zero payoff given the deliberate implicit-conversion style),
-modernizing the C++ (the C-ish style is a feature for this audience), or
+Deliberately not doing: changing the reader's round-up-to-4 allocation
+contract (owner decision: it is an intentional part of the design — do not
+re-propose it); `-Wconversion`/`-Wshadow` cleanliness (high churn,
+near-zero payoff given the deliberate implicit-conversion style);
+modernizing the C++ (the C-ish style is a feature for this audience); or
 any wire format change.

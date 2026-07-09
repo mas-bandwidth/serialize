@@ -29,6 +29,15 @@ On Windows the binaries are under `build\bin\Release`, and you can open the gene
 
 Debug builds define `SERIALIZE_DEBUG`, which enables asserts and extra bounds checking. Release builds define `SERIALIZE_RELEASE`.
 
+## Benchmarking
+
+A throughput benchmark for the bitpacker and the stream/macro path builds as part of the normal build:
+
+    cmake -B build && cmake --build build --config Release
+    ./build/bin/bench
+
+Only release build numbers are meaningful (the binary warns if you run a debug build). CI runs the benchmark on the release jobs for each platform — treat those numbers as indicative only, since shared runners are noisy.
+
 ## Fuzzing
 
 A libFuzzer harness lives in `fuzz.cpp`. Each input is run two ways: as hostile bytes fed to every `ReadStream` primitive, and as a source of values for a write→read round trip that traps on any mismatch. It needs clang (Apple clang doesn't ship the libFuzzer runtime, so use Linux or Homebrew LLVM on MacOS):

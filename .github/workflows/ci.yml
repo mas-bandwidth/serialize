@@ -28,6 +28,17 @@ jobs:
       - name: Test
         run: ctest --test-dir build --build-config ${{ matrix.build_type }} --output-on-failure
 
+      # indicative only: shared runners are noisy. compare trends, not absolute numbers.
+      - name: Benchmark
+        if: matrix.build_type == 'Release'
+        shell: bash
+        run: |
+          if [ -f build/bin/Release/bench.exe ]; then
+            ./build/bin/Release/bench.exe
+          else
+            ./build/bin/bench
+          fi
+
   fuzz:
     name: fuzz (libFuzzer)
     runs-on: ubuntu-24.04
