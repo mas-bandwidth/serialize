@@ -201,12 +201,10 @@ template <typename Stream> bool FuzzRead( Stream & stream, const uint8_t * ops, 
 
             case 14:
             {
-                uint16_t sequence = (uint16_t) ( param * 4096 );
-                uint16_t ack = 0;
-                if ( !serialize::serialize_ack_relative_internal( stream, sequence, ack ) )
-                {
-                    return false;
-                }
+                const int32_t max = ( param + 1 ) * 1000;               // ranges of varying width exercise bits_required
+                int32_t value = 0;
+                serialize_int( stream, value, 0, max );
+                fuzz_check( value >= 0 && value <= max );
             }
             break;
 
@@ -443,16 +441,13 @@ template <typename Stream> bool FuzzRoundTrip( Stream & stream, const uint8_t * 
 
             case 14:
             {
-                const uint16_t sequence = (uint16_t) ( param * 4096 );
-                const uint16_t expected = (uint16_t) pool.NextUint32();
-                uint16_t ack = Stream::IsWriting ? expected : 0;
-                if ( !serialize::serialize_ack_relative_internal( stream, sequence, ack ) )
-                {
-                    return false;
-                }
+                const int32_t max = ( param + 1 ) * 1000;               // ranges of varying width exercise bits_required
+                const int32_t expected = int32_t( pool.NextUint32() % uint32_t( max + 1 ) );
+                int32_t value = Stream::IsWriting ? expected : 0;
+                serialize_int( stream, value, 0, max );
                 if ( Stream::IsReading )
                 {
-                    fuzz_check( ack == expected );
+                    fuzz_check( value == expected );
                 }
             }
             break;

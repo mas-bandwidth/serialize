@@ -140,12 +140,11 @@ Remaining, in priority order:
    currently inherit the test/example/fuzz targets and global compile
    flags. Guard those behind `PROJECT_IS_TOP_LEVEL`, scope flags to
    targets, add a `SERIALIZE_VERSION` define plus git tags.
-5. **Smaller items:** `serialize_ack_relative_internal` has no macro
-   wrapper unlike every other primitive — add `serialize_ack_relative` or
-   document why it's internal-only. Consider an opt-in hardened write mode
-   (bounds-check writes in release, return false instead of memory
-   corruption) — cuts against the trusted-writer philosophy, so it's the
-   maintainer's call.
+5. **Smaller items:** Consider an opt-in hardened write mode (bounds-check
+   writes in release, return false instead of memory corruption) — cuts
+   against the trusted-writer philosophy, so it's the maintainer's call.
+   (`serialize_ack_relative_internal`, formerly flagged here as a macro-less
+   outlier, was removed as no longer needed.)
 
 Deliberately not doing: `-Wconversion`/`-Wshadow` cleanliness (high churn,
 near-zero payoff given the deliberate implicit-conversion style),

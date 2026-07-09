@@ -1858,40 +1858,6 @@ namespace serialize
             }                                                                               \
         } while (0)
 
-    template <typename Stream> bool serialize_ack_relative_internal( Stream & stream, uint16_t sequence, uint16_t & ack )
-    {
-        int ack_delta = 0;
-        bool ack_in_range = false;
-        if ( Stream::IsWriting )
-        {
-            if ( ack < sequence )
-            {
-                ack_delta = sequence - ack;
-            }
-            else
-            {
-                ack_delta = (int)sequence + 65536 - ack;
-            }
-            serialize_assert( ack_delta > 0 );
-            serialize_assert( uint16_t( sequence - ack_delta ) == ack );
-            ack_in_range = ack_delta <= 64;
-        }
-        serialize_bool( stream, ack_in_range );
-        if ( ack_in_range )
-        {
-            serialize_int( stream, ack_delta, 1, 64 );
-            if ( Stream::IsReading )
-            {
-                ack = sequence - ack_delta;
-            }
-        }
-        else
-        {
-            serialize_bits( stream, ack, 16 );
-        }
-        return true;
-    }
-
     // read macros corresponding to each serialize_*. useful when you want separate read and write functions.
 
     #define read_bits( stream, value, bits )                                                \
