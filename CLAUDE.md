@@ -13,7 +13,7 @@ Build: `cmake -B build && cmake --build build --config Release`, test with
 `ctest --test-dir build --build-config Release`. Tests live in serialize.h
 behind `SERIALIZE_ENABLE_TESTS`. CI (.github/workflows/ci.yml) builds and
 tests Debug + Release on Linux (ubuntu-24.04), macOS Apple Silicon
-(macos-15), and Windows x64 (windows-2025).
+(macos-15), and Windows x64 (windows-2025), plus an ASan+UBSan job on Linux.
 
 ## Honest assessment
 
@@ -102,6 +102,6 @@ Small, mature, and does one thing well. The reader-side safety work and the
 adversarial tests are the standout strengths. The risks are concentrated in
 the documented-but-sharp buffer contracts (unchecked writes in release, the
 round-up-to-4 read contract, writer alignment). The cheapest remaining
-high-value improvements are fixing the copied-from-yojimbo doc comments, an
-ASan/UBSan job in CI, and a libFuzzer harness over `ReadStream` — the design
-is already fuzz-friendly, so that last one is nearly free.
+high-value improvements are fixing the copied-from-yojimbo doc comments and
+a libFuzzer harness over `ReadStream` — the design is already fuzz-friendly,
+so that one is nearly free.
