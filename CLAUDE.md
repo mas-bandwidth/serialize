@@ -85,8 +85,7 @@ change for previously written data.
 - Minor: `BitWriter()` zeroing itself via `memset(this, ...)`
   ([serialize.h:361](serialize.h:361)) is fragile if a non-trivial member is
   ever added; default-constructed streams have no guard against use before
-  `Initialize()`; `test.cpp` seeds `srand` but nothing uses it; BUILDING.md
-  still points at VS2019.
+  `Initialize()`; `test.cpp` seeds `srand` but nothing uses it.
 
 ### Known limits (documented, by design)
 
@@ -107,40 +106,3 @@ fuzzing, doc drift) has been done. Fuzz coverage: a 60-second smoke on every
 push, plus a nightly 1-hour run (.github/workflows/nightly-fuzz.yml) whose
 corpus accumulates across runs via the actions cache and which uploads crash
 reproducers as artifacts on failure.
-
-## Roadmap
-
-Done:
-
-- ~~Golden wire-format test~~ — exact bytes pinned in serialize.h, checked
-  write-side and read-side on every CI platform.
-- ~~Differential round-trip fuzzing~~ — write/read asymmetry and
-  MeasureStream conservatism are fuzzed alongside the hostile-read pass.
-- ~~Writer alignment UB~~ — `BitWriter` now stores each dword with `memcpy`
-  like the reader loads them (verified identical codegen), so writer
-  buffers no longer need 4-byte alignment; `test_unaligned_writer` locks
-  this in under the CI alignment sanitizer.
-
-- ~~Benchmark target~~ — [bench.cpp](bench.cpp) measures the raw bitpacker
-  and the stream/macro path (best-of-5 trials); CI prints indicative
-  numbers on every Release job.
-
-- ~~Big-endian CI coverage~~ — s390x jobs (Debug + Release) cross-compile
-  with GCC and run the full test suite under QEMU, exercising the
-  bswap/`host_to_network` path; the golden wire-format test proves the
-  wire bytes are identical to the little-endian platforms.
-- ~~CMake consumer-friendliness~~ — the `serialize::serialize` INTERFACE
-  target carries only the include path; dev targets and flags are gated
-  behind `SERIALIZE_BUILD_TESTS` (defaults on only when top-level);
-  install rules + package config support `find_package(serialize CONFIG)`;
-  `SERIALIZE_VERSION` macros in the header track the release tags
-  (v1.2.5 was current when this landed; the header now says 1.3.0).
-
-The roadmap is done. Nothing is currently planned.
-
-Deliberately not doing: changing the reader's round-up-to-4 allocation
-contract (owner decision: it is an intentional part of the design — do not
-re-propose it); `-Wconversion`/`-Wshadow` cleanliness (high churn,
-near-zero payoff given the deliberate implicit-conversion style);
-modernizing the C++ (the C-ish style is a feature for this audience); or
-any wire format change.

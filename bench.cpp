@@ -157,6 +157,7 @@ struct BenchPacket
 };
 
 const int StreamNumPackets = 1000000;
+const int NumVariants = 16;
 
 void bench_stream()
 {
@@ -166,23 +167,37 @@ void bench_stream()
     BenchPacket packet;
     packet.Init();
 
+    // the serialized data must vary per iteration, otherwise the compiler can prove the loop
+    // body is pure and delete the serialization work entirely (gcc does exactly this)
+
+    uint8_t variant_buffers[NumVariants][256];
+    int bytes_per_packet = 0;
+    for ( int k = 0; k < NumVariants; k++ )
+    {
+        memset( variant_buffers[k], 0, sizeof( variant_buffers[k] ) );
+        packet.b = 12345 + k;
+        serialize::WriteStream stream( variant_buffers[k], (int) sizeof( variant_buffers[k] ) );
+        if ( !packet.Serialize( stream ) )
+            exit( 1 );
+        stream.Flush();
+        bytes_per_packet = stream.GetBytesProcessed();
+    }
+
     double best_write = 1e30;
     double best_read = 1e30;
     double best_measure = 1e30;
-
-    int bytes_per_packet = 0;
 
     for ( int trial = 0; trial < NumTrials; trial++ )
     {
         double start = time_now();
         for ( int i = 0; i < StreamNumPackets; i++ )
         {
+            packet.b = i & 65535;
             serialize::WriteStream stream( buffer, (int) sizeof( buffer ) );
             if ( !packet.Serialize( stream ) )
                 exit( 1 );
             stream.Flush();
-            bytes_per_packet = stream.GetBytesProcessed();
-            g_sink = g_sink + (uint64_t) bytes_per_packet;
+            g_sink = g_sink + (uint64_t) stream.GetBytesProcessed();
         }
         double time = time_now() - start;
         if ( time < best_write )
@@ -191,7 +206,7 @@ void bench_stream()
         start = time_now();
         for ( int i = 0; i < StreamNumPackets; i++ )
         {
-            serialize::ReadStream stream( buffer, bytes_per_packet );
+            serialize::ReadStream stream( variant_buffers[i & ( NumVariants - 1 )], bytes_per_packet );
             BenchPacket read_packet;
             if ( !read_packet.Serialize( stream ) )
                 exit( 1 );
@@ -201,9 +216,12 @@ void bench_stream()
         if ( time < best_read )
             best_read = time;
 
+        // note: measure folds to near-constants at compile time by design, so this mostly
+        // measures loop overhead. that measure is almost free is the property worth tracking.
         start = time_now();
         for ( int i = 0; i < StreamNumPackets; i++ )
         {
+            packet.b = i & 65535;
             serialize::MeasureStream stream;
             if ( !packet.Serialize( stream ) )
                 exit( 1 );
