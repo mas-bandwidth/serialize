@@ -71,13 +71,6 @@ change for previously written data.
 
 ### Sharp edges and weaknesses
 
-- **No runtime bounds checking on the write path in release builds.**
-  `BitWriter::WriteBits` ([serialize.h:405](serialize.h:405)) guards with
-  asserts only; in release, writing past the end of the buffer is silent
-  memory corruption. This is the intended trust model (writer is trusted,
-  reader is not), but it's the single biggest way for a user to hurt
-  themselves. Buffers must be sized conservatively or pre-measured with
-  `MeasureStream`.
 - **BitReader may read up to 3 bytes past a non-multiple-of-4 buffer.** The
   constructor doc says the allocation must round up to 4 bytes
   ([serialize.h:620](serialize.h:620)), but a caller who hands it an exactly
@@ -100,6 +93,13 @@ change for previously written data.
 
 ### Known limits (documented, by design)
 
+- **The trust model**: debug asserts verify correctness, and in release
+  correctness is the caller's responsibility — there is no runtime bounds
+  checking on the write path (size buffers conservatively or pre-measure
+  with `MeasureStream`). The one exception is network input: the read path
+  validates at runtime in release and drops invalid data, because asserts
+  are not enough at the trust boundary. Do not propose hardened/checked
+  write modes.
 - Max buffer 256 MB (bit counts held in signed 32-bit ints).
 - `serialize_int_relative` requires strictly increasing values.
 - `wstring` wire format is 32 bits per character — portable across 2/4-byte
@@ -109,11 +109,11 @@ change for previously written data.
 ### Bottom line
 
 Small, mature, and does one thing well. The reader-side safety work and the
-adversarial tests are the standout strengths. The risks are concentrated in
-the documented-but-sharp buffer contracts (unchecked writes in release, the
-round-up-to-4 read contract). Those are inherent to the
-design and documented; everything cheap to fix around them (CI, sanitizers,
-fuzzing, doc drift) has been done. Fuzz coverage: a 60-second smoke on every
+adversarial tests are the standout strengths. The buffer contracts
+(unchecked writes in release, the round-up-to-4 read contract) are
+intentional design — debug asserts plus caller responsibility — and the
+place for a new user to read the docs carefully; everything cheap to fix
+around them (CI, sanitizers, fuzzing, doc drift) has been done. Fuzz coverage: a 60-second smoke on every
 push, plus a nightly 1-hour run (.github/workflows/nightly-fuzz.yml) whose
 corpus accumulates across runs via the actions cache and which uploads crash
 reproducers as artifacts on failure.
