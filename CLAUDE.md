@@ -124,10 +124,11 @@ reproducers as artifacts on failure.
   (next after v1.2.5, covering the CMake switch, the
   `serialize_ack_relative_internal` removal, and the writer alignment
   guarantee). Cutting the tag/release is the owner's call.
-- **GCC stream benchmark numbers are inflated.** On the Linux CI jobs
-  (GCC), `bench.cpp`'s stream write reports ~134 GB/s: even with the packet
-  varying per iteration, GCC dead-store-eliminates the output buffer writes
-  because nothing reads the buffer inside the loop. clang and MSVC numbers
-  are honest, and the raw bitpacker numbers are honest on all platforms.
-  Fix idea: make the buffer escape each iteration, e.g. fold one buffer
-  byte into the volatile sink after each serialize.
+- ~~GCC stream benchmark numbers are inflated~~ — fixed, in two parts:
+  a `bench_escape` barrier (empty asm + memory clobber) stops dead-store
+  elimination of the output buffer, and an LCG varies most packet fields
+  per iteration so GCC can no longer constant-fold the loop-invariant
+  fields' scratch words at compile time. GCC still reports notably higher
+  stream numbers than MSVC (~92M vs ~33M packets/s) — that residual gap is
+  legitimate codegen (static field offsets merge adjacent writes), not
+  elimination.
