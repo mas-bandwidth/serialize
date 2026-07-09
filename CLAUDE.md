@@ -28,11 +28,22 @@ change for previously written data.
 
 ### Verified state (July 2026)
 
-- All tests pass in both debug and release builds.
-- All tests pass under ASan + UBSan (clang, `-fsanitize=address,undefined`).
+- All tests pass in Debug and Release on Linux x64, macOS Apple Silicon,
+  Windows x64, and big-endian s390x (GCC cross-compile under QEMU), on
+  every push.
+- The golden wire-format test proves all four platforms — including big
+  endian — produce and decode byte-identical wire data.
+- All tests pass under ASan + UBSan including the alignment sanitizer.
+- Fuzzing (hostile read + differential write→read round trip): 60 seconds
+  per push, 1 hour nightly with a cumulative corpus. No findings to date.
 - Compiles clean with `-Wall -Wextra -Wpedantic`. `-Wconversion -Wshadow`
   produces ~80 warnings — implicit narrowing is a deliberate style here
   (the header disables MSVC C4244 for the same reason).
+- Header and CMake version is 1.3.0 (`SERIALIZE_VERSION`); the last pushed
+  tag is v1.2.5.
+- Throughput ([bench.cpp](bench.cpp), Release, Apple Silicon reference):
+  bitpacker write ~4.6 GB/s, read ~2.1 GB/s; stream write ~25M packets/s,
+  read ~43M packets/s.
 
 ### What's genuinely good
 
@@ -106,3 +117,17 @@ fuzzing, doc drift) has been done. Fuzz coverage: a 60-second smoke on every
 push, plus a nightly 1-hour run (.github/workflows/nightly-fuzz.yml) whose
 corpus accumulates across runs via the actions cache and which uploads crash
 reproducers as artifacts on failure.
+
+### Open items
+
+- **The v1.3.0 tag is not pushed.** The header and CMake already say 1.3.0
+  (next after v1.2.5, covering the CMake switch, the
+  `serialize_ack_relative_internal` removal, and the writer alignment
+  guarantee). Cutting the tag/release is the owner's call.
+- **GCC stream benchmark numbers are inflated.** On the Linux CI jobs
+  (GCC), `bench.cpp`'s stream write reports ~134 GB/s: even with the packet
+  varying per iteration, GCC dead-store-eliminates the output buffer writes
+  because nothing reads the buffer inside the loop. clang and MSVC numbers
+  are honest, and the raw bitpacker numbers are honest on all platforms.
+  Fix idea: make the buffer escape each iteration, e.g. fold one buffer
+  byte into the volatile sink after each serialize.
