@@ -237,6 +237,29 @@ namespace serialize
     }
 
     /**
+        Calculates the number of bits required to serialize a 64 bit integer in range [min,max].
+        @param min The minimum value.
+        @param max The maximum value.
+        @returns The number of bits required to serialize the integer in [0,64].
+     */
+
+    inline int bits_required64( uint64_t min, uint64_t max )
+    {
+        if ( min == max )
+        {
+            return 0;
+        }
+        // subtract in the unsigned domain: max - min overflows signed arithmetic when the range is wider than 2^63
+        const uint64_t diff = max - min;
+#ifdef __GNUC__
+        return 64 - __builtin_clzll( diff );
+#else // #ifdef __GNUC__
+        const uint32_t high = uint32_t( diff >> 32 );
+        return high ? ( 32 + bits_required( 0, high ) ) : bits_required( 0, uint32_t( diff ) );
+#endif // #ifdef __GNUC__
+    }
+
+    /**
         Reverse the order of bytes in a 64 bit integer.
         @param value The input value.
         @returns The input value with the byte order reversed.
@@ -918,6 +941,35 @@ namespace serialize
         }
 
         /**
+            Serialize a 64 bit integer (write).
+            @param value The integer value in [min,max].
+            @param min The minimum value.
+            @param max The maximum value.
+            @returns Always returns true. All checking is performed by debug asserts only on write.
+         */
+
+        bool SerializeInteger64( int64_t value, int64_t min, int64_t max )
+        {
+            serialize_assert( min < max );
+            serialize_assert( value >= min );
+            serialize_assert( value <= max );
+            const int bits = bits_required64( uint64_t(min), uint64_t(max) );
+            // subtract in the unsigned domain: value - min overflows signed arithmetic when the range is wider than 2^63
+            const uint64_t unsigned_value = uint64_t(value) - uint64_t(min);
+            if ( bits <= 32 )
+            {
+                m_writer.WriteBits( uint32_t( unsigned_value ), bits );
+            }
+            else
+            {
+                // low dword first, then the high remainder: same convention as serialize_bits and serialize_uint64
+                m_writer.WriteBits( uint32_t( unsigned_value & 0xFFFFFFFF ), 32 );
+                m_writer.WriteBits( uint32_t( unsigned_value >> 32 ), bits - 32 );
+            }
+            return true;
+        }
+
+        /**
             Serialize a number of bits (write).
             @param value The unsigned integer value to serialize. Must be in range [0,(1<<bits)-1].
             @param bits The number of bits to write in [1,32].
@@ -1073,6 +1125,39 @@ namespace serialize
         }
 
         /**
+            Serialize a 64 bit integer (read).
+            @param value The integer value read is stored here. It is guaranteed to be in [min,max] if this function succeeds.
+            @param min The minimum allowed value.
+            @param max The maximum allowed value.
+            @returns Returns true if the serialize succeeded and the value is in the correct range. False otherwise.
+         */
+
+        bool SerializeInteger64( int64_t & value, int64_t min, int64_t max )
+        {
+            serialize_assert( min < max );
+            const int bits = bits_required64( uint64_t(min), uint64_t(max) );
+            if ( m_reader.WouldReadPastEnd( bits ) )
+                return false;
+            uint64_t unsigned_value;
+            if ( bits <= 32 )
+            {
+                unsigned_value = m_reader.ReadBits( bits );
+            }
+            else
+            {
+                // low dword first, then the high remainder: same convention as serialize_bits and serialize_uint64
+                const uint32_t lo = m_reader.ReadBits( 32 );
+                const uint32_t hi = m_reader.ReadBits( bits - 32 );
+                unsigned_value = ( uint64_t(hi) << 32 ) | lo;
+            }
+            if ( unsigned_value > uint64_t(max) - uint64_t(min) )
+                return false;
+            // add in the unsigned domain: unsigned_value + min overflows signed arithmetic when the range is wider than 2^63
+            value = int64_t( unsigned_value + uint64_t(min) );
+            return true;
+        }
+
+        /**
             Serialize a number of bits (read).
             @param value The integer value read is stored here. Will be in range [0,(1<<bits)-1].
             @param bits The number of bits to read in [1,32].
@@ -1201,6 +1286,25 @@ namespace serialize
         }
 
         /**
+            Serialize a 64 bit integer (measure).
+            @param value The integer value to write. Not actually used or checked.
+            @param min The minimum value.
+            @param max The maximum value.
+            @returns Always returns true. All checking is performed by debug asserts only on measure.
+         */
+
+        bool SerializeInteger64( int64_t value, int64_t min, int64_t max )
+        {
+            (void) value;
+            serialize_assert( min < max );
+            serialize_assert( value >= min );
+            serialize_assert( value <= max );
+            const int bits = bits_required64( uint64_t(min), uint64_t(max) );
+            m_bitsWritten += bits;
+            return true;
+        }
+
+        /**
             Serialize a number of bits (write).
             @param value The unsigned integer value to serialize. Not actually used or checked.
             @param bits The number of bits to write in [1,32].
@@ -1309,6 +1413,44 @@ namespace serialize
             if ( Stream::IsReading )                                    \
             {                                                           \
                 value = int32_value;                                    \
+                if ( int64_t(value) < int64_t(min) ||                   \
+                     int64_t(value) > int64_t(max) )                    \
+                {                                                       \
+                    return false;                                       \
+                }                                                       \
+            }                                                           \
+        } while (0)
+
+    /**
+        Serialize a 64 bit integer value (read/write/measure).
+        This is a helper macro to make writing unified serialize functions easier.
+        The full 64 bit range is supported, and the minimal number of bits for [min,max] is used on the wire.
+        Serialize macros returns false on error so we don't need to use exceptions for error handling on read. This is an important safety measure because packet data comes from the network and may be malicious.
+        IMPORTANT: This macro must be called inside a templated serialize function with template \<typename Stream\>. The serialize method must have a bool return value.
+        @param stream The stream object. May be a read, write or measure stream.
+        @param value The 64 bit integer value to serialize in [min,max].
+        @param min The minimum value.
+        @param max The maximum value.
+     */
+
+    #define serialize_int64( stream, value, min, max )                  \
+        do                                                              \
+        {                                                               \
+            serialize_assert( int64_t(min) < int64_t(max) );            \
+            int64_t int64_value = 0;                                    \
+            if ( Stream::IsWriting )                                    \
+            {                                                           \
+                serialize_assert( int64_t(value) >= int64_t(min) );     \
+                serialize_assert( int64_t(value) <= int64_t(max) );     \
+                int64_value = (int64_t) ( value );                      \
+            }                                                           \
+            if ( !stream.SerializeInteger64( int64_value, min, max ) )  \
+            {                                                           \
+                return false;                                           \
+            }                                                           \
+            if ( Stream::IsReading )                                    \
+            {                                                           \
+                value = int64_value;                                    \
                 if ( int64_t(value) < int64_t(min) ||                   \
                      int64_t(value) > int64_t(max) )                    \
                 {                                                       \
@@ -1913,6 +2055,22 @@ namespace serialize
             }                                                                               \
         } while (0)
 
+    #define read_int64( stream, value, min, max )                                           \
+        do                                                                                  \
+        {                                                                                   \
+            serialize_assert( int64_t(min) < int64_t(max) );                                \
+            int64_t int64_value = 0;                                                        \
+            if ( !stream.SerializeInteger64( int64_value, min, max ) )                      \
+            {                                                                               \
+                return false;                                                               \
+            }                                                                               \
+            value = int64_value;                                                            \
+            if ( (value) < (min) || (value) > (max) )                                       \
+            {                                                                               \
+                return false;                                                               \
+            }                                                                               \
+        } while (0)
+
     #define read_bool( stream, value )      read_bits( stream, value, 1 )
     #define read_uint8( stream, value )     read_bits( stream, value, 8 )
     #define read_uint16( stream, value )    read_bits( stream, value, 16 )
@@ -1984,6 +2142,16 @@ namespace serialize
             serialize_assert( (int32_t) ( value ) <= (int32_t) ( max ) );                   \
             int32_t int32_value = (int32_t) ( value );                                      \
             stream.SerializeInteger( int32_value, min, max );                               \
+        } while (0)
+
+    #define write_int64( stream, value, min, max )                                          \
+        do                                                                                  \
+        {                                                                                   \
+            serialize_assert( int64_t( min ) < int64_t( max ) );                            \
+            serialize_assert( int64_t( value ) >= int64_t( min ) );                         \
+            serialize_assert( int64_t( value ) <= int64_t( max ) );                         \
+            int64_t int64_value = (int64_t) ( value );                                      \
+            stream.SerializeInteger64( int64_value, min, max );                             \
         } while (0)
 
     #define write_bool( stream, value )         write_bits( stream, value, 1 )
@@ -2215,6 +2383,19 @@ inline void test_bits_required()
     serialize_check( serialize::bits_required( 0, 4294967295 ) == 32 );
 }
 
+inline void test_bits_required64()
+{
+    serialize_check( serialize::bits_required64( 0, 0 ) == 0 );
+    serialize_check( serialize::bits_required64( 0, 1 ) == 1 );
+    serialize_check( serialize::bits_required64( 0, 255 ) == 8 );
+    serialize_check( serialize::bits_required64( 0, 4294967295ULL ) == 32 );
+    serialize_check( serialize::bits_required64( 0, 4294967296ULL ) == 33 );
+    serialize_check( serialize::bits_required64( 0, ( 1ULL << 40 ) ) == 41 );
+    serialize_check( serialize::bits_required64( 0, 0xFFFFFFFFFFFFFFFFULL ) == 64 );
+    serialize_check( serialize::bits_required64( uint64_t(INT64_MIN), uint64_t(INT64_MAX) ) == 64 );
+    serialize_check( serialize::bits_required64( uint64_t(-5000000000LL), uint64_t(+5000000000LL) ) == 34 );
+}
+
 inline void test_zigzag()
 {
     serialize_check( serialize::signed_to_unsigned( 0 ) == 0 );
@@ -2267,6 +2448,8 @@ struct TestData
     uint32_t uint32_value;
     uint64_t uint64_value;
     int int_relative;
+    int64_t int64_full;
+    int64_t int64_range;
     uint8_t bytes[17];
     char string[256];
     wchar_t wstring[256];
@@ -2304,6 +2487,8 @@ struct TestObject
         data.uint32_value = 0x12345678;
         data.uint64_value = 0x1234567898765432L;
         data.int_relative = 5;
+        data.int64_full = -123456789012345LL;
+        data.int64_range = 4123456789LL;
 
         for ( int i = 0; i < (int) sizeof( data.bytes ); ++i )
             data.bytes[i] = (uint8_t) ( i + 5 ) * 13;
@@ -2346,6 +2531,9 @@ struct TestObject
         serialize_uint64( stream, data.uint64_value );
 
         serialize_int_relative( stream, data.a, data.int_relative );
+
+        serialize_int64( stream, data.int64_full, INT64_MIN, INT64_MAX );
+        serialize_int64( stream, data.int64_range, -5000000000LL, +5000000000LL );
 
         serialize_bytes( stream, data.bytes, sizeof( data.bytes ) );
 
@@ -2445,6 +2633,12 @@ bool ReadFunction( serialize::ReadStream & readStream )
     }
 
     {
+        int64_t value;
+        read_int64( readStream, value, -60000000000LL, 60000000000LL );
+        serialize_check( value == -50000000001LL );
+    }
+
+    {
         float value;
         read_float( readStream, value );
         serialize_check( value == 100.0f );
@@ -2535,6 +2729,7 @@ inline void test_read_write()
         write_uint32( writeStream, 0xFFFFFFFF );
         write_uint64( writeStream, 0xFFFFFFFFFFFFFFFFULL );
         write_int( writeStream, 55, 10, 90 );
+        write_int64( writeStream, -50000000001LL, -60000000000LL, 60000000000LL );
         write_float( writeStream, 100.0f );
         write_double( writeStream, 1000000000.0f );
 
@@ -2622,6 +2817,94 @@ inline void test_serialize_integer_full_range()
         int32_t value = 0;
         serialize_check( readStream.SerializeInteger( value, -2000000000, 2000000000 ) == true );
         serialize_check( value == 1000000000 );
+    }
+}
+
+inline void test_serialize_int64_full_range()
+{
+    // ranges wider than 2^63 overflow if [min,max] arithmetic is done signed (undefined behavior)
+    {
+        const int64_t values[] = { INT64_MIN, INT64_MIN + 1, -1, 0, +1, INT64_MAX - 1, INT64_MAX };
+
+        for ( int i = 0; i < (int) ( sizeof(values) / sizeof(values[0]) ); i++ )
+        {
+            uint8_t buffer[16] = { 0 };
+
+            serialize::WriteStream writeStream( buffer, sizeof(buffer) );
+            serialize_check( writeStream.SerializeInteger64( values[i], INT64_MIN, INT64_MAX ) == true );
+            writeStream.Flush();
+
+            serialize::ReadStream readStream( buffer, sizeof(buffer) );
+            int64_t value = 0;
+            serialize_check( readStream.SerializeInteger64( value, INT64_MIN, INT64_MAX ) == true );
+            serialize_check( value == values[i] );
+        }
+    }
+
+    // ranges spanning more than 32 bits use the two dword path
+    {
+        const int64_t min = -5000000000LL;
+        const int64_t max = +5000000000LL;
+        const int64_t values[] = { min, min + 1, -1, 0, +1, 4123456789LL, max - 1, max };
+
+        for ( int i = 0; i < (int) ( sizeof(values) / sizeof(values[0]) ); i++ )
+        {
+            uint8_t buffer[16] = { 0 };
+
+            serialize::WriteStream writeStream( buffer, sizeof(buffer) );
+            serialize_check( writeStream.SerializeInteger64( values[i], min, max ) == true );
+            writeStream.Flush();
+
+            serialize::ReadStream readStream( buffer, sizeof(buffer) );
+            int64_t value = 0;
+            serialize_check( readStream.SerializeInteger64( value, min, max ) == true );
+            serialize_check( value == values[i] );
+        }
+    }
+
+    // small ranges use the single dword path and the minimal number of bits
+    {
+        uint8_t buffer[8] = { 0 };
+
+        serialize::WriteStream writeStream( buffer, sizeof(buffer) );
+        serialize_check( writeStream.SerializeInteger64( 55, -100, +100 ) == true );
+        writeStream.Flush();
+
+        serialize_check( writeStream.GetBitsProcessed() == 8 );        // bits_required64(-100,100) == 8, same as the 32 bit path
+
+        serialize::ReadStream readStream( buffer, sizeof(buffer) );
+        int64_t value = 0;
+        serialize_check( readStream.SerializeInteger64( value, -100, +100 ) == true );
+        serialize_check( value == 55 );
+    }
+}
+
+inline void test_serialize_int64_validation()
+{
+    // a malicious packet can smuggle an out of range value into the bit headroom of the two dword path. reads must reject it.
+    {
+        uint8_t buffer[16] = { 0 };
+
+        serialize::WriteStream writeStream( buffer, sizeof(buffer) );
+        const uint64_t out_of_range = ( 1ULL << 34 ) + 5;               // range [0, 2^34] is 35 bits, so values above 2^34 fit in the headroom
+        uint32_t lo = uint32_t( out_of_range & 0xFFFFFFFF );
+        uint32_t hi = uint32_t( out_of_range >> 32 );
+        writeStream.SerializeBits( lo, 32 );
+        writeStream.SerializeBits( hi, 3 );
+        writeStream.Flush();
+
+        serialize::ReadStream readStream( buffer, sizeof(buffer) );
+        int64_t value = 0;
+        serialize_check( readStream.SerializeInteger64( value, 0, int64_t( 1ULL << 34 ) ) == false );
+    }
+
+    // reads past the end of the buffer must fail cleanly
+    {
+        uint8_t buffer[4] = { 0 };
+
+        serialize::ReadStream readStream( buffer, sizeof(buffer) );
+        int64_t value = 0;
+        serialize_check( readStream.SerializeInteger64( value, INT64_MIN, INT64_MAX ) == false );
     }
 }
 
@@ -2965,11 +3248,14 @@ inline void serialize_test()
         SERIALIZE_RUN_TEST( test_endian );
         SERIALIZE_RUN_TEST( test_bitpacker );
         SERIALIZE_RUN_TEST( test_bits_required );
+        SERIALIZE_RUN_TEST( test_bits_required64 );
         SERIALIZE_RUN_TEST( test_zigzag );
         SERIALIZE_RUN_TEST( test_serialize );
         SERIALIZE_RUN_TEST( test_read_write );
         SERIALIZE_RUN_TEST( test_serialize_integer_validation );
         SERIALIZE_RUN_TEST( test_serialize_integer_full_range );
+        SERIALIZE_RUN_TEST( test_serialize_int64_full_range );
+        SERIALIZE_RUN_TEST( test_serialize_int64_validation );
         SERIALIZE_RUN_TEST( test_serialize_bytes_validation );
         SERIALIZE_RUN_TEST( test_int_relative_validation );
         SERIALIZE_RUN_TEST( test_compressed_float_validation );

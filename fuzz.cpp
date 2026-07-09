@@ -126,6 +126,12 @@ template <typename Stream> bool FuzzRead( Stream & stream, const uint8_t * ops, 
             {
                 int32_t value = 0;
                 serialize_int( stream, value, INT32_MIN, INT32_MAX );
+                int64_t value64 = 0;
+                serialize_int64( stream, value64, INT64_MIN, INT64_MAX );
+                const int64_t bound = int64_t( param + 1 ) << 35;               // spans of varying width exercise bits_required64
+                int64_t ranged64 = 0;
+                serialize_int64( stream, ranged64, -bound, +bound );
+                fuzz_check( ranged64 >= -bound && ranged64 <= +bound );
             }
             break;
 
@@ -272,6 +278,24 @@ template <typename Stream> bool FuzzRoundTrip( Stream & stream, const uint8_t * 
                 if ( Stream::IsReading )
                 {
                     fuzz_check( value == expected );
+                }
+
+                const int64_t expected64 = (int64_t) pool.NextUint64();
+                int64_t value64 = Stream::IsWriting ? expected64 : 0;
+                serialize_int64( stream, value64, INT64_MIN, INT64_MAX );
+                if ( Stream::IsReading )
+                {
+                    fuzz_check( value64 == expected64 );
+                }
+
+                const int64_t bound = int64_t( param + 1 ) << 35;               // spans of varying width exercise bits_required64
+                const uint64_t span = uint64_t( bound ) * 2 + 1;
+                const int64_t expected_ranged = -bound + int64_t( pool.NextUint64() % span );
+                int64_t ranged64 = Stream::IsWriting ? expected_ranged : 0;
+                serialize_int64( stream, ranged64, -bound, +bound );
+                if ( Stream::IsReading )
+                {
+                    fuzz_check( ranged64 == expected_ranged );
                 }
             }
             break;
