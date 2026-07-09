@@ -15,7 +15,13 @@ behind `SERIALIZE_ENABLE_TESTS`. CI (.github/workflows/ci.yml) builds and
 tests Debug + Release on Linux (ubuntu-24.04), macOS Apple Silicon
 (macos-15), and Windows x64 (windows-2025), plus ASan+UBSan and libFuzzer
 jobs on Linux. The fuzz harness ([fuzz.cpp](fuzz.cpp), clang only, built via
-`-DSERIALIZE_FUZZ=ON`) drives all ReadStream primitives with hostile bytes.
+`-DSERIALIZE_FUZZ=ON`) runs two passes per input: a hostile read of
+arbitrary bytes through every ReadStream primitive, and a differential
+write→read round trip that traps on any write/read asymmetry (and checks
+MeasureStream never under-measures). A golden wire-format test
+(`test_golden_wire_format` in serialize.h) pins the exact bytes the
+serializer produces; if it fails, the wire format changed — a breaking
+change for previously written data.
 
 ## Honest assessment
 
@@ -104,3 +110,44 @@ fuzzing, doc drift) has been done. Fuzz coverage: a 60-second smoke on every
 push, plus a nightly 1-hour run (.github/workflows/nightly-fuzz.yml) whose
 corpus accumulates across runs via the actions cache and which uploads crash
 reproducers as artifacts on failure.
+
+## Roadmap
+
+Done:
+
+- ~~Golden wire-format test~~ — exact bytes pinned in serialize.h, checked
+  write-side and read-side on every CI platform.
+- ~~Differential round-trip fuzzing~~ — write/read asymmetry and
+  MeasureStream conservatism are fuzzed alongside the hostile-read pass.
+
+Remaining, in priority order:
+
+1. **Kill the writer-alignment UB for free.** `BitWriter` stores words
+   through `uint32_t*` directly while the reader uses `memcpy`; a 4-byte
+   memcpy compiles to the same store on all supported platforms, so
+   switching removes the writer's 4-byte-alignment contract at zero cost.
+   The same idea could remove the reader's round-up-to-4 allocation
+   contract (partial memcpy for the tail word), but that touches the hot
+   refill path — benchmark-gated, see next item.
+2. **Benchmark target.** The library's selling point is speed and there is
+   no way to measure it. A small bench.cpp (bits/sec through write and read
+   paths) gates perf-sensitive changes like the item above.
+3. **Big-endian CI coverage.** The bswap/`host_to_network` path is
+   completely untested — no CI platform is big-endian. A QEMU s390x job
+   (docker/setup-qemu-action) would exercise it for real, and the golden
+   wire-format test makes it meaningful.
+4. **CMake consumer-friendliness.** FetchContent/add_subdirectory consumers
+   currently inherit the test/example/fuzz targets and global compile
+   flags. Guard those behind `PROJECT_IS_TOP_LEVEL`, scope flags to
+   targets, add a `SERIALIZE_VERSION` define plus git tags.
+5. **Smaller items:** `serialize_ack_relative_internal` has no macro
+   wrapper unlike every other primitive — add `serialize_ack_relative` or
+   document why it's internal-only. Consider an opt-in hardened write mode
+   (bounds-check writes in release, return false instead of memory
+   corruption) — cuts against the trusted-writer philosophy, so it's the
+   maintainer's call.
+
+Deliberately not doing: `-Wconversion`/`-Wshadow` cleanliness (high churn,
+near-zero payoff given the deliberate implicit-conversion style),
+modernizing the C++ (the C-ish style is a feature for this audience), or
+any wire format change.

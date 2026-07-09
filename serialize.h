@@ -2794,6 +2794,146 @@ inline void test_compressed_float_validation()
     }
 }
 
+// Golden wire format test. The exact bytes produced by the serializer are pinned down here and must never change.
+// If this test fails, the wire format has changed and previously written data no longer decodes: a breaking change.
+// The values below are chosen so every platform quantizes identically (see the compressed float: 5.0 in [0,10]
+// normalizes to exactly 0.5, so fp contraction differences between compilers cannot shift the quantized integer).
+
+struct GoldenWireData
+{
+    uint32_t bits4;
+    uint32_t bits11;
+    uint32_t bits24;
+    uint32_t bits32;
+    int32_t int_small;
+    int32_t int_full;
+    bool flag;
+    float float_value;
+    float compressed_float_value;
+    double double_value;
+    uint8_t uint8_value;
+    uint16_t uint16_value;
+    uint32_t uint32_value;
+    uint64_t uint64_value;
+    int relative_near;
+    int relative_far;
+    uint8_t bytes[7];
+    char string[16];
+    wchar_t wstring[8];
+};
+
+inline void GoldenWireInit( GoldenWireData & data )
+{
+    memset( (void*) &data, 0, sizeof( GoldenWireData ) );
+    data.bits4 = 13;
+    data.bits11 = 1445;
+    data.bits24 = 11259375;
+    data.bits32 = 0xDEADBEEF;
+    data.int_small = -37;
+    data.int_full = -123456789;
+    data.flag = true;
+    data.float_value = 3.1415926f;
+    data.compressed_float_value = 5.0f;
+    data.double_value = 1.0 / 3.0;
+    data.uint8_value = 0x7F;
+    data.uint16_value = 0x1234;
+    data.uint32_value = 0x12345678;
+    data.uint64_value = 0x123456789ABCDEF0ULL;
+    data.relative_near = 101;                   // difference of 1 from the base: exercises the one bit branch
+    data.relative_far = 2100;                   // difference of 2000 from the base: exercises the twelve bit bucket
+    const uint8_t golden_byte_data[7] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0x01 };
+    memcpy( data.bytes, golden_byte_data, sizeof( golden_byte_data ) );
+    serialize_copy_string( data.string, "golden", sizeof( data.string ) );
+    // built from explicit code points so the source file encoding can never change the golden bytes
+    const wchar_t golden_wide_string[4] = { 0x043C, 0x0438, 0x0440, 0 };            // cyrillic, BMP only
+    serialize_copy_wstring( data.wstring, golden_wide_string, sizeof( data.wstring ) / sizeof( wchar_t ) );
+}
+
+template <typename Stream> bool GoldenWireSerialize( Stream & stream, GoldenWireData & data )
+{
+    const int relative_base = 100;
+    serialize_bits( stream, data.bits4, 4 );
+    serialize_bits( stream, data.bits11, 11 );
+    serialize_bits( stream, data.bits24, 24 );
+    serialize_bits( stream, data.bits32, 32 );
+    serialize_int( stream, data.int_small, -100, +100 );
+    serialize_int( stream, data.int_full, INT32_MIN, INT32_MAX );
+    serialize_bool( stream, data.flag );
+    serialize_float( stream, data.float_value );
+    serialize_compressed_float( stream, data.compressed_float_value, 0.0f, 10.0f, 0.01f );
+    serialize_double( stream, data.double_value );
+    serialize_uint8( stream, data.uint8_value );
+    serialize_uint16( stream, data.uint16_value );
+    serialize_uint32( stream, data.uint32_value );
+    serialize_uint64( stream, data.uint64_value );
+    serialize_int_relative( stream, relative_base, data.relative_near );
+    serialize_int_relative( stream, relative_base, data.relative_far );
+    serialize_align( stream );
+    serialize_bytes( stream, data.bytes, (int) sizeof( data.bytes ) );
+    serialize_string( stream, data.string, (int) sizeof( data.string ) );
+    serialize_wstring( stream, data.wstring, (int) ( sizeof( data.wstring ) / sizeof( wchar_t ) ) );
+    return true;
+}
+
+static const uint8_t golden_wire_bytes[] =
+{
+    0x5D, 0xDA, 0xF7, 0xE6, 0xD5, 0x77, 0xDF, 0x56, 0xEF, 0x9F, 0x75, 0x19,
+    0x52, 0xBC, 0xDA, 0x0F, 0x49, 0x40, 0xF4, 0x55, 0x55, 0x55, 0x55, 0x55,
+    0x55, 0x55, 0xFF, 0xFC, 0xD1, 0x48, 0xE0, 0x59, 0xD1, 0x48, 0xC0, 0x7B,
+    0xF3, 0x6A, 0xE2, 0x59, 0xD1, 0x48, 0x84, 0xB7, 0x06, 0xDE, 0xAD, 0xBE,
+    0xEF, 0xCA, 0xFE, 0x01, 0x06, 0x67, 0x6F, 0x6C, 0x64, 0x65, 0x6E, 0xE3,
+    0x21, 0x00, 0x00, 0xC0, 0x21, 0x00, 0x00, 0x00, 0x22, 0x00, 0x00, 0x00
+};
+
+inline void test_golden_wire_format()
+{
+    // write side: serializing the golden values must produce exactly the golden bytes
+    {
+        uint8_t buffer[256];
+        memset( buffer, 0, sizeof( buffer ) );
+        serialize::WriteStream stream( buffer, (int) sizeof( buffer ) );
+        GoldenWireData data;
+        GoldenWireInit( data );
+        serialize_check( GoldenWireSerialize( stream, data ) == true );
+        stream.Flush();
+        serialize_check( stream.GetBytesProcessed() == (int) sizeof( golden_wire_bytes ) );
+        serialize_check( memcmp( buffer, golden_wire_bytes, sizeof( golden_wire_bytes ) ) == 0 );
+    }
+
+    // read side: the golden bytes must decode to the expected values, on every platform, forever
+    {
+        uint8_t buffer[256];
+        memset( buffer, 0, sizeof( buffer ) );
+        memcpy( buffer, golden_wire_bytes, sizeof( golden_wire_bytes ) );
+        serialize::ReadStream stream( buffer, (int) sizeof( golden_wire_bytes ) );
+        GoldenWireData data;
+        memset( (void*) &data, 0, sizeof( GoldenWireData ) );
+        serialize_check( GoldenWireSerialize( stream, data ) == true );
+
+        GoldenWireData expected;
+        GoldenWireInit( expected );
+        serialize_check( data.bits4 == expected.bits4 );
+        serialize_check( data.bits11 == expected.bits11 );
+        serialize_check( data.bits24 == expected.bits24 );
+        serialize_check( data.bits32 == expected.bits32 );
+        serialize_check( data.int_small == expected.int_small );
+        serialize_check( data.int_full == expected.int_full );
+        serialize_check( data.flag == expected.flag );
+        serialize_check( data.float_value == expected.float_value );
+        serialize_check( fabs( data.compressed_float_value - expected.compressed_float_value ) <= 0.01f );
+        serialize_check( data.double_value == expected.double_value );
+        serialize_check( data.uint8_value == expected.uint8_value );
+        serialize_check( data.uint16_value == expected.uint16_value );
+        serialize_check( data.uint32_value == expected.uint32_value );
+        serialize_check( data.uint64_value == expected.uint64_value );
+        serialize_check( data.relative_near == expected.relative_near );
+        serialize_check( data.relative_far == expected.relative_far );
+        serialize_check( memcmp( data.bytes, expected.bytes, sizeof( data.bytes ) ) == 0 );
+        serialize_check( strcmp( data.string, expected.string ) == 0 );
+        serialize_check( wcscmp( data.wstring, expected.wstring ) == 0 );
+    }
+}
+
 #define SERIALIZE_RUN_TEST( test_function )                                 \
     do                                                                      \
     {                                                                       \
@@ -2817,6 +2957,7 @@ inline void serialize_test()
         SERIALIZE_RUN_TEST( test_serialize_bytes_validation );
         SERIALIZE_RUN_TEST( test_int_relative_validation );
         SERIALIZE_RUN_TEST( test_compressed_float_validation );
+        SERIALIZE_RUN_TEST( test_golden_wire_format );
     }
 }
 

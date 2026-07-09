@@ -31,7 +31,7 @@ Debug builds define `SERIALIZE_DEBUG`, which enables asserts and extra bounds ch
 
 ## Fuzzing
 
-A libFuzzer harness for the read side lives in `fuzz.cpp`. It needs clang (Apple clang doesn't ship the libFuzzer runtime, so use Linux or Homebrew LLVM on MacOS):
+A libFuzzer harness lives in `fuzz.cpp`. Each input is run two ways: as hostile bytes fed to every `ReadStream` primitive, and as a source of values for a write→read round trip that traps on any mismatch. It needs clang (Apple clang doesn't ship the libFuzzer runtime, so use Linux or Homebrew LLVM on MacOS):
 
     cmake -B build-fuzz -DCMAKE_BUILD_TYPE=Debug -DSERIALIZE_FUZZ=ON -DCMAKE_CXX_COMPILER=clang++
     cmake --build build-fuzz
