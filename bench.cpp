@@ -34,6 +34,8 @@
 
 #include "serialize.h"
 
+#include <stdio.h>
+#include <stdlib.h>
 #include <chrono>
 
 static volatile uint64_t g_sink = 0;            // defeats dead code elimination of computed values

@@ -24,6 +24,9 @@
 
 #include "serialize.h"
 
+#include <stdio.h>
+#include <stdlib.h>
+
 struct Vector
 {
     float x,y,z;

@@ -4,7 +4,12 @@
 
 A single-header C++ bitpacking serializer (~2,100 lines of library code in
 [serialize.h](serialize.h), plus ~700 lines of embedded tests) aimed at game
-networking. It descends from the yojimbo/netcode lineage: a word-at-a-time
+networking. Header-only is intentional: the serialize methods are heavily
+templated, so the implementation cannot live in a .cpp file. The header is
+self-contained — including it into a translation unit with no prior
+includes must compile — and includes only the libc headers the library
+uses (stdint, stddef, string, wchar, math, plus conditional assert/endian;
+test-only includes live behind `SERIALIZE_ENABLE_TESTS`). It descends from the yojimbo/netcode lineage: a word-at-a-time
 `BitWriter`/`BitReader` core, and `WriteStream`/`ReadStream`/`MeasureStream`
 wrappers driven through templated `Serialize()` methods so one function handles
 read, write, and measure with compile-time branch elimination.
@@ -71,18 +76,21 @@ change for previously written data.
 
 ### Sharp edges and weaknesses
 
-- Minor: the header pulls in a broad set of libc headers. (The MSVC
-  `#pragma warning(disable: 4127, 4244)` is now push/pop'd so warning state
-  no longer leaks into consumers — code using the serialize macros compiles
-  at the including file's warning state, so consumers who share the
-  implicit-narrowing style disable those warnings themselves, as this
-  repo's own executables do. `BitWriter` uses member initializers rather
-  than `memset(this, ...)`, and using a stream before `Initialize()` now
-  fires an explicit debug assert.)
+Nothing currently open. Items formerly listed here were either fixed or
+confirmed as intentional design:
 
-Everything else formerly listed here — unchecked writes in release, the
-round-up-to-4 read contract, the macro control flow — turned out to be
-intentional design, recorded under "Known limits" below.
+- Fixed: the MSVC `#pragma warning(disable: 4127, 4244)` is now push/pop'd
+  so warning state no longer leaks into consumers (code using the
+  serialize macros compiles at the including file's warning state;
+  consumers who share the implicit-narrowing style disable those warnings
+  themselves, as this repo's own executables do). `BitWriter` uses member
+  initializers rather than `memset(this, ...)`. Using a stream before
+  `Initialize()` fires an explicit debug assert. The header includes only
+  the libc headers the library actually uses, and consumers can no longer
+  accidentally depend on it providing stdio/stdlib.
+- Intentional design (recorded under "Known limits" below): unchecked
+  writes in release, the round-up-to-4 read contract, the macro control
+  flow.
 
 ### Known limits (documented, by design)
 

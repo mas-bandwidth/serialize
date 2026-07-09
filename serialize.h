@@ -43,8 +43,6 @@
 #define serialize_assert assert
 #endif // #ifndef serialize_assert
 
-#include <cwchar>
-
 #if defined(_MSC_VER) && !defined(_CRT_SECURE_NO_WARNINGS)
 #define _CRT_SECURE_NO_WARNINGS
 #endif
@@ -123,15 +121,13 @@
 #pragma warning( disable : 4244 )
 #endif // #ifdef _MSC_VER
 
-#include <stdint.h>
-#include <stdlib.h>
-#include <stddef.h>
-#include <stdarg.h>
-#include <stdio.h>
-#include <string.h>
-#include <memory.h>
-#include <math.h>
-#include <inttypes.h>
+// everything the library itself needs. serialize.h is intentionally self contained:
+// including it into a translation unit with no prior includes must compile.
+#include <stdint.h>     // fixed width integer types
+#include <stddef.h>     // size_t, NULL
+#include <string.h>     // memcpy, memset, strlen
+#include <wchar.h>      // wcslen
+#include <math.h>       // ceil, floor
 
 namespace serialize 
 {
@@ -2264,7 +2260,8 @@ inline void serialize_copy_wstring( wchar_t * dest, const wchar_t * source, size
 
 #if SERIALIZE_ENABLE_TESTS
 
-#include <time.h>
+#include <stdio.h>      // printf
+#include <stdlib.h>     // exit
 
 inline void SerializeCheckHandler( const char * condition,
                                    const char * function,
