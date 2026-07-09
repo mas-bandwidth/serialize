@@ -44,8 +44,11 @@ change for previously written data.
 - Compiles clean with `-Wall -Wextra -Wpedantic`. `-Wconversion -Wshadow`
   produces ~80 warnings — implicit narrowing is a deliberate style here
   (the header disables MSVC C4244 for the same reason).
-- Header and CMake version is 1.3.0 (`SERIALIZE_VERSION`), matching the
-  v1.3.0 tag and GitHub release (latest, July 2026).
+- Header and CMake version is 1.3.1 (`SERIALIZE_VERSION`), matching the
+  v1.3.1 tag and GitHub release (latest, July 2026). v1.3.1 is a patch on
+  v1.3.0: test-section-only fixes (no C++11 requirement in the embedded
+  tests, explicit code points instead of cyrillic literals); library code
+  and wire format identical.
 - Throughput ([bench.cpp](bench.cpp), Release, Apple Silicon reference):
   bitpacker write ~4.6 GB/s, read ~2.1 GB/s; stream write ~25M packets/s,
   read ~43M packets/s.
