@@ -39,6 +39,40 @@ jobs:
             ./build/bin/bench
           fi
 
+  # the only big endian coverage in the matrix: exercises the bswap / host_to_network
+  # path for real, and the golden wire format test proves the wire bytes are identical
+  big-endian:
+    name: big endian s390x / ${{ matrix.build_type }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [Debug, Release]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install s390x cross toolchain and qemu
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++-s390x-linux-gnu qemu-user-static
+
+      # static linking so the emulated binaries need no s390x sysroot at runtime
+      - name: Configure
+        run: >
+          cmake -B build
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DCMAKE_SYSTEM_NAME=Linux
+          -DCMAKE_SYSTEM_PROCESSOR=s390x
+          -DCMAKE_CXX_COMPILER=s390x-linux-gnu-g++
+          -DCMAKE_CXX_FLAGS="-static"
+          -DCMAKE_CROSSCOMPILING_EMULATOR=qemu-s390x-static
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
   fuzz:
     name: fuzz (libFuzzer)
     runs-on: ubuntu-24.04

@@ -14,7 +14,8 @@ Build: `cmake -B build && cmake --build build --config Release`, test with
 behind `SERIALIZE_ENABLE_TESTS`. CI (.github/workflows/ci.yml) builds and
 tests Debug + Release on Linux (ubuntu-24.04), macOS Apple Silicon
 (macos-15), and Windows x64 (windows-2025), plus ASan+UBSan and libFuzzer
-jobs on Linux. The fuzz harness ([fuzz.cpp](fuzz.cpp), clang only, built via
+jobs on Linux and a big-endian s390x job (GCC cross-compile, statically
+linked, run under QEMU user emulation). The fuzz harness ([fuzz.cpp](fuzz.cpp), clang only, built via
 `-DSERIALIZE_FUZZ=ON`) runs two passes per input: a hostile read of
 arbitrary bytes through every ReadStream primitive, and a differential
 write→read round trip that traps on any write/read asymmetry (and checks
@@ -124,21 +125,17 @@ Done:
   and the stream/macro path (best-of-5 trials); CI prints indicative
   numbers on every Release job.
 
-Remaining, in priority order:
+- ~~Big-endian CI coverage~~ — s390x jobs (Debug + Release) cross-compile
+  with GCC and run the full test suite under QEMU, exercising the
+  bswap/`host_to_network` path; the golden wire-format test proves the
+  wire bytes are identical to the little-endian platforms.
 
-1. **Big-endian CI coverage.** The bswap/`host_to_network` path is
-   completely untested — no CI platform is big-endian. A QEMU s390x job
-   (docker/setup-qemu-action) would exercise it for real, and the golden
-   wire-format test makes it meaningful.
-2. **CMake consumer-friendliness.** FetchContent/add_subdirectory consumers
+Remaining:
+
+1. **CMake consumer-friendliness.** FetchContent/add_subdirectory consumers
    currently inherit the test/example/fuzz targets and global compile
    flags. Guard those behind `PROJECT_IS_TOP_LEVEL`, scope flags to
    targets, add a `SERIALIZE_VERSION` define plus git tags.
-3. **Smaller items:** Consider an opt-in hardened write mode (bounds-check
-   writes in release, return false instead of memory corruption) — cuts
-   against the trusted-writer philosophy, so it's the maintainer's call.
-   (`serialize_ack_relative_internal`, formerly flagged here as a macro-less
-   outlier, was removed as no longer needed.)
 
 Deliberately not doing: changing the reader's round-up-to-4 allocation
 contract (owner decision: it is an intentional part of the design — do not
