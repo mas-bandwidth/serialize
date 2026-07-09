@@ -36,7 +36,26 @@
 
 #include <chrono>
 
-static volatile uint64_t g_sink = 0;            // defeats dead code elimination
+static volatile uint64_t g_sink = 0;            // defeats dead code elimination of computed values
+
+// Tells the compiler the memory at data is observed, so stores to it cannot be dead code eliminated.
+// Without this, gcc proves nothing reads the serialized buffer inside the loop and deletes the
+// serialization work entirely, reporting fictional throughput. The empty asm with a memory clobber
+// is the standard escape (as used by google benchmark); it emits no instructions.
+
+#if defined(_MSC_VER)
+#include <intrin.h>
+inline void bench_escape( const void * data )
+{
+    (void) data;
+    _ReadWriteBarrier();
+}
+#else // #if defined(_MSC_VER)
+inline void bench_escape( const void * data )
+{
+    asm volatile( "" : : "g"( data ) : "memory" );
+}
+#endif // #if defined(_MSC_VER)
 
 inline double time_now()
 {
@@ -80,6 +99,7 @@ void bench_bitpacker( uint8_t * buffer )
                     writer.WriteBits( bench_values[i], bench_widths[i] );
             }
             writer.FlushBits();
+            bench_escape( buffer );
             bytes_per_pass = (uint64_t) writer.GetBytesWritten();
             g_sink = g_sink + bytes_per_pass;
         }
@@ -197,6 +217,7 @@ void bench_stream()
             if ( !packet.Serialize( stream ) )
                 exit( 1 );
             stream.Flush();
+            bench_escape( buffer );
             g_sink = g_sink + (uint64_t) stream.GetBytesProcessed();
         }
         double time = time_now() - start;
@@ -210,6 +231,7 @@ void bench_stream()
             BenchPacket read_packet;
             if ( !read_packet.Serialize( stream ) )
                 exit( 1 );
+            bench_escape( &read_packet );               // every decoded field is observed, so the full decode must happen
             g_sink = g_sink + (uint64_t) read_packet.b;
         }
         time = time_now() - start;
