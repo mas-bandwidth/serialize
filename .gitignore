@@ -1,2 +1,52 @@
+# build directories
 build*/
+out/
+cmake-build-*/
+
+# cmake generated files (from in-source configuration: prefer building out of source)
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+CPackConfig.cmake
+CPackSourceConfig.cmake
+serialize-config-version.cmake
+compile_commands.json
+_deps/
+Testing/
+/Makefile
+
+# built binaries and intermediates
+/bin/
+/test
+/example
+/bench
+/fuzz
+*.o
+*.obj
+*.a
+*.lib
+*.exe
+*.dll
+*.dylib
+*.so
+*.pdb
+*.ilk
+*.dSYM/
+
+# visual studio / xcode project generation
+.vs/
+*.sln
+*.vcxproj
+*.vcxproj.*
+*.xcodeproj/
+
+# libfuzzer artifacts
+crash-*
+oom-*
+timeout-*
+slow-unit-*
+corpus/
+
+# editors and os
 .DS_Store
