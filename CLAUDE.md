@@ -44,8 +44,8 @@ change for previously written data.
 - Compiles clean with `-Wall -Wextra -Wpedantic`. `-Wconversion -Wshadow`
   produces ~80 warnings — implicit narrowing is a deliberate style here
   (the header disables MSVC C4244 for the same reason).
-- Header and CMake version is 1.3.0 (`SERIALIZE_VERSION`); the last pushed
-  tag is v1.2.5.
+- Header and CMake version is 1.3.0 (`SERIALIZE_VERSION`), matching the
+  v1.3.0 tag and GitHub release (latest, July 2026).
 - Throughput ([bench.cpp](bench.cpp), Release, Apple Silicon reference):
   bitpacker write ~4.6 GB/s, read ~2.1 GB/s; stream write ~25M packets/s,
   read ~43M packets/s.
@@ -136,10 +136,10 @@ reproducers as artifacts on failure.
 
 ### Open items
 
-- **The v1.3.0 tag is not pushed.** The header and CMake already say 1.3.0
-  (next after v1.2.5, covering the CMake switch, the
-  `serialize_ack_relative_internal` removal, and the writer alignment
-  guarantee). Cutting the tag/release is the owner's call.
+- ~~The v1.3.0 tag is not pushed~~ — released July 2026: tag v1.3.0,
+  GitHub release "Stable Release" marked latest, covering everything
+  since v1.2.5 (CMake switch, CI/sanitizers/fuzzing/golden wire test,
+  writer alignment guarantee, `serialize_int64`, header hygiene).
 - ~~GCC stream benchmark numbers are inflated~~ — fixed, in two parts:
   a `bench_escape` barrier (empty asm + memory clobber) stops dead-store
   elimination of the output buffer, and an LCG varies most packet fields
