@@ -1,0 +1,58 @@
+name: Nightly Fuzz
+
+on:
+  schedule:
+    - cron: '0 8 * * *'   # every day at 08:00 UTC
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: 'Fuzz duration in seconds'
+        default: '3600'
+        required: false
+
+jobs:
+  fuzz:
+    name: fuzz (libFuzzer, extended)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      # the corpus is cached across runs so fuzzing is cumulative: each night
+      # starts from the most recent corpus and saves the evolved one
+      - name: Restore corpus
+        uses: actions/cache/restore@v4
+        with:
+          path: corpus
+          key: fuzz-corpus-${{ github.run_id }}
+          restore-keys: |
+            fuzz-corpus-
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Debug -DSERIALIZE_FUZZ=ON -DCMAKE_CXX_COMPILER=clang++
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Fuzz
+        run: |
+          mkdir -p corpus
+          ./build/bin/fuzz corpus -max_total_time=${{ github.event.inputs.duration || '3600' }} -timeout=10 -print_final_stats=1
+
+      - name: Save corpus
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: corpus
+          key: fuzz-corpus-${{ github.run_id }}
+
+      - name: Upload crash reproducers
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes
+          path: |
+            crash-*
+            oom-*
+            timeout-*
+          if-no-files-found: ignore

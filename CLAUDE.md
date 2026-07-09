@@ -100,6 +100,7 @@ adversarial tests are the standout strengths. The risks are concentrated in
 the documented-but-sharp buffer contracts (unchecked writes in release, the
 round-up-to-4 read contract, writer alignment). Those are inherent to the
 design and documented; everything cheap to fix around them (CI, sanitizers,
-fuzzing, doc drift) has been done. Worthwhile future work would be extended
-fuzz runs (the CI job is a 60-second smoke) and a seed corpus built from the
-test vectors.
+fuzzing, doc drift) has been done. Fuzz coverage: a 60-second smoke on every
+push, plus a nightly 1-hour run (.github/workflows/nightly-fuzz.yml) whose
+corpus accumulates across runs via the actions cache and which uploads crash
+reproducers as artifacts on failure.

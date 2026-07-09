@@ -37,7 +37,7 @@ A libFuzzer harness for the read side lives in `fuzz.cpp`. It needs clang (Apple
     cmake --build build-fuzz
     ./build-fuzz/bin/fuzz
 
-Build it in Debug so asserts stay enabled: reads from a `ReadStream` must fail by returning false, never by tripping an assert, and the fuzzer treats an assert as a crash. CI runs this harness for 60 seconds on every push.
+Build it in Debug so asserts stay enabled: reads from a `ReadStream` must fail by returning false, never by tripping an assert, and the fuzzer treats an assert as a crash. CI runs this harness for 60 seconds on every push, and for an hour nightly with a corpus that accumulates across runs. If a nightly run finds a crash, the reproducer input is uploaded as a workflow artifact.
 
 If you have questions please create an issue at https://github.com/mas-bandwidth/serialize and I'll do my best to help you out.
 
