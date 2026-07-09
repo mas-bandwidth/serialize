@@ -177,7 +177,28 @@ struct BenchPacket
 };
 
 const int StreamNumPackets = 1000000;
-const int NumVariants = 16;
+const int NumVariants = 64;
+
+// Most packet fields must vary per iteration, driven by a serially dependent generator the compiler
+// cannot fold. Varying just one field is not enough: all field bit widths are constant, so gcc
+// precomputes the scratch words for the loop-invariant fields at compile time and only patches in
+// the varying bits, reporting fictional write throughput. The LCG costs a couple of cycles.
+
+inline uint64_t bench_vary_packet( BenchPacket & packet, uint64_t rng )
+{
+    rng = rng * 6364136223846793005ULL + 1442695040888963407ULL;
+    packet.a = int32_t( ( rng >> 8 ) & 63 ) - 32;                   // [-32,31] within [-100,+100]
+    packet.b = uint32_t( rng >> 16 ) & 65535;                       // [0,65535]
+    packet.c = int32_t( ( rng >> 24 ) & 0xFFFFF ) - 500000;         // [-500000,548575] within [-1000000,+1000000]
+    packet.bits7 = uint32_t( rng ) & 127;
+    packet.bits13 = uint32_t( rng >> 3 ) & 8191;
+    packet.bits23 = uint32_t( rng >> 5 ) & 8388607;
+    packet.flag = ( rng & 1 ) != 0;
+    packet.x = float( uint32_t( rng ) & 0xFFFF );
+    packet.big = rng;
+    packet.blob[0] = uint8_t( rng >> 32 );
+    return rng;
+}
 
 void bench_stream()
 {
@@ -187,20 +208,20 @@ void bench_stream()
     BenchPacket packet;
     packet.Init();
 
-    // the serialized data must vary per iteration, otherwise the compiler can prove the loop
-    // body is pure and delete the serialization work entirely (gcc does exactly this)
-
     uint8_t variant_buffers[NumVariants][256];
     int bytes_per_packet = 0;
-    for ( int k = 0; k < NumVariants; k++ )
     {
-        memset( variant_buffers[k], 0, sizeof( variant_buffers[k] ) );
-        packet.b = 12345 + k;
-        serialize::WriteStream stream( variant_buffers[k], (int) sizeof( variant_buffers[k] ) );
-        if ( !packet.Serialize( stream ) )
-            exit( 1 );
-        stream.Flush();
-        bytes_per_packet = stream.GetBytesProcessed();
+        uint64_t rng = 1;
+        for ( int k = 0; k < NumVariants; k++ )
+        {
+            memset( variant_buffers[k], 0, sizeof( variant_buffers[k] ) );
+            rng = bench_vary_packet( packet, rng );
+            serialize::WriteStream stream( variant_buffers[k], (int) sizeof( variant_buffers[k] ) );
+            if ( !packet.Serialize( stream ) )
+                exit( 1 );
+            stream.Flush();
+            bytes_per_packet = stream.GetBytesProcessed();
+        }
     }
 
     double best_write = 1e30;
@@ -209,10 +230,12 @@ void bench_stream()
 
     for ( int trial = 0; trial < NumTrials; trial++ )
     {
+        uint64_t rng = 1;
+
         double start = time_now();
         for ( int i = 0; i < StreamNumPackets; i++ )
         {
-            packet.b = i & 65535;
+            rng = bench_vary_packet( packet, rng );
             serialize::WriteStream stream( buffer, (int) sizeof( buffer ) );
             if ( !packet.Serialize( stream ) )
                 exit( 1 );
@@ -243,7 +266,7 @@ void bench_stream()
         start = time_now();
         for ( int i = 0; i < StreamNumPackets; i++ )
         {
-            packet.b = i & 65535;
+            rng = bench_vary_packet( packet, rng );
             serialize::MeasureStream stream;
             if ( !packet.Serialize( stream ) )
                 exit( 1 );
