@@ -49,10 +49,11 @@ change for previously written data.
   ([serialize.h:2610](serialize.h:2610) onward). This is better test thinking
   than most serialization libraries have.
 - **The core design is sound and well understood.** 64-bit scratch, 32-bit
-  flush, little-endian wire format with byte-swap on big-endian hosts; the
-  reader fetches words via `memcpy` so unaligned *input* buffers are fine
-  ([serialize.h:674](serialize.h:674)). `WriteBytes`/`ReadBytes` fall back to
-  `memcpy` for the aligned middle of large blocks.
+  flush, little-endian wire format with byte-swap on big-endian hosts; both
+  the reader and the writer move words via `memcpy` (identical codegen to a
+  direct store), so neither buffer needs any particular alignment.
+  `WriteBytes`/`ReadBytes` fall back to `memcpy` for the middle of large
+  blocks. `test_unaligned_writer` locks the no-alignment guarantee in.
 - Documentation density is high, and the doc comments mostly tell you the
   sharp edges (flush requirement, 256 MB limit, alignment contracts).
 
@@ -70,11 +71,6 @@ change for previously written data.
   ([serialize.h:620](serialize.h:620)), but a caller who hands it an exactly
   sized buffer has an out-of-bounds read that ASan will flag. The contract is
   documented; it's still easy to miss.
-- **BitWriter requires a 4-byte-aligned buffer and writes through
-  `uint32_t*` directly** ([serialize.h:419](serialize.h:419)). The reader uses
-  `memcpy` for alignment safety; the writer does not. An unaligned writer
-  buffer is UB (works on x86/ARM64 in practice, but it's asymmetric with the
-  read side).
 - **The macro API is a loaded weapon.** `serialize_*` macros hide
   `return false` and require being called inside a `template <typename
   Stream>` function returning bool — documented, but surprising control flow.
@@ -104,7 +100,7 @@ change for previously written data.
 Small, mature, and does one thing well. The reader-side safety work and the
 adversarial tests are the standout strengths. The risks are concentrated in
 the documented-but-sharp buffer contracts (unchecked writes in release, the
-round-up-to-4 read contract, writer alignment). Those are inherent to the
+round-up-to-4 read contract). Those are inherent to the
 design and documented; everything cheap to fix around them (CI, sanitizers,
 fuzzing, doc drift) has been done. Fuzz coverage: a 60-second smoke on every
 push, plus a nightly 1-hour run (.github/workflows/nightly-fuzz.yml) whose
@@ -119,19 +115,19 @@ Done:
   write-side and read-side on every CI platform.
 - ~~Differential round-trip fuzzing~~ — write/read asymmetry and
   MeasureStream conservatism are fuzzed alongside the hostile-read pass.
+- ~~Writer alignment UB~~ — `BitWriter` now stores each dword with `memcpy`
+  like the reader loads them (verified identical codegen), so writer
+  buffers no longer need 4-byte alignment; `test_unaligned_writer` locks
+  this in under the CI alignment sanitizer.
 
 Remaining, in priority order:
 
-1. **Kill the writer-alignment UB for free.** `BitWriter` stores words
-   through `uint32_t*` directly while the reader uses `memcpy`; a 4-byte
-   memcpy compiles to the same store on all supported platforms, so
-   switching removes the writer's 4-byte-alignment contract at zero cost.
-   The same idea could remove the reader's round-up-to-4 allocation
-   contract (partial memcpy for the tail word), but that touches the hot
-   refill path — benchmark-gated, see next item.
-2. **Benchmark target.** The library's selling point is speed and there is
+1. **Benchmark target.** The library's selling point is speed and there is
    no way to measure it. A small bench.cpp (bits/sec through write and read
-   paths) gates perf-sensitive changes like the item above.
+   paths) gates perf-sensitive changes like the item below.
+2. **Remove the reader's round-up-to-4 allocation contract.** A partial
+   memcpy for the tail word would let exactly-sized buffers be read safely,
+   but it touches the hot refill path — benchmark-gated on the item above.
 3. **Big-endian CI coverage.** The bswap/`host_to_network` path is
    completely untested — no CI platform is big-endian. A QEMU s390x job
    (docker/setup-qemu-action) would exercise it for real, and the golden

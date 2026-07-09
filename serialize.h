@@ -377,7 +377,7 @@ namespace serialize
         /**
             Bit writer constructor.
             Creates a bit writer object to write to the specified buffer.
-            @param data The pointer to the buffer to fill with bitpacked data. Must be aligned to 4 bytes, because the bitpacker writes to memory as dwords.
+            @param data The pointer to the buffer to fill with bitpacked data. Does not need to be aligned: each dword is stored with memcpy, matching the bit reader.
             @param bytes The size of the buffer in bytes. Must be a multiple of 4, because the bitpacker reads and writes memory as dwords, not bytes. Buffers up to 256 megabytes are supported, because bit counts are stored in 32 bit signed integers.
          */
 
@@ -416,7 +416,8 @@ namespace serialize
             if ( m_scratchBits >= 32 )
             {
                 serialize_assert( m_wordIndex < m_numWords );
-                m_data[m_wordIndex] = host_to_network( uint32_t( m_scratch & 0xFFFFFFFF ) );
+                const uint32_t word = host_to_network( uint32_t( m_scratch & 0xFFFFFFFF ) );
+                memcpy( (uint8_t*) m_data + (size_t) m_wordIndex * 4, &word, sizeof( word ) );
                 m_scratch >>= 32;
                 m_scratchBits -= 32;
                 m_wordIndex++;
@@ -475,7 +476,7 @@ namespace serialize
             if ( numWords > 0 )
             {
                 serialize_assert( ( m_bitsWritten % 32 ) == 0 );
-                memcpy( (char*) &m_data[m_wordIndex], data + headBytes, numWords * 4 );
+                memcpy( (uint8_t*) m_data + (size_t) m_wordIndex * 4, data + headBytes, numWords * 4 );
                 m_bitsWritten += numWords * 32;
                 m_wordIndex += numWords;
                 m_scratch = 0;
@@ -506,7 +507,8 @@ namespace serialize
             {
                 serialize_assert( m_scratchBits <= 32 );
                 serialize_assert( m_wordIndex < m_numWords );
-                m_data[m_wordIndex] = host_to_network( uint32_t( m_scratch & 0xFFFFFFFF ) );
+                const uint32_t word = host_to_network( uint32_t( m_scratch & 0xFFFFFFFF ) );
+                memcpy( (uint8_t*) m_data + (size_t) m_wordIndex * 4, &word, sizeof( word ) );
                 m_scratch >>= 32;
                 m_scratchBits = 0;
                 m_wordIndex++;
@@ -884,7 +886,7 @@ namespace serialize
 
         /**
             Write stream constructor.
-            @param buffer The buffer to write to. Must be aligned to 4 bytes, because the bit writer writes to memory as dwords.
+            @param buffer The buffer to write to. Does not need to be aligned.
             @param bytes The number of bytes in the buffer. Must be a multiple of four.
          */
 
@@ -2900,6 +2902,49 @@ inline void test_golden_wire_format()
     }
 }
 
+inline void test_unaligned_writer()
+{
+    // the bit writer stores each dword with memcpy, so the write buffer does not need 4 byte alignment.
+    // exercise every offset within a dword, covering the WriteBits, WriteBytes and FlushBits store paths.
+
+    alignas( 4 ) uint8_t storage[256 + 4];
+
+    for ( int offset = 0; offset < 4; offset++ )
+    {
+        memset( storage, 0, sizeof( storage ) );
+
+        uint8_t * buffer = storage + offset;
+
+        uint8_t data[13];
+        for ( int i = 0; i < (int) sizeof( data ); i++ )
+            data[i] = (uint8_t) ( i * 47 + offset );
+
+        serialize::WriteStream writeStream( buffer, 256 );
+        writeStream.SerializeBits( 0x12345678, 32 );
+        writeStream.SerializeBits( 123, 7 );
+        writeStream.SerializeBytes( data, (int) sizeof( data ) );
+        writeStream.SerializeBits( 0xDEADBEEF, 32 );
+        writeStream.Flush();
+
+        const int bytesWritten = writeStream.GetBytesProcessed();
+
+        serialize::ReadStream readStream( buffer, bytesWritten );
+        uint32_t a = 0;
+        serialize_check( readStream.SerializeBits( a, 32 ) == true );
+        serialize_check( a == 0x12345678 );
+        uint32_t b = 0;
+        serialize_check( readStream.SerializeBits( b, 7 ) == true );
+        serialize_check( b == 123 );
+        uint8_t read_data[13];
+        memset( read_data, 0, sizeof( read_data ) );
+        serialize_check( readStream.SerializeBytes( read_data, (int) sizeof( read_data ) ) == true );
+        serialize_check( memcmp( read_data, data, sizeof( data ) ) == 0 );
+        uint32_t c = 0;
+        serialize_check( readStream.SerializeBits( c, 32 ) == true );
+        serialize_check( c == 0xDEADBEEF );
+    }
+}
+
 #define SERIALIZE_RUN_TEST( test_function )                                 \
     do                                                                      \
     {                                                                       \
@@ -2924,6 +2969,7 @@ inline void serialize_test()
         SERIALIZE_RUN_TEST( test_int_relative_validation );
         SERIALIZE_RUN_TEST( test_compressed_float_validation );
         SERIALIZE_RUN_TEST( test_golden_wire_format );
+        SERIALIZE_RUN_TEST( test_unaligned_writer );
     }
 }
 
