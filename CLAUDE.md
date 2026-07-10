@@ -44,8 +44,8 @@ change for previously written data.
 - Compiles clean with `-Wall -Wextra -Wpedantic`. `-Wconversion -Wshadow`
   produces ~80 warnings — implicit narrowing is a deliberate style here
   (the header disables MSVC C4244 for the same reason).
-- Header and CMake version is 1.4.0 (`SERIALIZE_VERSION`) — unreleased on
-  main; the latest tag/release is v1.3.1. 1.4.0 carries the branchless
+- Header and CMake version is 1.4.0 (`SERIALIZE_VERSION`), matching the
+  v1.4.0 tag and GitHub release (latest, July 2026). 1.4.0 carries the branchless
   reader and its breaking allocation contract change (read buffers must
   extend 8 bytes past the data, previously round-up-to-4), plus 64-bit bit
   counts throughout, which removes the old 256 MB buffer limit
