@@ -29,8 +29,8 @@
 
 #define SERIALIZE_VERSION_MAJOR 1
 #define SERIALIZE_VERSION_MINOR 4
-#define SERIALIZE_VERSION_PATCH 0
-#define SERIALIZE_VERSION "1.4.0"
+#define SERIALIZE_VERSION_PATCH 2
+#define SERIALIZE_VERSION "1.4.2"
 
 #if defined(_MSC_VER)
 #define serialize_restrict __restrict
@@ -375,8 +375,9 @@ namespace serialize
     /**
         Bitpacks unsigned integer values to a buffer.
         Integer bit values are written to a 64 bit scratch value from right to left.
-        Once the low 32 bits of the scratch is filled with bits it is flushed to memory as a dword and the scratch value is shifted right by 32.
+        Once the scratch fills to 64 bits it is flushed to memory as a qword; the handful of bits that spilled past 64 carry over into the next scratch. Flushing half as often as a dword design makes writes ~30% faster.
         The bit stream is written to memory in little endian order, which is considered network byte order for this library.
+        IMPORTANT: The buffer allocation must extend at least 8 bytes past the end of the data you write (a buffer whose size is a multiple of 8 always satisfies this), because words are stored 8 bytes at a time. Bytes past the end of the data are only ever written as zeros.
         @see BitReader
      */
 
@@ -384,15 +385,14 @@ namespace serialize
     {
     public:
 
-        BitWriter() : m_data( NULL ), m_scratch( 0 ), m_numBits( 0 ), m_numWords( 0 ), m_bitsWritten( 0 ), m_wordIndex( 0 ), m_scratchBits( 0 ) {}
+        BitWriter() : m_data( NULL ), m_scratch( 0 ), m_numBits( 0 ), m_bitsWritten( 0 ), m_wordIndex( 0 ), m_scratchBits( 0 ) {}
 
         void Initialize( void * serialize_restrict data, int64_t bytes )
         {
             serialize_assert( data );
             serialize_assert( ( bytes % 4 ) == 0 );
-            m_data = (uint32_t*) data;
-            m_numWords = bytes / 4;
-            m_numBits = m_numWords * 32;
+            m_data = (uint8_t*) data;
+            m_numBits = bytes * 8;
             m_bitsWritten = 0;
             m_wordIndex = 0;
             m_scratch = 0;
@@ -402,15 +402,15 @@ namespace serialize
         /**
             Bit writer constructor.
             Creates a bit writer object to write to the specified buffer.
-            @param data The pointer to the buffer to fill with bitpacked data. Does not need to be aligned: each dword is stored with memcpy, matching the bit reader.
-            @param bytes The size of the buffer in bytes. Must be a multiple of 4, because the bitpacker reads and writes memory as dwords, not bytes. Buffer sizes are effectively unlimited, because bit counts are stored in 64 bit signed integers.
+            @param data The pointer to the buffer to fill with bitpacked data. Does not need to be aligned: each word is stored with memcpy, matching the bit reader.
+            @param bytes The size of the buffer in bytes. Must be a multiple of 4. IMPORTANT: the underlying allocation must extend at least 8 bytes past the end of the data you write (a multiple of 8 buffer size always satisfies this), because words are stored 8 bytes at a time. Buffer sizes are effectively unlimited, because bit counts are stored in 64 bit signed integers.
          */
 
-        BitWriter( void * serialize_restrict data, int64_t bytes ) : m_data( (uint32_t*) data ), m_numWords( bytes / 4 )
+        BitWriter( void * serialize_restrict data, int64_t bytes ) : m_data( (uint8_t*) data )
         {
             serialize_assert( data );
             serialize_assert( ( bytes % 4 ) == 0 );
-            m_numBits = m_numWords * 32;
+            m_numBits = bytes * 8;
             m_bitsWritten = 0;
             m_wordIndex = 0;
             m_scratch = 0;
@@ -421,7 +421,7 @@ namespace serialize
             Write bits to the buffer.
             Bits are written to the buffer as-is, without padding to nearest byte. Will assert if you try to write past the end of the buffer.
             A boolean value writes just 1 bit to the buffer, a value in range [0,31] can be written with just 5 bits and so on.
-            IMPORTANT: When you have finished writing to your buffer, take care to call BitWrite::FlushBits, otherwise the last dword of data will not get flushed to memory!
+            IMPORTANT: When you have finished writing to your buffer, take care to call BitWrite::FlushBits, otherwise the last word of data will not get flushed to memory!
             @param value The integer value to write to the buffer. Must be in [0,(1<<bits)-1].
             @param bits The number of bits to encode in [1,32].
             @see BitReader::ReadBits
@@ -437,16 +437,20 @@ namespace serialize
 
             m_scratch |= uint64_t( value ) << m_scratchBits;
 
-            m_scratchBits += bits;
+            const int newScratchBits = m_scratchBits + bits;
 
-            if ( m_scratchBits >= 32 )
+            if ( newScratchBits >= 64 )
             {
-                serialize_assert( m_wordIndex < m_numWords );
-                const uint32_t word = host_to_network( uint32_t( m_scratch & 0xFFFFFFFF ) );
-                memcpy( (uint8_t*) m_data + (size_t) m_wordIndex * 4, &word, sizeof( word ) );
-                m_scratch >>= 32;
-                m_scratchBits -= 32;
+                const uint64_t word = host_to_network( m_scratch );
+                memcpy( m_data + (size_t) m_wordIndex * 8, &word, sizeof( word ) );
                 m_wordIndex++;
+                // recover the bits that spilled past 64. newScratchBits >= 64 with bits <= 32 implies the shift is in [1,32]
+                m_scratch = uint64_t( value ) >> ( 64 - m_scratchBits );
+                m_scratchBits = newScratchBits - 64;
+            }
+            else
+            {
+                m_scratchBits = newScratchBits;
             }
 
             m_bitsWritten += bits;
@@ -485,9 +489,9 @@ namespace serialize
             serialize_assert( m_data );                 // if this fires, the writer was used before Initialize
             serialize_assert( GetAlignBits() == 0 );
             serialize_assert( uint64_t(m_bitsWritten) + uint64_t(bytes) * 8 <= uint64_t(m_numBits) );
-            serialize_assert( ( m_bitsWritten % 32 ) == 0 || ( m_bitsWritten % 32 ) == 8 || ( m_bitsWritten % 32 ) == 16 || ( m_bitsWritten % 32 ) == 24 );
+            serialize_assert( ( m_bitsWritten % 8 ) == 0 );
 
-            int64_t headBytes = ( 4 - ( m_bitsWritten % 32 ) / 8 ) % 4;
+            int64_t headBytes = ( 8 - ( m_bitsWritten % 64 ) / 8 ) % 8;
             if ( headBytes > bytes )
                 headBytes = bytes;
             for ( int64_t i = 0; i < headBytes; ++i )
@@ -495,36 +499,34 @@ namespace serialize
             if ( headBytes == bytes )
                 return;
 
-            FlushBits();
-
             serialize_assert( GetAlignBits() == 0 );
+            serialize_assert( ( m_bitsWritten % 64 ) == 0 && m_scratchBits == 0 );      // the head bytes flushed the scratch at the word boundary
 
-            int64_t numWords = ( bytes - headBytes ) / 4;
+            int64_t numWords = ( bytes - headBytes ) / 8;
             if ( numWords > 0 )
             {
-                serialize_assert( ( m_bitsWritten % 32 ) == 0 );
-                memcpy( (uint8_t*) m_data + (size_t) m_wordIndex * 4, data + headBytes, (size_t) ( numWords * 4 ) );
-                m_bitsWritten += numWords * 32;
+                memcpy( m_data + (size_t) m_wordIndex * 8, data + headBytes, (size_t) ( numWords * 8 ) );
+                m_bitsWritten += numWords * 64;
                 m_wordIndex += numWords;
                 m_scratch = 0;
             }
 
             serialize_assert( GetAlignBits() == 0 );
 
-            int64_t tailStart = headBytes + numWords * 4;
+            int64_t tailStart = headBytes + numWords * 8;
             int64_t tailBytes = bytes - tailStart;
-            serialize_assert( tailBytes >= 0 && tailBytes < 4 );
+            serialize_assert( tailBytes >= 0 && tailBytes < 8 );
             for ( int64_t i = 0; i < tailBytes; ++i )
                 WriteBits( data[tailStart+i], 8 );
 
             serialize_assert( GetAlignBits() == 0 );
 
-            serialize_assert( headBytes + numWords * 4 + tailBytes == bytes );
+            serialize_assert( headBytes + numWords * 8 + tailBytes == bytes );
         }
 
         /**
             Flush any remaining bits to memory.
-            Call this once after you've finished writing bits to flush the last dword of scratch to memory!
+            Call this once after you've finished writing bits to flush the last word of scratch to memory!
             @see BitWriter::WriteBits
          */
 
@@ -533,11 +535,10 @@ namespace serialize
             if ( m_scratchBits != 0 )
             {
                 serialize_assert( m_data );             // if this fires, the writer was used before Initialize
-                serialize_assert( m_scratchBits <= 32 );
-                serialize_assert( m_wordIndex < m_numWords );
-                const uint32_t word = host_to_network( uint32_t( m_scratch & 0xFFFFFFFF ) );
-                memcpy( (uint8_t*) m_data + (size_t) m_wordIndex * 4, &word, sizeof( word ) );
-                m_scratch >>= 32;
+                serialize_assert( m_scratchBits < 64 );
+                const uint64_t word = host_to_network( m_scratch );
+                memcpy( m_data + (size_t) m_wordIndex * 8, &word, sizeof( word ) );     // stores a full qword: the allocation extends past the data, and the bytes past the end are zeros
+                m_scratch = 0;
                 m_scratchBits = 0;
                 m_wordIndex++;
             }
@@ -588,8 +589,8 @@ namespace serialize
         /**
             The number of bytes flushed to memory.
             This is effectively the size of the packet that you should send after you have finished bitpacking values with this class.
-            The returned value is not always a multiple of 4, even though we flush dwords to memory. You won't miss any data in this case because the order of bits written is designed to work with the little endian memory layout.
-            IMPORTANT: Make sure you call BitWriter::FlushBits before calling this method, otherwise you risk missing the last dword of data.
+            The returned value is not always a multiple of 8, even though we flush qwords to memory. You won't miss any data in this case because the order of bits written is designed to work with the little endian memory layout.
+            IMPORTANT: Make sure you call BitWriter::FlushBits before calling this method, otherwise you risk missing the last word of data.
          */
 
         int64_t GetBytesWritten() const
@@ -599,13 +600,12 @@ namespace serialize
 
     private:
 
-        uint32_t * m_data;              ///< The buffer we are writing to, as a uint32_t * because we're writing dwords at a time.
-        uint64_t m_scratch;             ///< The scratch value where we write bits to (right to left). 64 bit for overflow. Once # of bits in scratch is >= 32, the low 32 bits are flushed to memory.
-        int64_t m_numBits;              ///< The number of bits in the buffer. This is equivalent to the size of the buffer in bytes multiplied by 8. Note that the buffer size must always be a multiple of 4.
-        int64_t m_numWords;             ///< The number of words in the buffer. This is equivalent to the size of the buffer in bytes divided by 4. Note that the buffer size must always be a multiple of 4.
+        uint8_t * m_data;               ///< The buffer we are writing to. The allocation extends at least 8 bytes past the end of the data.
+        uint64_t m_scratch;             ///< The scratch value where we write bits to (right to left). When it fills to 64 bits it is stored to memory as a qword and the bits that spilled past 64 carry over.
+        int64_t m_numBits;              ///< The number of bits in the buffer. This is equivalent to the size of the buffer in bytes multiplied by 8.
         int64_t m_bitsWritten;          ///< The number of bits written so far.
         int64_t m_wordIndex;            ///< The current word index. The next word flushed to memory will be at this index in m_data.
-        int m_scratchBits;              ///< The number of bits in scratch. When this is >= 32, the low 32 bits of scratch is flushed to memory as a dword and scratch is shifted right by 32.
+        int m_scratchBits;              ///< The number of valid bits in scratch, in [0,63].
     };
 
     /**
@@ -860,7 +860,7 @@ namespace serialize
         /**
             Write stream constructor.
             @param buffer The buffer to write to. Does not need to be aligned.
-            @param bytes The number of bytes in the buffer. Must be a multiple of four.
+            @param bytes The number of bytes in the buffer. Must be a multiple of four. IMPORTANT: the underlying allocation must extend at least 8 bytes past the end of the data you write (a multiple of 8 buffer size always satisfies this). See BitWriter for details.
          */
 
         WriteStream( uint8_t * buffer, int64_t bytes ) : m_writer( buffer, bytes ) {}
@@ -968,7 +968,7 @@ namespace serialize
 
         /**
             Flush the stream to memory after you finish writing.
-            Always call this after you finish writing and before you call WriteStream::GetData, or you'll potentially truncate the last dword of data you wrote.
+            Always call this after you finish writing and before you call WriteStream::GetData, or you'll potentially truncate the last word of data you wrote.
             @see BitWriter::FlushBits
          */
 

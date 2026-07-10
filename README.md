@@ -110,7 +110,7 @@ See [example.cpp](example.cpp) for more.
 
 # Limitations
 
-* Write buffer sizes must be a multiple of 4 bytes, because the bit writer flushes dwords to memory. Buffers do not need any particular alignment: all memory access goes through memcpy.
+* Write buffer sizes must be a multiple of 4 bytes, and like read buffers the underlying allocation must extend at least 8 bytes past the end of the written data (a multiple of 8 buffer size satisfies this), because the bit writer flushes qwords to memory. The bytes past the end are only ever written as zeros. Buffers do not need any particular alignment: all memory access goes through memcpy.
 * Read buffer sizes may be any number of bytes, but the underlying allocation must extend at least 8 bytes past the end of the packet data, because the bit reader loads 64 bit windows at byte granularity. The bytes past the end are loaded but never interpreted.
 * Buffer sizes are effectively unlimited, because bit counts are stored in 64 bit signed integers.
 * Wide strings are serialized as 32 bits per character, so streams are compatible between platforms with 2 and 4 byte wchar_t, but code points above 0xFFFF are not translated between UTF-16 and UTF-32 platforms.

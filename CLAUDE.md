@@ -44,17 +44,19 @@ change for previously written data.
 - Compiles clean with `-Wall -Wextra -Wpedantic`. `-Wconversion -Wshadow`
   produces ~80 warnings — implicit narrowing is a deliberate style here
   (the header disables MSVC C4244 for the same reason).
-- Header and CMake version is 1.4.0 (`SERIALIZE_VERSION`), matching the
-  v1.4.0 tag and GitHub release (latest, July 2026). 1.4.0 carries the branchless
+- Header and CMake version is 1.4.2 (`SERIALIZE_VERSION`) — v1.4.1 was
+  skipped; 1.4.2 carries the qword-flush writer (~25% faster writes), the
+  symmetric write-side allocation contract, and the README limitations
+  fixes. 1.4.0 carries the branchless
   reader and its breaking allocation contract change (read buffers must
   extend 8 bytes past the data, previously round-up-to-4), plus 64-bit bit
   counts throughout, which removes the old 256 MB buffer limit
   (test_large_buffer round trips across the old 2^31-bit boundary); the
   wire format is unchanged.
 - Throughput ([bench.cpp](bench.cpp), Release, Apple Silicon reference):
-  bitpacker write ~4.6 GB/s, read ~8.1 GB/s; stream write ~25M packets/s,
-  read ~142M packets/s. (Reads got ~4x faster in 1.4.0 with the branchless
-  reader.)
+  bitpacker write ~5.8 GB/s, read ~8.1 GB/s; stream write ~47M packets/s,
+  read ~140M packets/s. (Reads got ~4x faster in 1.4.0 with the branchless
+  reader; writes ~25% faster in 1.4.2 with the 64-bit flush.)
 
 ### What's genuinely good
 
@@ -72,8 +74,11 @@ change for previously written data.
   ([serialize.h:2610](serialize.h:2610) onward). This is better test thinking
   than most serialization libraries have.
 - **The core design is sound and well understood.** Writer: 64-bit scratch,
-  32-bit flush, each word stored via `memcpy` (identical codegen to a direct
-  store) so the buffer needs no particular alignment. Reader: branchless —
+  64-bit flush — the scratch stores as a qword when it fills and the bits
+  that spilled past 64 carry into the next scratch, so the flush branch runs
+  half as often as a dword design (~+25% write throughput, measured); each
+  word is stored via `memcpy` so the buffer needs no particular alignment.
+  Reader: branchless —
   each read loads a 64-bit window at the current byte position and shifts by
   the bit remainder, carrying no state between reads except the bit index.
   This made reads ~4x faster than the previous word-at-a-time reader
@@ -121,13 +126,15 @@ confirmed as intentional design:
   returning bool (documented). Do not propose redesigns (exceptions, error
   codes). The ~30 macros land in the global macro namespace; not a
   collision risk for yojimbo, which depends on serialize.h directly.
-- **BitReader loads 64-bit windows at byte granularity, so the buffer
-  allocation must extend at least 8 bytes past the end of the packet
-  data.** (Owner-approved contract change, July 2026: previously
-  round-up-to-4.) This is what makes the branchless reader possible — the
-  bytes past the end are loaded but never interpreted. Documented on the
-  constructor; read it when allocating receive buffers. Do not propose
-  removing this contract or adding tail branches to avoid the over-read.
+- **Buffer allocations must extend at least 8 bytes past the end of the
+  data, on both sides.** (Owner-approved contract changes, July 2026:
+  previously round-up-to-4 on read only.) The reader loads 64-bit windows
+  at byte granularity — bytes past the end are loaded but never
+  interpreted. The writer flushes 64-bit words — bytes past the end are
+  only ever written as zeros. A multiple-of-8 buffer size satisfies the
+  contract on both sides. This is what makes the branchless reader and the
+  qword-flush writer possible. Documented on the constructors. Do not
+  propose removing these contracts or adding tail handling to avoid them.
 - `serialize_int_relative` requires strictly increasing values.
 - `wstring` wire format is 32 bits per character — portable across 2/4-byte
   `wchar_t` platforms, but wasteful.
