@@ -47,8 +47,10 @@ change for previously written data.
 - Header and CMake version is 1.4.0 (`SERIALIZE_VERSION`) — unreleased on
   main; the latest tag/release is v1.3.1. 1.4.0 carries the branchless
   reader and its breaking allocation contract change (read buffers must
-  extend 8 bytes past the data, previously round-up-to-4); the wire format
-  is unchanged.
+  extend 8 bytes past the data, previously round-up-to-4), plus 64-bit bit
+  counts throughout, which removes the old 256 MB buffer limit
+  (test_large_buffer round trips across the old 2^31-bit boundary); the
+  wire format is unchanged.
 - Throughput ([bench.cpp](bench.cpp), Release, Apple Silicon reference):
   bitpacker write ~4.6 GB/s, read ~8.1 GB/s; stream write ~25M packets/s,
   read ~142M packets/s. (Reads got ~4x faster in 1.4.0 with the branchless
@@ -126,7 +128,6 @@ confirmed as intentional design:
   bytes past the end are loaded but never interpreted. Documented on the
   constructor; read it when allocating receive buffers. Do not propose
   removing this contract or adding tail branches to avoid the over-read.
-- Max buffer 256 MB (bit counts held in signed 32-bit ints).
 - `serialize_int_relative` requires strictly increasing values.
 - `wstring` wire format is 32 bits per character — portable across 2/4-byte
   `wchar_t` platforms, but wasteful.
