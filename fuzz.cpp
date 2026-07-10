@@ -516,8 +516,8 @@ extern "C" int LLVMFuzzerTestOneInput( const uint8_t * data, size_t size )
 
     // pass 1: hostile read of arbitrary bytes
     {
-        // the buffer allocation must round up to a multiple of 4, because the bit reader reads dwords from memory
-        std::vector<uint8_t> buffer( ( payloadBytes + 3 ) & ~size_t(3), 0 );
+        // the buffer allocation must extend at least 8 bytes past the data, because the bit reader loads 64 bit windows
+        std::vector<uint8_t> buffer( payloadBytes + 8, 0 );
         memcpy( buffer.data(), payload, payloadBytes );
 
         serialize::ReadStream stream( buffer.data(), (int) payloadBytes );
@@ -542,6 +542,7 @@ extern "C" int LLVMFuzzerTestOneInput( const uint8_t * data, size_t size )
         fuzz_check( FuzzRoundTrip( measureStream, ops, NumOps, measurePool ) == true );
         fuzz_check( measureStream.GetBitsProcessed() >= writeStream.GetBitsProcessed() );       // measure must be conservative
 
+        // the 16KB writeBuffer extends well past the written bytes, satisfying the reader's 8-bytes-past allocation contract
         serialize::ReadStream readStream( writeBuffer, writeStream.GetBytesProcessed() );
         ValuePool readPool( payload, payloadBytes );
         fuzz_check( FuzzRoundTrip( readStream, ops, NumOps, readPool ) == true );               // reading back our own data must always succeed

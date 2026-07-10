@@ -44,14 +44,15 @@ change for previously written data.
 - Compiles clean with `-Wall -Wextra -Wpedantic`. `-Wconversion -Wshadow`
   produces ~80 warnings — implicit narrowing is a deliberate style here
   (the header disables MSVC C4244 for the same reason).
-- Header and CMake version is 1.3.1 (`SERIALIZE_VERSION`), matching the
-  v1.3.1 tag and GitHub release (latest, July 2026). v1.3.1 is a patch on
-  v1.3.0: test-section-only fixes (no C++11 requirement in the embedded
-  tests, explicit code points instead of cyrillic literals); library code
-  and wire format identical.
+- Header and CMake version is 1.4.0 (`SERIALIZE_VERSION`) — unreleased on
+  main; the latest tag/release is v1.3.1. 1.4.0 carries the branchless
+  reader and its breaking allocation contract change (read buffers must
+  extend 8 bytes past the data, previously round-up-to-4); the wire format
+  is unchanged.
 - Throughput ([bench.cpp](bench.cpp), Release, Apple Silicon reference):
-  bitpacker write ~4.6 GB/s, read ~2.1 GB/s; stream write ~25M packets/s,
-  read ~43M packets/s.
+  bitpacker write ~4.6 GB/s, read ~8.1 GB/s; stream write ~25M packets/s,
+  read ~142M packets/s. (Reads got ~4x faster in 1.4.0 with the branchless
+  reader.)
 
 ### What's genuinely good
 
@@ -68,12 +69,17 @@ change for previously written data.
   negative and huge byte counts, NaN input, >2^31 relative gaps
   ([serialize.h:2610](serialize.h:2610) onward). This is better test thinking
   than most serialization libraries have.
-- **The core design is sound and well understood.** 64-bit scratch, 32-bit
-  flush, little-endian wire format with byte-swap on big-endian hosts; both
-  the reader and the writer move words via `memcpy` (identical codegen to a
-  direct store), so neither buffer needs any particular alignment.
-  `WriteBytes`/`ReadBytes` fall back to `memcpy` for the middle of large
-  blocks. `test_unaligned_writer` locks the no-alignment guarantee in.
+- **The core design is sound and well understood.** Writer: 64-bit scratch,
+  32-bit flush, each word stored via `memcpy` (identical codegen to a direct
+  store) so the buffer needs no particular alignment. Reader: branchless —
+  each read loads a 64-bit window at the current byte position and shifts by
+  the bit remainder, carrying no state between reads except the bit index.
+  This made reads ~4x faster than the previous word-at-a-time reader
+  (measured; see throughput above) at the cost of the 8-bytes-past
+  allocation contract below. Little-endian wire format with byte-swap on
+  big-endian hosts; identical wire bytes to the old reader/writer, pinned by
+  the golden test. `test_unaligned_writer` locks the no-alignment guarantee
+  in.
 - Documentation density is high, and the doc comments mostly tell you the
   sharp edges (flush requirement, 256 MB limit, alignment contracts).
 
@@ -92,7 +98,7 @@ confirmed as intentional design:
   the libc headers the library actually uses, and consumers can no longer
   accidentally depend on it providing stdio/stdlib.
 - Intentional design (recorded under "Known limits" below): unchecked
-  writes in release, the round-up-to-4 read contract, the macro control
+  writes in release, the read allocation contract, the macro control
   flow.
 
 ### Known limits (documented, by design)
@@ -113,11 +119,13 @@ confirmed as intentional design:
   returning bool (documented). Do not propose redesigns (exceptions, error
   codes). The ~30 macros land in the global macro namespace; not a
   collision risk for yojimbo, which depends on serialize.h directly.
-- **BitReader may read up to 3 bytes past a non-multiple-of-4 buffer** —
-  the allocation must round up to 4 bytes
-  ([serialize.h:620](serialize.h:620)), which keeps the word refill
-  branch-free. Documented on the constructor; read it when allocating
-  receive buffers. Do not propose removing this contract.
+- **BitReader loads 64-bit windows at byte granularity, so the buffer
+  allocation must extend at least 8 bytes past the end of the packet
+  data.** (Owner-approved contract change, July 2026: previously
+  round-up-to-4.) This is what makes the branchless reader possible — the
+  bytes past the end are loaded but never interpreted. Documented on the
+  constructor; read it when allocating receive buffers. Do not propose
+  removing this contract or adding tail branches to avoid the over-read.
 - Max buffer 256 MB (bit counts held in signed 32-bit ints).
 - `serialize_int_relative` requires strictly increasing values.
 - `wstring` wire format is 32 bits per character — portable across 2/4-byte
@@ -128,7 +136,7 @@ confirmed as intentional design:
 
 Small, mature, and does one thing well. The reader-side safety work and the
 adversarial tests are the standout strengths. The contracts (unchecked
-writes in release, the round-up-to-4 read contract, early-return serialize
+writes in release, the 8-bytes-past read allocation contract, early-return serialize
 macros) are intentional design — debug asserts plus caller responsibility
 on the trusted side, immediate validated abort on the network side — and
 the place for a new user to read the docs carefully; everything cheap to

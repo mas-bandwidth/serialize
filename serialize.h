@@ -28,9 +28,9 @@
 /** @file */
 
 #define SERIALIZE_VERSION_MAJOR 1
-#define SERIALIZE_VERSION_MINOR 3
-#define SERIALIZE_VERSION_PATCH 1
-#define SERIALIZE_VERSION "1.3.1"
+#define SERIALIZE_VERSION_MINOR 4
+#define SERIALIZE_VERSION_PATCH 0
+#define SERIALIZE_VERSION "1.4.0"
 
 #if defined(_MSC_VER)
 #define serialize_restrict __restrict
@@ -611,7 +611,9 @@ namespace serialize
     /**
         Reads bit packed integer values from a buffer.
         Relies on the user reconstructing the exact same set of bit reads as bit writes when the buffer was written. This is an unattributed bitpacked binary stream!
-        Implementation: 32 bit dwords are read in from memory to the high bits of a scratch value as required. The user reads off bit values from the scratch value from the right, after which the scratch value is shifted by the same number of bits.
+        Implementation: branchless. Each read loads a 64 bit window from the current byte position with memcpy and shifts by the bit remainder.
+        There is no scratch state and no refill branch, so reads carry no dependency between calls other than advancing the bit index. This makes the reader significantly faster than a word-at-a-time design.
+        IMPORTANT: The buffer allocation must extend at least 8 bytes past the end of the packet data, because the reader loads 8 byte windows at byte granularity. The bytes past the end are loaded but never interpreted.
      */
 
     class BitReader
@@ -622,46 +624,33 @@ namespace serialize
         {
             m_data = NULL;
             m_numBytes = 0;
-            m_numWords = 0;
-            m_numBits = m_numBytes * 8;
+            m_numBits = 0;
             m_bitsRead = 0;
-            m_scratch = 0;
-            m_scratchBits = 0;
-            m_wordIndex = 0;
         }
 
         void Initialize( const void * serialize_restrict data, int bytes )
         {
             serialize_assert( data );
-            m_data = (const uint32_t*) data;
+            m_data = (const uint8_t*) data;
             m_numBytes = bytes;
-#ifdef SERIALIZE_DEBUG
-            m_numWords = ( bytes + 3 ) / 4;
-#endif // #ifdef SERIALIZE_DEBUG
             m_numBits = m_numBytes * 8;
             m_bitsRead = 0;
-            m_scratch = 0;
-            m_scratchBits = 0;
-            m_wordIndex = 0;            
         }
 
         /**
             Bit reader constructor.
-            Non-multiples of four buffer sizes are supported, as this naturally tends to occur when packets are read from the network.
-            However, actual buffer allocated for the packet data must round up at least to the next 4 bytes in memory, because the bit reader reads dwords from memory not bytes.
-            @param data Pointer to the bitpacked data to read. Does not need to be aligned: the reader loads each dword with memcpy, which packet payloads require because they typically start at an unaligned offset once the transport header is stripped.
+            Any buffer size is supported, as non-multiples of four naturally occur when packets are read from the network.
+            IMPORTANT: The actual buffer allocated for the packet data must extend at least 8 bytes past the end of the data, because the reader loads a 64 bit window from the current byte position, and near the end of the stream that window begins inside the final bytes. The bytes past the end are loaded but never interpreted.
+            @param data Pointer to the bitpacked data to read. Does not need to be aligned: the reader loads each window with memcpy, which packet payloads require because they typically start at an unaligned offset once the transport header is stripped.
             @param bytes The number of bytes of bitpacked data to read. Buffers up to 256 megabytes are supported, because bit counts are stored in 32 bit signed integers.
             @see BitWriter
          */
 
-        BitReader( const void * serialize_restrict data, int bytes ) : m_data( (const uint32_t*) data ), m_numBytes( bytes ), m_numWords( ( bytes + 3 ) / 4 )
+        BitReader( const void * serialize_restrict data, int bytes ) : m_data( (const uint8_t*) data ), m_numBytes( bytes )
         {
             serialize_assert( data );
             m_numBits = m_numBytes * 8;
             m_bitsRead = 0;
-            m_scratch = 0;
-            m_scratchBits = 0;
-            m_wordIndex = 0;
         }
 
         /**
@@ -692,28 +681,14 @@ namespace serialize
             serialize_assert( bits <= 32 );
             serialize_assert( m_bitsRead + bits <= m_numBits );
 
+            // loads up to 7 bytes past the last data byte: the allocation contract covers this
+            uint64_t window;
+            memcpy( &window, m_data + ( m_bitsRead >> 3 ), sizeof( window ) );
+            window = network_to_host( window );
+
+            const uint32_t output = uint32_t( window >> ( m_bitsRead & 7 ) ) & uint32_t( ( uint64_t(1) << bits ) - 1 );
+
             m_bitsRead += bits;
-
-            serialize_assert( m_scratchBits >= 0 && m_scratchBits <= 64 );
-
-            if ( m_scratchBits < bits )
-            {
-#ifdef SERIALIZE_DEBUG
-                serialize_assert( m_wordIndex < m_numWords );
-#endif // SERIALIZE_DEBUG
-                uint32_t word;
-                memcpy( &word, (const uint8_t*) m_data + (size_t) m_wordIndex * 4, sizeof( word ) );
-                m_scratch |= uint64_t( network_to_host( word ) ) << m_scratchBits;
-                m_scratchBits += 32;
-                m_wordIndex++;
-            }
-
-            serialize_assert( m_scratchBits >= bits );
-
-            const uint32_t output = m_scratch & ( (uint64_t(1)<<bits) - 1 );
-
-            m_scratch >>= bits;
-            m_scratchBits -= bits;
 
             return output;
         }
@@ -750,39 +725,11 @@ namespace serialize
             serialize_assert( m_data );                 // if this fires, the reader was used before Initialize
             serialize_assert( GetAlignBits() == 0 );
             serialize_assert( uint64_t(m_bitsRead) + uint64_t(bytes) * 8 <= uint64_t(m_numBits) );
-            serialize_assert( ( m_bitsRead % 32 ) == 0 || ( m_bitsRead % 32 ) == 8 || ( m_bitsRead % 32 ) == 16 || ( m_bitsRead % 32 ) == 24 );
 
-            int headBytes = ( 4 - ( m_bitsRead % 32 ) / 8 ) % 4;
-            if ( headBytes > bytes )
-                headBytes = bytes;
-            for ( int i = 0; i < headBytes; ++i )
-                data[i] = (uint8_t) ReadBits( 8 );
-            if ( headBytes == bytes )
-                return;
+            // the bit index is byte aligned here (see the align assert), so this is a straight copy
+            memcpy( data, m_data + ( m_bitsRead >> 3 ), (size_t) bytes );
 
-            serialize_assert( GetAlignBits() == 0 );
-
-            int numWords = ( bytes - headBytes ) / 4;
-            if ( numWords > 0 )
-            {
-                serialize_assert( ( m_bitsRead % 32 ) == 0 );
-                memcpy( (char*) data + headBytes, (const uint8_t*) m_data + (size_t) m_wordIndex * 4, numWords * 4 );
-                m_bitsRead += numWords * 32;
-                m_wordIndex += numWords;
-                m_scratchBits = 0;
-            }
-
-            serialize_assert( GetAlignBits() == 0 );
-
-            int tailStart = headBytes + numWords * 4;
-            int tailBytes = bytes - tailStart;
-            serialize_assert( tailBytes >= 0 && tailBytes < 4 );
-            for ( int i = 0; i < tailBytes; ++i )
-                data[tailStart+i] = (uint8_t) ReadBits( 8 );
-
-            serialize_assert( GetAlignBits() == 0 );
-
-            serialize_assert( headBytes + numWords * 4 + tailBytes == bytes );
+            m_bitsRead += bytes * 8;
         }
 
         /**
@@ -818,14 +765,10 @@ namespace serialize
 
     private:
 
-        const uint32_t * serialize_restrict m_data;         ///< The bitpacked data we're reading as a dword array.
-        uint64_t m_scratch;                                 ///< The scratch value. New data is read in 32 bits at a top to the left of this buffer, and data is read off to the right.
+        const uint8_t * serialize_restrict m_data;          ///< The bitpacked data we're reading. The allocation extends at least 8 bytes past the end of the data.
         int m_numBits;                                      ///< Number of bits to read in the buffer. Of course, we can't *really* know this so it's actually m_numBytes * 8.
         int m_numBytes;                                     ///< Number of bytes to read in the buffer. We know this, and this is the non-rounded up version.
-        int m_numWords;                                     ///< Number of words to read in the buffer. This is rounded up to the next word if necessary. Only used in debug builds.
-        int m_bitsRead;                                     ///< Number of bits read from the buffer so far.
-        int m_scratchBits;                                  ///< Number of bits currently in the scratch value. If the user wants to read more bits than this, we have to go fetch another dword from memory.
-        int m_wordIndex;                                    ///< Index of the next word to read from memory.
+        int m_bitsRead;                                     ///< Number of bits read from the buffer so far. This is the only state the reader carries between reads.
     };
 
     /**
@@ -1099,7 +1042,7 @@ namespace serialize
         /**
             Read stream constructor.
             @param buffer The buffer to read from.
-            @param bytes The number of bytes in the buffer. May be a non-multiple of four, however if it is, the underlying buffer allocated should be large enough to read the any remainder bytes as a dword.
+            @param bytes The number of bytes of packet data to read. IMPORTANT: the underlying allocation must extend at least 8 bytes past the end of the data, because the bit reader loads 64 bit windows at byte granularity. See BitReader for details.
          */
 
         ReadStream( const uint8_t * buffer, int bytes ) : m_reader( buffer, bytes ) {}
@@ -2780,14 +2723,14 @@ inline void test_read_write()
 inline void test_serialize_integer_validation()
 {
     // bits_required(0,5) is 3 bits, so a malicious packet can encode 6 or 7. reads must reject values above max.
-    uint8_t buffer[4] = { 0 };
+    uint8_t buffer[4 + 8] = { 0 };          // + 8: read buffer allocations extend 8 bytes past the data
 
-    serialize::WriteStream writeStream( buffer, sizeof(buffer) );
+    serialize::WriteStream writeStream( buffer, 4 );
     uint32_t out_of_range = 7;
     writeStream.SerializeBits( out_of_range, 3 );
     writeStream.Flush();
 
-    serialize::ReadStream readStream( buffer, sizeof(buffer) );
+    serialize::ReadStream readStream( buffer, 4 );
     int32_t value = 0;
     serialize_check( readStream.SerializeInteger( value, 0, 5 ) == false );
 }
@@ -2799,26 +2742,26 @@ inline void test_serialize_integer_full_range()
 
     for ( int i = 0; i < (int) ( sizeof(values) / sizeof(values[0]) ); i++ )
     {
-        uint8_t buffer[8] = { 0 };
+        uint8_t buffer[8 + 8] = { 0 };          // + 8: read buffer allocations extend 8 bytes past the data
 
-        serialize::WriteStream writeStream( buffer, sizeof(buffer) );
+        serialize::WriteStream writeStream( buffer, 8 );
         serialize_check( writeStream.SerializeInteger( values[i], INT32_MIN, INT32_MAX ) == true );
         writeStream.Flush();
 
-        serialize::ReadStream readStream( buffer, sizeof(buffer) );
+        serialize::ReadStream readStream( buffer, 8 );
         int32_t value = 0;
         serialize_check( readStream.SerializeInteger( value, INT32_MIN, INT32_MAX ) == true );
         serialize_check( value == values[i] );
     }
 
     {
-        uint8_t buffer[8] = { 0 };
+        uint8_t buffer[8 + 8] = { 0 };          // + 8: read buffer allocations extend 8 bytes past the data
 
-        serialize::WriteStream writeStream( buffer, sizeof(buffer) );
+        serialize::WriteStream writeStream( buffer, 8 );
         serialize_check( writeStream.SerializeInteger( 1000000000, -2000000000, 2000000000 ) == true );
         writeStream.Flush();
 
-        serialize::ReadStream readStream( buffer, sizeof(buffer) );
+        serialize::ReadStream readStream( buffer, 8 );
         int32_t value = 0;
         serialize_check( readStream.SerializeInteger( value, -2000000000, 2000000000 ) == true );
         serialize_check( value == 1000000000 );
@@ -2833,13 +2776,13 @@ inline void test_serialize_int64_full_range()
 
         for ( int i = 0; i < (int) ( sizeof(values) / sizeof(values[0]) ); i++ )
         {
-            uint8_t buffer[16] = { 0 };
+            uint8_t buffer[16 + 8] = { 0 };          // + 8: read buffer allocations extend 8 bytes past the data
 
-            serialize::WriteStream writeStream( buffer, sizeof(buffer) );
+            serialize::WriteStream writeStream( buffer, 16 );
             serialize_check( writeStream.SerializeInteger64( values[i], INT64_MIN, INT64_MAX ) == true );
             writeStream.Flush();
 
-            serialize::ReadStream readStream( buffer, sizeof(buffer) );
+            serialize::ReadStream readStream( buffer, 16 );
             int64_t value = 0;
             serialize_check( readStream.SerializeInteger64( value, INT64_MIN, INT64_MAX ) == true );
             serialize_check( value == values[i] );
@@ -2854,13 +2797,13 @@ inline void test_serialize_int64_full_range()
 
         for ( int i = 0; i < (int) ( sizeof(values) / sizeof(values[0]) ); i++ )
         {
-            uint8_t buffer[16] = { 0 };
+            uint8_t buffer[16 + 8] = { 0 };          // + 8: read buffer allocations extend 8 bytes past the data
 
-            serialize::WriteStream writeStream( buffer, sizeof(buffer) );
+            serialize::WriteStream writeStream( buffer, 16 );
             serialize_check( writeStream.SerializeInteger64( values[i], min, max ) == true );
             writeStream.Flush();
 
-            serialize::ReadStream readStream( buffer, sizeof(buffer) );
+            serialize::ReadStream readStream( buffer, 16 );
             int64_t value = 0;
             serialize_check( readStream.SerializeInteger64( value, min, max ) == true );
             serialize_check( value == values[i] );
@@ -2869,15 +2812,15 @@ inline void test_serialize_int64_full_range()
 
     // small ranges use the single dword path and the minimal number of bits
     {
-        uint8_t buffer[8] = { 0 };
+        uint8_t buffer[8 + 8] = { 0 };          // + 8: read buffer allocations extend 8 bytes past the data
 
-        serialize::WriteStream writeStream( buffer, sizeof(buffer) );
+        serialize::WriteStream writeStream( buffer, 8 );
         serialize_check( writeStream.SerializeInteger64( 55, -100, +100 ) == true );
         writeStream.Flush();
 
         serialize_check( writeStream.GetBitsProcessed() == 8 );        // bits_required64(-100,100) == 8, same as the 32 bit path
 
-        serialize::ReadStream readStream( buffer, sizeof(buffer) );
+        serialize::ReadStream readStream( buffer, 8 );
         int64_t value = 0;
         serialize_check( readStream.SerializeInteger64( value, -100, +100 ) == true );
         serialize_check( value == 55 );
@@ -2888,9 +2831,9 @@ inline void test_serialize_int64_validation()
 {
     // a malicious packet can smuggle an out of range value into the bit headroom of the two dword path. reads must reject it.
     {
-        uint8_t buffer[16] = { 0 };
+        uint8_t buffer[16 + 8] = { 0 };          // + 8: read buffer allocations extend 8 bytes past the data
 
-        serialize::WriteStream writeStream( buffer, sizeof(buffer) );
+        serialize::WriteStream writeStream( buffer, 16 );
         const uint64_t out_of_range = ( 1ULL << 34 ) + 5;               // range [0, 2^34] is 35 bits, so values above 2^34 fit in the headroom
         uint32_t lo = uint32_t( out_of_range & 0xFFFFFFFF );
         uint32_t hi = uint32_t( out_of_range >> 32 );
@@ -2898,16 +2841,16 @@ inline void test_serialize_int64_validation()
         writeStream.SerializeBits( hi, 3 );
         writeStream.Flush();
 
-        serialize::ReadStream readStream( buffer, sizeof(buffer) );
+        serialize::ReadStream readStream( buffer, 16 );
         int64_t value = 0;
         serialize_check( readStream.SerializeInteger64( value, 0, int64_t( 1ULL << 34 ) ) == false );
     }
 
     // reads past the end of the buffer must fail cleanly
     {
-        uint8_t buffer[4] = { 0 };
+        uint8_t buffer[4 + 8] = { 0 };          // + 8: read buffer allocations extend 8 bytes past the data
 
-        serialize::ReadStream readStream( buffer, sizeof(buffer) );
+        serialize::ReadStream readStream( buffer, 4 );
         int64_t value = 0;
         serialize_check( readStream.SerializeInteger64( value, INT64_MIN, INT64_MAX ) == false );
     }
@@ -2916,16 +2859,16 @@ inline void test_serialize_int64_validation()
 inline void test_serialize_bytes_validation()
 {
     // negative and huge byte counts must be rejected, not overflow the bounds check in bits
-    uint8_t buffer[16] = { 0 };
+    uint8_t buffer[16 + 8] = { 0 };          // + 8: read buffer allocations extend 8 bytes past the data
     uint8_t data[16];
 
     {
-        serialize::ReadStream readStream( buffer, sizeof(buffer) );
+        serialize::ReadStream readStream( buffer, 16 );
         serialize_check( readStream.SerializeBytes( data, -1 ) == false );
     }
 
     {
-        serialize::ReadStream readStream( buffer, sizeof(buffer) );
+        serialize::ReadStream readStream( buffer, 16 );
         serialize_check( readStream.SerializeBytes( data, 1 << 29 ) == false );
     }
 }
@@ -2934,16 +2877,16 @@ inline void test_int_relative_validation()
 {
     // the 32 bit fallback must reject values that violate the previous < current contract
     {
-        uint8_t buffer[8] = { 0 };
+        uint8_t buffer[8 + 8] = { 0 };          // + 8: read buffer allocations extend 8 bytes past the data
 
-        serialize::WriteStream writeStream( buffer, sizeof(buffer) );
+        serialize::WriteStream writeStream( buffer, 8 );
         uint32_t six_false_bools = 0;
         writeStream.SerializeBits( six_false_bools, 6 );
         uint32_t bad_current = 50;
         writeStream.SerializeBits( bad_current, 32 );
         writeStream.Flush();
 
-        serialize::ReadStream readStream( buffer, sizeof(buffer) );
+        serialize::ReadStream readStream( buffer, 8 );
         int previous = 100;
         int current = 0;
         serialize_check( serialize::serialize_int_relative_internal( readStream, previous, current ) == false );
@@ -2951,15 +2894,15 @@ inline void test_int_relative_validation()
 
     // a legitimate fallback round trip must still succeed
     {
-        uint8_t buffer[8] = { 0 };
+        uint8_t buffer[8 + 8] = { 0 };          // + 8: read buffer allocations extend 8 bytes past the data
 
-        serialize::WriteStream writeStream( buffer, sizeof(buffer) );
+        serialize::WriteStream writeStream( buffer, 8 );
         int previous = 100;
         int written = 100000;
         serialize_check( serialize::serialize_int_relative_internal( writeStream, previous, written ) == true );
         writeStream.Flush();
 
-        serialize::ReadStream readStream( buffer, sizeof(buffer) );
+        serialize::ReadStream readStream( buffer, 8 );
         int current = 0;
         serialize_check( serialize::serialize_int_relative_internal( readStream, previous, current ) == true );
         serialize_check( current == written );
@@ -2967,15 +2910,15 @@ inline void test_int_relative_validation()
 
     // gaps wider than 2^31 overflow if the difference is computed in signed arithmetic (undefined behavior)
     {
-        uint8_t buffer[8] = { 0 };
+        uint8_t buffer[8 + 8] = { 0 };          // + 8: read buffer allocations extend 8 bytes past the data
 
-        serialize::WriteStream writeStream( buffer, sizeof(buffer) );
+        serialize::WriteStream writeStream( buffer, 8 );
         int previous = -1000;
         int written = INT32_MAX;
         serialize_check( serialize::serialize_int_relative_internal( writeStream, previous, written ) == true );
         writeStream.Flush();
 
-        serialize::ReadStream readStream( buffer, sizeof(buffer) );
+        serialize::ReadStream readStream( buffer, 8 );
         int current = 0;
         serialize_check( serialize::serialize_int_relative_internal( readStream, previous, current ) == true );
         serialize_check( current == written );
@@ -2989,15 +2932,15 @@ inline void test_int_relative_validation()
 
         for ( int d = 0; d < (int) ( sizeof(differences) / sizeof(differences[0]) ); d++ )
         {
-            uint8_t buffer[8] = { 0 };
+            uint8_t buffer[8 + 8] = { 0 };          // + 8: read buffer allocations extend 8 bytes past the data
 
-            serialize::WriteStream writeStream( buffer, sizeof(buffer) );
+            serialize::WriteStream writeStream( buffer, 8 );
             int prevWrite = 10;
             int curWrite = prevWrite + differences[d];
             serialize_check( serialize::serialize_int_relative_internal( writeStream, prevWrite, curWrite ) == true );
             writeStream.Flush();
 
-            serialize::ReadStream readStream( buffer, sizeof(buffer) );
+            serialize::ReadStream readStream( buffer, 8 );
             int previous = INT32_MAX;                        // previous + difference exceeds INT32_MAX
             int current = 0;
             serialize_check( serialize::serialize_int_relative_internal( readStream, previous, current ) == true );
@@ -3010,28 +2953,28 @@ inline void test_compressed_float_validation()
 {
     // a malicious packet can encode integer values above maxIntegerValue in the bit headroom. reads must reject them.
     {
-        uint8_t buffer[8] = { 0 };
+        uint8_t buffer[8 + 8] = { 0 };          // + 8: read buffer allocations extend 8 bytes past the data
 
-        serialize::WriteStream writeStream( buffer, sizeof(buffer) );
+        serialize::WriteStream writeStream( buffer, 8 );
         uint32_t out_of_range = 1023;                       // maxIntegerValue is 1000 for [0,10] at res 0.01 -> 10 bits
         writeStream.SerializeBits( out_of_range, 10 );
         writeStream.Flush();
 
-        serialize::ReadStream readStream( buffer, sizeof(buffer) );
+        serialize::ReadStream readStream( buffer, 8 );
         float value = 0.0f;
         serialize_check( serialize::serialize_compressed_float_internal( readStream, value, 0.0f, 10.0f, 0.01f ) == false );
     }
 
     // huge delta / res ratios must not overflow the uint32 quantization range (undefined behavior)
     {
-        uint8_t buffer[8] = { 0 };
+        uint8_t buffer[8 + 8] = { 0 };          // + 8: read buffer allocations extend 8 bytes past the data
 
-        serialize::WriteStream writeStream( buffer, sizeof(buffer) );
+        serialize::WriteStream writeStream( buffer, 8 );
         float written = 5000000000.0f;
         serialize_check( serialize::serialize_compressed_float_internal( writeStream, written, 0.0f, 10000000000.0f, 1.0f ) == true );
         writeStream.Flush();
 
-        serialize::ReadStream readStream( buffer, sizeof(buffer) );
+        serialize::ReadStream readStream( buffer, 8 );
         float value = 0.0f;
         serialize_check( serialize::serialize_compressed_float_internal( readStream, value, 0.0f, 10000000000.0f, 1.0f ) == true );
         serialize_check( fabs( value - written ) <= 4096.0f );
@@ -3039,16 +2982,16 @@ inline void test_compressed_float_validation()
 
     // a NaN value must not reach the uint32 cast (clamp comparisons are all false for NaN)
     {
-        uint8_t buffer[8] = { 0 };
+        uint8_t buffer[8 + 8] = { 0 };          // + 8: read buffer allocations extend 8 bytes past the data
 
-        serialize::WriteStream writeStream( buffer, sizeof(buffer) );
+        serialize::WriteStream writeStream( buffer, 8 );
         uint32_t nan_bits = 0x7fc00000;                 // quiet NaN bit pattern, built without the NAN macro (finite-math builds reject it)
         float written = 0.0f;
         memcpy( &written, &nan_bits, 4 );
         serialize_check( serialize::serialize_compressed_float_internal( writeStream, written, 0.0f, 10.0f, 0.01f ) == true );
         writeStream.Flush();
 
-        serialize::ReadStream readStream( buffer, sizeof(buffer) );
+        serialize::ReadStream readStream( buffer, 8 );
         float value = -1.0f;
         serialize_check( serialize::serialize_compressed_float_internal( readStream, value, 0.0f, 10.0f, 0.01f ) == true );
         serialize_check( value >= 0.0f && value <= 10.0f );      // NaN clamps to the low end of the range

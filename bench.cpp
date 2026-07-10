@@ -297,7 +297,7 @@ int main()
     printf( "WARNING: this is a debug build. only release build numbers are meaningful!\n\n" );
 #endif
 
-    uint8_t * buffer = (uint8_t*) malloc( BitpackerBufferSize );
+    uint8_t * buffer = (uint8_t*) malloc( BitpackerBufferSize + 8 );        // + 8: read allocations extend 8 bytes past the data
 
     bench_bitpacker( buffer );
 
