@@ -44,8 +44,9 @@ change for previously written data.
 - Compiles clean with `-Wall -Wextra -Wpedantic`. `-Wconversion -Wshadow`
   produces ~80 warnings — implicit narrowing is a deliberate style here
   (the header disables MSVC C4244 for the same reason).
-- Header and CMake version is 1.4.2 (`SERIALIZE_VERSION`) — v1.4.1 was
-  skipped; 1.4.2 carries the qword-flush writer (~25% faster writes), the
+- Header and CMake version is 1.4.2 (`SERIALIZE_VERSION`), matching the
+  v1.4.2 tag and GitHub release (latest, July 2026; v1.4.1 was skipped).
+  1.4.2 carries the qword-flush writer (~25% faster writes), the
   symmetric write-side allocation contract, and the README limitations
   fixes. 1.4.0 carries the branchless
   reader and its breaking allocation contract change (read buffers must
