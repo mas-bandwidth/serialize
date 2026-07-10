@@ -377,7 +377,7 @@ namespace serialize
         Integer bit values are written to a 64 bit scratch value from right to left.
         Once the scratch fills to 64 bits it is flushed to memory as a qword; the handful of bits that spilled past 64 carry over into the next scratch. Flushing half as often as a dword design makes writes ~30% faster.
         The bit stream is written to memory in little endian order, which is considered network byte order for this library.
-        IMPORTANT: The buffer allocation must extend at least 8 bytes past the end of the data you write (a buffer whose size is a multiple of 8 always satisfies this), because words are stored 8 bytes at a time. Bytes past the end of the data are only ever written as zeros.
+        IMPORTANT: The buffer size must be a multiple of 8 bytes, because words are stored to memory 8 bytes at a time. Bytes past the end of the written data are only ever written as zeros.
         @see BitReader
      */
 
@@ -390,7 +390,7 @@ namespace serialize
         void Initialize( void * serialize_restrict data, int64_t bytes )
         {
             serialize_assert( data );
-            serialize_assert( ( bytes % 4 ) == 0 );
+            serialize_assert( ( bytes % 8 ) == 0 );
             m_data = (uint8_t*) data;
             m_numBits = bytes * 8;
             m_bitsWritten = 0;
@@ -403,13 +403,13 @@ namespace serialize
             Bit writer constructor.
             Creates a bit writer object to write to the specified buffer.
             @param data The pointer to the buffer to fill with bitpacked data. Does not need to be aligned: each word is stored with memcpy, matching the bit reader.
-            @param bytes The size of the buffer in bytes. Must be a multiple of 4. IMPORTANT: the underlying allocation must extend at least 8 bytes past the end of the data you write (a multiple of 8 buffer size always satisfies this), because words are stored 8 bytes at a time. Buffer sizes are effectively unlimited, because bit counts are stored in 64 bit signed integers.
+            @param bytes The size of the buffer in bytes. Must be a multiple of 8, because the bit writer stores qwords to memory. Buffer sizes are effectively unlimited, because bit counts are stored in 64 bit signed integers.
          */
 
         BitWriter( void * serialize_restrict data, int64_t bytes ) : m_data( (uint8_t*) data )
         {
             serialize_assert( data );
-            serialize_assert( ( bytes % 4 ) == 0 );
+            serialize_assert( ( bytes % 8 ) == 0 );
             m_numBits = bytes * 8;
             m_bitsWritten = 0;
             m_wordIndex = 0;
@@ -537,7 +537,7 @@ namespace serialize
                 serialize_assert( m_data );             // if this fires, the writer was used before Initialize
                 serialize_assert( m_scratchBits < 64 );
                 const uint64_t word = host_to_network( m_scratch );
-                memcpy( m_data + (size_t) m_wordIndex * 8, &word, sizeof( word ) );     // stores a full qword: the allocation extends past the data, and the bytes past the end are zeros
+                memcpy( m_data + (size_t) m_wordIndex * 8, &word, sizeof( word ) );     // stores a full qword: the buffer size is a multiple of 8 so this stays in bounds, and bytes past the written data are zeros
                 m_scratch = 0;
                 m_scratchBits = 0;
                 m_wordIndex++;
@@ -600,7 +600,7 @@ namespace serialize
 
     private:
 
-        uint8_t * m_data;               ///< The buffer we are writing to. The allocation extends at least 8 bytes past the end of the data.
+        uint8_t * m_data;               ///< The buffer we are writing to. The buffer size is a multiple of 8, so qword stores always stay in bounds.
         uint64_t m_scratch;             ///< The scratch value where we write bits to (right to left). When it fills to 64 bits it is stored to memory as a qword and the bits that spilled past 64 carry over.
         int64_t m_numBits;              ///< The number of bits in the buffer. This is equivalent to the size of the buffer in bytes multiplied by 8.
         int64_t m_bitsWritten;          ///< The number of bits written so far.
@@ -860,7 +860,7 @@ namespace serialize
         /**
             Write stream constructor.
             @param buffer The buffer to write to. Does not need to be aligned.
-            @param bytes The number of bytes in the buffer. Must be a multiple of four. IMPORTANT: the underlying allocation must extend at least 8 bytes past the end of the data you write (a multiple of 8 buffer size always satisfies this). See BitWriter for details.
+            @param bytes The number of bytes in the buffer. Must be a multiple of 8, because the bit writer stores qwords to memory.
          */
 
         WriteStream( uint8_t * buffer, int64_t bytes ) : m_writer( buffer, bytes ) {}
@@ -2725,7 +2725,7 @@ inline void test_serialize_integer_validation()
     // bits_required(0,5) is 3 bits, so a malicious packet can encode 6 or 7. reads must reject values above max.
     uint8_t buffer[4 + 8] = { 0 };          // + 8: read buffer allocations extend 8 bytes past the data
 
-    serialize::WriteStream writeStream( buffer, 4 );
+    serialize::WriteStream writeStream( buffer, 8 );
     uint32_t out_of_range = 7;
     writeStream.SerializeBits( out_of_range, 3 );
     writeStream.Flush();

@@ -127,15 +127,15 @@ confirmed as intentional design:
   returning bool (documented). Do not propose redesigns (exceptions, error
   codes). The ~30 macros land in the global macro namespace; not a
   collision risk for yojimbo, which depends on serialize.h directly.
-- **Buffer allocations must extend at least 8 bytes past the end of the
-  data, on both sides.** (Owner-approved contract changes, July 2026:
-  previously round-up-to-4 on read only.) The reader loads 64-bit windows
-  at byte granularity — bytes past the end are loaded but never
-  interpreted. The writer flushes 64-bit words — bytes past the end are
-  only ever written as zeros. A multiple-of-8 buffer size satisfies the
-  contract on both sides. This is what makes the branchless reader and the
-  qword-flush writer possible. Documented on the constructors. Do not
-  propose removing these contracts or adding tail handling to avoid them.
+- **The buffer contracts** (owner-approved, July 2026): write buffer
+  sizes must be a multiple of 8 bytes — the writer flushes qwords, and
+  bytes past the written data are only ever written as zeros. Read buffer
+  allocations must extend at least 8 bytes past the end of the packet
+  data — the reader loads 64-bit windows at byte granularity, and bytes
+  past the end are loaded but never interpreted. This is what makes the
+  qword-flush writer and the branchless reader possible. Documented on
+  the constructors. Do not propose removing these contracts or adding
+  tail handling to avoid them.
 - `serialize_int_relative` requires strictly increasing values.
 - `wstring` wire format is 32 bits per character — portable across 2/4-byte
   `wchar_t` platforms, but wasteful.
