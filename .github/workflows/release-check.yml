@@ -1,0 +1,48 @@
+name: Release Check
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  version-check:
+    name: version consistency
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check versions
+        run: |
+          cmake_version=$(sed -nE 's/^project\(serialize VERSION ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' CMakeLists.txt)
+          full=$(sed -nE 's/^#define SERIALIZE_VERSION[[:space:]]+"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' serialize.h)
+          major=$(sed -nE 's/^#define SERIALIZE_VERSION_MAJOR[[:space:]]+([0-9]+).*/\1/p' serialize.h)
+          minor=$(sed -nE 's/^#define SERIALIZE_VERSION_MINOR[[:space:]]+([0-9]+).*/\1/p' serialize.h)
+          patch=$(sed -nE 's/^#define SERIALIZE_VERSION_PATCH[[:space:]]+([0-9]+).*/\1/p' serialize.h)
+          if [ -z "$cmake_version" ] || [ -z "$full" ] || [ -z "$major" ] || [ -z "$minor" ] || [ -z "$patch" ]; then
+            echo "::error::Could not extract versions (CMakeLists.txt: '$cmake_version', serialize.h SERIALIZE_VERSION: '$full', MAJOR/MINOR/PATCH: '$major.$minor.$patch')"
+            exit 1
+          fi
+          header_version="$major.$minor.$patch"
+          echo "CMakeLists.txt project version:        $cmake_version"
+          echo "serialize.h SERIALIZE_VERSION:         $full"
+          echo "serialize.h MAJOR.MINOR.PATCH:         $header_version"
+          if [ "$cmake_version" != "$header_version" ] || [ "$cmake_version" != "$full" ]; then
+            echo "::error::project(serialize VERSION $cmake_version) in CMakeLists.txt does not match SERIALIZE_VERSION ($full) and SERIALIZE_VERSION_MAJOR/MINOR/PATCH ($header_version) in serialize.h — keep all three in sync."
+            exit 1
+          fi
+          case "$GITHUB_REF" in
+            refs/tags/*)
+              tag_version="${GITHUB_REF_NAME#v}"
+              echo "Release tag version:                   $tag_version"
+              if [ "$tag_version" != "$cmake_version" ]; then
+                echo "::error::Tag $GITHUB_REF_NAME does not match version $cmake_version in CMakeLists.txt and serialize.h — bump both as part of the release."
+                exit 1
+              fi
+              ;;
+          esac
