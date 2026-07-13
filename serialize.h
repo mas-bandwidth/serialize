@@ -362,16 +362,6 @@ namespace serialize
         return int32_t( ( n >> 1 ) ^ ( 0 - ( n & 1 ) ) );
     }
 
-    template <typename T> T clamp( const T & value, const T & a, const T & b )
-    {
-        if ( value < a )
-            return a;
-        else if ( value > b )
-            return b;
-        else
-            return value;
-    }
-
     /**
         Bitpacks unsigned integer values to a buffer.
         Integer bit values are written to a 64 bit scratch value from right to left.
@@ -2382,8 +2372,6 @@ struct TestData
     uint32_t e : 8;
     uint32_t f : 8;
     bool g;
-    uint32_t v32;
-    uint64_t v64;
     int numItems;
     int items[MaxItems];
     float float_value;

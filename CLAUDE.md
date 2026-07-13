@@ -65,16 +65,16 @@ change for previously written data.
 
 - **The read path is defensive, and recently hardened.** Every `ReadStream`
   operation bounds-checks before reading and range-checks after
-  ([serialize.h:1056](serialize.h:1056)), returning false instead of asserting,
+  ([serialize.h:1048](serialize.h:1048)), returning false instead of asserting,
   so malicious packets fail cleanly. Arithmetic that could overflow signed
   ints is done in the unsigned domain with comments explaining why (e.g.
-  [serialize.h:908](serialize.h:908), [serialize.h:1726](serialize.h:1726)),
+  [serialize.h:892](serialize.h:892), [serialize.h:1807](serialize.h:1807)),
   and NaN is clamped before any float-to-int cast
-  ([serialize.h:1454](serialize.h:1454)). Recent commits show active work here.
+  ([serialize.h:1535](serialize.h:1535)). Recent commits show active work here.
 - **The tests cover adversarial cases, not just round trips**: out-of-range
   encodings smuggled into bit headroom, full `[INT32_MIN, INT32_MAX]` ranges,
   negative and huge byte counts, NaN input, >2^31 relative gaps
-  ([serialize.h:2610](serialize.h:2610) onward). This is better test thinking
+  ([serialize.h:2711](serialize.h:2711) onward). This is better test thinking
   than most serialization libraries have.
 - **The core design is sound and well understood.** Writer: 64-bit scratch,
   64-bit flush — the scratch stores as a qword when it fills and the bits
