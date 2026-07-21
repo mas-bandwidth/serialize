@@ -53,7 +53,11 @@ if(SERIALIZE_BUILD_TESTS OR SERIALIZE_FUZZ)
     if(MSVC)
         # 4127/4244 are opted back in here: the header now push/pops them, and this repo's own
         # executables use the same implicit-narrowing style as the header
-        set(SERIALIZE_DEV_FLAGS /W4 /fp:fast /GR- /wd4127 /wd4244)
+        # /utf-8: this header has no BOM, and MSVC otherwise decodes a BOM-less UTF-8
+        # source as the local ANSI code page — mangling non-ASCII characters and warning
+        # C4819. The test data is written as explicit code points so behaviour never
+        # depends on this, but the comments and the copyright line still need it.
+        set(SERIALIZE_DEV_FLAGS /W4 /utf-8 /fp:fast /GR- /wd4127 /wd4244)
     else()
         set(SERIALIZE_DEV_FLAGS -Wall -Wextra -ffast-math -fno-rtti)
     endif()

@@ -2451,7 +2451,15 @@ struct TestObject
 
         serialize_copy_string( data.string, "hello world!", sizeof(data.string) - 1 );
 
-        serialize_copy_wstring( data.wstring, L"привіт, світ!", sizeof(data.wstring) / sizeof(wchar_t) - 1 );
+        // Explicit code points, not a cyrillic literal. This header carries no BOM, and MSVC
+        // decodes a BOM-less UTF-8 source as the local ANSI code page, silently mangling wide
+        // literals. Writing the code points makes this independent of source encoding entirely,
+        // which also protects consumers who include this header without /utf-8. The assertions
+        // further down already do this for the same family of reason.
+        const wchar_t hello_world[] = { 0x043F, 0x0440, 0x0438, 0x0432, 0x0456, 0x0442,    // privit
+                                        0x002C, 0x0020,                                    // ", "
+                                        0x0441, 0x0432, 0x0456, 0x0442, 0x0021, 0 };       // svit!
+        serialize_copy_wstring( data.wstring, hello_world, sizeof(data.wstring) / sizeof(wchar_t) - 1 );
     }
 
     template <typename Stream> bool Serialize( Stream & stream )
@@ -2697,7 +2705,9 @@ inline void test_read_write()
         const char * string = "hello";
         write_string( writeStream, string, 10 );
 
-        const wchar_t * wstring = L"привіт";
+        // explicit code points, see the note above
+        const wchar_t wstring_storage[] = { 0x043F, 0x0440, 0x0438, 0x0432, 0x0456, 0x0442, 0 };
+        const wchar_t * wstring = wstring_storage;
         write_wstring( writeStream, wstring, 20 );
 
         write_align( writeStream );
