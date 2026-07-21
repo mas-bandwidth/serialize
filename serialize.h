@@ -2893,6 +2893,98 @@ inline void test_serialize_bytes_validation()
     }
 }
 
+inline void test_wstring_validation()
+{
+    // Wide-string coverage. Before this existed the only exercise of the wstring path
+    // was incidental — a field inside test_serialize, a pair of calls in test_read_write,
+    // and the golden vector. None of them covered the boundaries, and none covered the
+    // documented failure behaviour at all. See STANDARD.md, "wstring".
+
+    const int BufferSize = 32;
+
+    // empty string: length 0, no characters, and the reader appends the terminator
+    {
+        uint8_t buffer[256];
+        wchar_t empty[BufferSize] = { 0 };
+        serialize::WriteStream writeStream( buffer, sizeof( buffer ) );
+        serialize_check( serialize::serialize_wstring_internal( writeStream, empty, BufferSize ) );
+        writeStream.Flush();
+
+        wchar_t read_back[BufferSize];
+        memset( read_back, 0xFF, sizeof( read_back ) );
+        serialize::ReadStream readStream( buffer, writeStream.GetBytesProcessed() );
+        serialize_check( serialize::serialize_wstring_internal( readStream, read_back, BufferSize ) );
+        serialize_check( read_back[0] == L'\0' );
+    }
+
+    // longest legal string: buffer_size - 1 characters, since the terminator is not sent
+    {
+        uint8_t buffer[512];
+        wchar_t full[BufferSize];
+        for ( int i = 0; i < BufferSize - 1; ++i )
+            full[i] = (wchar_t) ( 0x0041 + ( i % 26 ) );
+        full[BufferSize - 1] = 0;
+
+        serialize::WriteStream writeStream( buffer, sizeof( buffer ) );
+        serialize_check( serialize::serialize_wstring_internal( writeStream, full, BufferSize ) );
+        writeStream.Flush();
+
+        wchar_t read_back[BufferSize];
+        memset( read_back, 0xFF, sizeof( read_back ) );
+        serialize::ReadStream readStream( buffer, writeStream.GetBytesProcessed() );
+        serialize_check( serialize::serialize_wstring_internal( readStream, read_back, BufferSize ) );
+        serialize_check( wcscmp( read_back, full ) == 0 );
+    }
+
+    // the measure stream must agree with the write stream on cost
+    {
+        uint8_t buffer[256];
+        wchar_t text[BufferSize] = { 0x0041, 0x0042, 0x0043, 0 };
+
+        serialize::MeasureStream measureStream;
+        serialize_check( serialize::serialize_wstring_internal( measureStream, text, BufferSize ) );
+
+        serialize::WriteStream writeStream( buffer, sizeof( buffer ) );
+        serialize_check( serialize::serialize_wstring_internal( writeStream, text, BufferSize ) );
+        writeStream.Flush();
+
+        serialize_check( measureStream.GetBitsProcessed() == writeStream.GetBitsProcessed() );
+    }
+
+    // THE DOCUMENTED FAILURE BEHAVIOUR, previously untested. A code point that does not fit
+    // in the local wchar_t must FAIL THE READ rather than truncate, so a stream written on a
+    // 4-byte-wchar_t platform cannot silently lose data when read on a 2-byte one. The value
+    // is planted with raw bit operations so the test does not depend on the local width to
+    // produce it.
+    {
+        uint8_t buffer[256];
+        const uint32_t above_bmp = 0x0001F600;      // beyond 16 bits by construction
+
+        serialize::WriteStream writeStream( buffer, sizeof( buffer ) );
+        serialize_check( writeStream.SerializeInteger( 1, 0, BufferSize - 1 ) );   // length 1
+        serialize_check( writeStream.SerializeBits( above_bmp, 32 ) );
+        writeStream.Flush();
+
+        wchar_t read_back[BufferSize];
+        memset( read_back, 0, sizeof( read_back ) );
+        serialize::ReadStream readStream( buffer, writeStream.GetBytesProcessed() );
+        const bool result = serialize::serialize_wstring_internal( readStream, read_back, BufferSize );
+
+        if ( sizeof( wchar_t ) >= 4 )
+        {
+            // the value fits: it must round-trip exactly
+            serialize_check( result == true );
+            serialize_check( (uint32_t) read_back[0] == above_bmp );
+        }
+        else
+        {
+            // the value does not fit: reject, and do not leave a truncated character behind
+            serialize_check( result == false );
+            serialize_check( read_back[0] != (wchar_t) ( above_bmp & 0xFFFF ) );
+        }
+    }
+}
+
 inline void test_int_relative_validation()
 {
     // the 32 bit fallback must reject values that violate the previous < current contract
@@ -3278,6 +3370,7 @@ inline void serialize_test()
         SERIALIZE_RUN_TEST( test_serialize_int64_full_range );
         SERIALIZE_RUN_TEST( test_serialize_int64_validation );
         SERIALIZE_RUN_TEST( test_serialize_bytes_validation );
+        SERIALIZE_RUN_TEST( test_wstring_validation );
         SERIALIZE_RUN_TEST( test_int_relative_validation );
         SERIALIZE_RUN_TEST( test_compressed_float_validation );
         SERIALIZE_RUN_TEST( test_golden_wire_format );
