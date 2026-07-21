@@ -132,6 +132,7 @@
 #include <stdint.h>     // fixed width integer types
 #include <stddef.h>     // size_t, NULL
 #include <string.h>     // memcpy, memset, strlen
+#include <wchar.h>      // wcslen
 #include <math.h>       // ceil, floor
 
 namespace serialize 
@@ -1705,6 +1706,40 @@ namespace serialize
     // Code points above 0xFFFF are not translated between UTF-16 and UTF-32 platforms: reading a value that doesn't
     // fit in the local wchar_t fails rather than truncating.
 
+    template <typename Stream> bool serialize_wstring_internal( Stream & stream, wchar_t * string, int buffer_size )
+    {
+        const uint32_t max_wchar_value = ( sizeof( wchar_t ) >= 4 ) ? 0xFFFFFFFFU : 0xFFFFU;
+        int length = 0;
+        if ( Stream::IsWriting )
+        {
+            length = (int) wcslen( string );
+            serialize_assert( length < buffer_size );
+        }
+        serialize_int( stream, length, 0, buffer_size - 1 );
+        for ( int i = 0; i < length; i++ )
+        {
+            uint32_t character = 0;
+            if ( Stream::IsWriting )
+            {
+                character = (uint32_t) string[i];
+            }
+            serialize_bits( stream, character, 32 );
+            if ( Stream::IsReading )
+            {
+                if ( character > max_wchar_value )
+                {
+                    return false;
+                }
+                string[i] = (wchar_t) character;
+            }
+        }
+        if ( Stream::IsReading )
+        {
+            string[length] = L'\0';
+        }
+        return true;
+    }
+
 
     /**
         Serialize a string to the stream (read/write/measure).
@@ -1724,7 +1759,27 @@ namespace serialize
                 return false;                                                               \
             }                                                                               \
         } while (0)
-    
+
+    /**
+        Serialize a wide string to the stream (read/write/measure).
+        This is a helper macro to make writing unified serialize functions easier.
+        Serialize macros returns false on error so we don't need to use exceptions for error handling on read. This is an important safety measure because packet data comes from the network and may be malicious.
+        The wire format is 32 bits per character, so streams are compatible between platforms with 2 and 4 byte wchar_t. Reading a character that doesn't fit in the local wchar_t fails rather than truncating.
+        IMPORTANT: This macro must be called inside a templated serialize function with template \<typename Stream\>. The serialize method must have a bool return value.
+        @param stream The stream object. May be a read, write or measure stream.
+        @param string The wide string to serialize write/measure. Pointer to buffer to be filled on read.
+        @param buffer_size The size of the string buffer in wide characters. String with terminating null character must fit into this buffer.
+     */
+
+    #define serialize_wstring( stream, string, buffer_size )                                \
+        do                                                                                  \
+        {                                                                                   \
+            if ( !serialize::serialize_wstring_internal( stream, string, buffer_size ) )    \
+            {                                                                               \
+                return false;                                                               \
+            }                                                                               \
+        } while (0)
+
 
     /**
         Serialize an alignment to the stream (read/write/measure).
@@ -1999,6 +2054,16 @@ namespace serialize
             }                                                                               \
         } while (0)
 
+    #define read_wstring( stream, string, buffer_size )                                     \
+        do                                                                                  \
+        {                                                                                   \
+            wchar_t * wstring_ptr = (wchar_t*) ( string );                                  \
+            if ( !serialize_wstring_internal( stream, wstring_ptr, buffer_size ) )          \
+            {                                                                               \
+                return false;                                                               \
+            }                                                                               \
+        } while (0)
+
 
     #define read_align                  serialize_align
     #define read_object                 serialize_object
@@ -2084,6 +2149,19 @@ namespace serialize
             write_bytes( stream, (uint8_t*) ( string ), length );                           \
         } while (0)
 
+    #define write_wstring( stream, string, buffer_size )                                    \
+        do                                                                                  \
+        {                                                                                   \
+            const wchar_t * wstring_ptr = (const wchar_t*) ( string );                      \
+            int length = (int) wcslen( wstring_ptr );                                       \
+            serialize_assert( length < (buffer_size) );                                     \
+            write_int( stream, length, 0, (buffer_size) - 1 );                              \
+            for ( int i = 0; i < length; i++ )                                              \
+            {                                                                               \
+                write_bits( stream, (uint32_t) wstring_ptr[i], 32 );                        \
+            }                                                                               \
+        } while (0)
+
 
     #define write_align( stream )                                                           \
         do                                                                                  \
@@ -2115,6 +2193,20 @@ inline void serialize_copy_string( char * dest, const char * source, size_t dest
     for ( size_t i = 0; i < dest_size - 1; i++ )
     {
         if ( source[i] == '\0' )
+            break;
+        dest[i] = source[i];
+    }
+}
+
+inline void serialize_copy_wstring( wchar_t * dest, const wchar_t * source, size_t dest_size )
+{
+    serialize_assert( dest );
+    serialize_assert( source );
+    serialize_assert( dest_size >= 1 );
+    memset( dest, 0, dest_size * sizeof( wchar_t ) );
+    for ( size_t i = 0; i < dest_size - 1; i++ )
+    {
+        if ( source[i] == L'\0' )
             break;
         dest[i] = source[i];
     }
