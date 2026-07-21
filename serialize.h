@@ -132,7 +132,6 @@
 #include <stdint.h>     // fixed width integer types
 #include <stddef.h>     // size_t, NULL
 #include <string.h>     // memcpy, memset, strlen
-#include <wchar.h>      // wcslen
 #include <math.h>       // ceil, floor
 
 namespace serialize 
@@ -1706,39 +1705,6 @@ namespace serialize
     // Code points above 0xFFFF are not translated between UTF-16 and UTF-32 platforms: reading a value that doesn't
     // fit in the local wchar_t fails rather than truncating.
 
-    template <typename Stream> bool serialize_wstring_internal( Stream & stream, wchar_t * string, int buffer_size )
-    {
-        int length = 0;
-        if ( Stream::IsWriting )
-        {
-            length = (int) wcslen( string );
-            serialize_assert( length < buffer_size );
-        }
-
-        serialize_int( stream, length, 0, buffer_size - 1 );
-        for ( int i = 0; i < length; i++ )
-        {
-            uint32_t char_value = 0;
-            if ( Stream::IsWriting )
-            {
-                char_value = (uint32_t) string[i];
-            }
-            serialize_bits( stream, char_value, 32 );
-            if ( Stream::IsReading )
-            {
-                if ( sizeof(wchar_t) == 2 && char_value > 0xFFFF )
-                {
-                    return false;
-                }
-                string[i] = (wchar_t) char_value;
-            }
-        }
-        if ( Stream::IsReading )
-        {
-            string[length] = L'\0';
-        }
-        return true;
-    }
 
     /**
         Serialize a string to the stream (read/write/measure).
@@ -1759,14 +1725,6 @@ namespace serialize
             }                                                                               \
         } while (0)
     
-    #define serialize_wstring( stream, string, buffer_size )                                \
-        do                                                                                  \
-        {                                                                                   \
-            if ( !serialize::serialize_wstring_internal( stream, string, buffer_size ) )    \
-            {                                                                               \
-                return false;                                                               \
-            }                                                                               \
-        } while (0)
 
     /**
         Serialize an alignment to the stream (read/write/measure).
@@ -2041,15 +1999,6 @@ namespace serialize
             }                                                                               \
         } while (0)
 
-    #define read_wstring( stream, string, buffer_size )                                      \
-        do                                                                                   \
-        {                                                                                    \
-            wchar_t * string_ptr = (wchar_t*) ( string );                                    \
-            if ( !serialize_wstring_internal( stream, string_ptr, buffer_size ) )            \
-            {                                                                                \
-                return false;                                                                \
-            }                                                                                \
-        } while (0)
 
     #define read_align                  serialize_align
     #define read_object                 serialize_object
@@ -2135,18 +2084,6 @@ namespace serialize
             write_bytes( stream, (uint8_t*) ( string ), length );                           \
         } while (0)
 
-    #define write_wstring( stream, string, buffer_size )                                    \
-        do                                                                                  \
-        {                                                                                   \
-            int length = (int) wcslen( string );                                            \
-            serialize_assert( length < (buffer_size) );                                     \
-            write_int( stream, length, 0, (buffer_size) - 1 );                              \
-            for ( int i = 0; i < length; i++ )                                              \
-            {                                                                               \
-                uint32_t wchar_value = (uint32_t) ( string )[i];                            \
-                write_bits( stream, wchar_value, 32 );                                      \
-            }                                                                               \
-        } while (0)
 
     #define write_align( stream )                                                           \
         do                                                                                  \
@@ -2183,19 +2120,6 @@ inline void serialize_copy_string( char * dest, const char * source, size_t dest
     }
 }
 
-inline void serialize_copy_wstring( wchar_t * dest, const wchar_t * source, size_t dest_size )
-{
-    serialize_assert( dest );
-    serialize_assert( source );
-    serialize_assert( dest_size >= 1 );
-    memset( dest, 0, dest_size * sizeof(wchar_t) );
-    for ( size_t i = 0; i < dest_size - 1; i++ )
-    {
-        if ( source[i] == L'\0' )
-            break;
-        dest[i] = source[i];
-    }
-}
 
 #if SERIALIZE_ENABLE_TESTS
 
