@@ -48,8 +48,22 @@ bits needed to reach alignment is `(8 - (bit_index % 8)) % 8`.
 
     serialize_bits( stream, value, bits )
 
-Writes the low `bits` bits of an unsigned 32-bit `value`, where `bits` is in
-`[1,32]`. The value must be less than `2^bits`.
+Writes the low `bits` bits of `value`, where `bits` is in `[1,64]`.
+
+* For `bits <= 32` this is a single group of that many bits, and the value must
+  be less than `2^bits`.
+* For `bits > 32` the value is split: the **low 32 bits are written first as a
+  32-bit group**, then the remaining `bits - 32` high bits as a second group.
+
+Fixed-width helpers are aliases for exactly this, and carry no range
+information of their own:
+
+| helper | equivalent to |
+|---|---|
+| `serialize_uint8( value )`  | `serialize_bits( value, 8 )` |
+| `serialize_uint16( value )` | `serialize_bits( value, 16 )` |
+| `serialize_uint32( value )` | `serialize_bits( value, 32 )` |
+| `serialize_uint64( value )` | `serialize_bits( value, 64 )` — low 32 then high 32 |
 
 ### bool
 
@@ -92,13 +106,18 @@ The range must be identical on both sides. The format carries no
 self-description: a stream is only interpretable by a reader that performs the
 same sequence of operations with the same parameters.
 
-### int64
+### int64 (ranged)
 
-    serialize_uint64 / serialize_int64
+    serialize_int64( stream, value, min, max )
 
-As above but with a 64-bit range. If `bits_required64( min, max )` is 32 or
-fewer, the value is written as a single group of that many bits. Otherwise the
-low 32 bits are written first, followed by the remaining `bits - 32` high bits.
+The 64-bit counterpart of the ranged integer, and the only ranged 64-bit
+operation. `bits_required64( min, max )` bits are used. If that is 32 or fewer,
+the value is written as a single group of that many bits; otherwise the low 32
+bits are written first, followed by the remaining `bits - 32` high bits.
+
+**Do not confuse this with `serialize_uint64`**, which is not ranged — it is
+`serialize_bits( value, 64 )` and always costs a full 64 bits. The names are
+similar and the encodings are not.
 
 ### int_relative
 
@@ -155,6 +174,15 @@ Readers must reject an integer greater than `max_integer_value`.
 
 This is lossy by construction: a round trip returns the nearest representable
 quantum, not the original value.
+
+### object
+
+    serialize_object( stream, object )
+
+Invokes the object's own serialize function inline. It contributes **no bytes
+of its own** — it is composition, not an encoding. Whatever the nested object
+writes appears at exactly this position in the stream, with no framing, length
+prefix, or alignment inserted around it.
 
 ## Bytes and Strings
 
@@ -225,6 +253,17 @@ Decoding it against this document:
 
 Total: 3 + 3×32 = 99 bits = 13 bytes after flush. This matches, and it is the
 cheapest way to confirm an independent implementation is correct.
+
+## Read-only and write-only forms
+
+Every operation above has `read_` and `write_` variants — `read_string`,
+`write_bits`, and so on — for code paths that only ever read or only ever
+write, rather than sharing one templated function.
+
+**They produce byte-identical output to their `serialize_` counterpart.** They
+exist for convenience and to avoid a branch, not to encode anything
+differently. This document therefore specifies each operation once, under its
+`serialize_` name.
 
 ## Compatibility Notes
 
