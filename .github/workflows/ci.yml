@@ -2,7 +2,12 @@ name: CI
 
 on:
   push:
+    branches: [ main ]
   pull_request:
+  # Filtering push to main means a feature branch no longer runs CI on push -- its PR
+  # does. workflow_dispatch keeps a deliberate way to run the matrix on a branch, which
+  # is the capability the filter would otherwise silently remove.
+  workflow_dispatch:
 
 jobs:
   build-and-test:
