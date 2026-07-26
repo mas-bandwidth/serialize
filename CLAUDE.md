@@ -1,3 +1,30 @@
+<!-- HOT:BEGIN -->
+## HOT — read before reasoning about this repo
+
+WHAT: the C++ bitpacking serialization library. NOT serialize.rs / serialize.go (the ports),
+NOT serialize.modern (the C++23 rewrite with compile-time schemas).
+
+DECISIONS THAT READ AS BUGS (they are not — do not "fix" them)
+- **The serialize macros hide `return false` on purpose.** Invalid data must abort the
+  whole serialize function immediately, never continuing deeper or into a loop bounded by
+  attacker-controlled data. The library is low-level C-style and deliberately does not use
+  exceptions. Serialize functions must be `template <typename Stream>` returning bool. Do
+  not propose exceptions or error codes; the early-return macro IS the mechanism.
+- **~80 implicit-narrowing warnings are a deliberate style**, not neglect.
+- **Asserts on the write path, runtime validation on the read path.** Write-side misuse is
+  a programmer error (size buffers conservatively or pre-measure with `MeasureStream`); the
+  READ path validates in release and drops invalid data, because asserts are not enough at
+  a trust boundary. Do not propose hardened/checked write modes.
+- **The buffer contracts are load-bearing** (owner-approved July 2026): write buffers must
+  be a multiple of 8 bytes (the writer flushes qwords; bytes past the data are written only
+  as zeros), and read allocations must extend at least 8 bytes past the packet (the reader
+  loads 64-bit windows at byte granularity; bytes past the end are loaded but never
+  interpreted). These contracts are what make the qword-flush writer and the branchless
+  reader possible. Do not remove them or add tail handling to avoid them.
+- `serialize_int_relative` requires strictly increasing values.
+- `wstring` is 32 bits per character on the wire, for portability across 2/4-byte platforms.
+<!-- HOT:END -->
+
 # CLAUDE.md
 
 ## What this is
