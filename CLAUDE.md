@@ -23,6 +23,34 @@ DECISIONS THAT READ AS BUGS (they are not — do not "fix" them)
   reader possible. Do not remove them or add tail handling to avoid them.
 - `serialize_int_relative` requires strictly increasing values.
 - `wstring` is 32 bits per character on the wire, for portability across 2/4-byte platforms.
+
+THE WRITE/READ RULE — this library is the clearest statement of it, IN ITS OWN DOCS
+Glenn, 2026-07-26: "intention is on write, user is responsible to not crash or do undefined
+behavior. asserts are there to help. callers responsibility. on read, obviously, we must
+check." Plus Postel: "be conservative in what you send, permissive in what you receive."
+serialize.h says it directly at :870, :918 and :933 -- "All checking is performed by debug
+asserts on write." That is the CONTRACT. I audited this header, quoted that exact line in my
+notes, and still filed the write path as a defect. Do not repeat that.
+DELIBERATELY ASSERT-ONLY ON WRITE, do NOT "fix":
+  - BitWriter::WriteBits (:432) and WriteBytes (:488) -- the asserts are the whole bound.
+  - BitWriter::Initialize / ctor (:389, :409): serialize_assert( ( bytes % 8 ) == 0 ) is the
+    ENTIRE enforcement of the qword-store contract that FlushBits (:537) relies on. Hand a
+    WriteStream a 100-byte buffer, write exactly 800 bits -- within capacity, violating no
+    assert even in debug -- and the flush memcpys 8 bytes at offset 96, four PAST the end.
+    Proved with a canary, 2026-07-26. Still the caller's responsibility: pass a multiple of 8.
+    (yojimbo satisfies it on purpose at yojimbo_connection.cpp:248, `maxPacketBytes &= ~7`.)
+  - serialize_copy_string / serialize_copy_wstring (:2188, :2202) with dest_size 0 -- the
+    same size_t underflow as reliable_copy_string.
+NOTE FOR ANY SANITIZER WORK HERE: ASan does NOT report that FlushBits overflow. It is a
+partial-granule write (8 bytes at offset 96 of a 100-byte allocation) and ASan is blind to
+it -- verified with a control, an identical raw memcpy is also unreported. "No ASan report"
+is NOT evidence of safety in this header. Use a canary region.
+THE READ PATH IS CLEAN and both independent audits agree: every BitReader assert has a real
+ReadStream companion -- WouldReadPastEnd at :1059, :1081, :1113, :1148; ReadBytes bounds at
+:1129 and :1134; values off the wire range-checked twice (:1062 and the serialize_int macro
+at :1358). serialize_string_internal (:1689) is safe on read because length comes off the
+wire via serialize_int bounded by buffer_size - 1; its assert at :1695 is inside an
+IsWriting branch and never runs on read.
 <!-- HOT:END -->
 
 # CLAUDE.md
