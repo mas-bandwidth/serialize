@@ -1118,6 +1118,7 @@ namespace serialize
             Write an array of bytes to the bit stream.
             Use this when you have to copy a large block of data into your bitstream.
             Faster than just writing each byte to the bit stream via BitWriter::WriteBits( value, 8 ), because it aligns to byte index and copies into the buffer without bitpacking.
+            Implementation: the head bytes that complete the partial scratch word are packed as one value (not byte-at-a-time), whole words are copied with memcpy, and the tail bytes land in the empty scratch as one value. At most two shift/or operations and one memcpy per call.
             @param data The byte array data to write to the bit stream.
             @param bytes The number of bytes to write.
             @see BitReader::ReadBytes
@@ -1129,17 +1130,40 @@ namespace serialize
             serialize_assert( GetAlignBits() == 0 );
             serialize_assert( uint64_t(m_bitsWritten) + uint64_t(bytes) * 8 <= uint64_t(m_numBits) );
             serialize_assert( ( m_bitsWritten % 8 ) == 0 );
+            serialize_assert( ( m_scratchBits % 8 ) == 0 );                             // byte aligned, so the scratch holds whole bytes
 
-            int64_t headBytes = ( 8 - ( m_bitsWritten % 64 ) / 8 ) % 8;
+            // head: the bytes that complete the partial scratch word, packed as a single value.
+            // assembling least significant byte first matches the wire format on every platform, because scratch words are stored through host_to_network.
+
+            int64_t headBytes = ( ( 64 - m_scratchBits ) / 8 ) % 8;
             if ( headBytes > bytes )
                 headBytes = bytes;
-            for ( int64_t i = 0; i < headBytes; ++i )
-                WriteBits( data[i], 8 );
+            if ( headBytes > 0 )
+            {
+                uint64_t head = 0;
+                for ( int64_t i = 0; i < headBytes; ++i )
+                    head |= uint64_t( data[i] ) << ( 8 * i );
+                m_scratch |= head << m_scratchBits;
+                const int newScratchBits = m_scratchBits + (int) headBytes * 8;
+                serialize_assert( newScratchBits <= 64 );
+                if ( newScratchBits == 64 )
+                {
+                    const uint64_t word = host_to_network( m_scratch );
+                    memcpy( m_data + (size_t) m_wordIndex * 8, &word, sizeof( word ) );
+                    m_wordIndex++;
+                    m_scratch = 0;
+                    m_scratchBits = 0;
+                }
+                else
+                {
+                    m_scratchBits = newScratchBits;
+                }
+                m_bitsWritten += headBytes * 8;
+            }
             if ( headBytes == bytes )
                 return;
 
-            serialize_assert( GetAlignBits() == 0 );
-            serialize_assert( ( m_bitsWritten % 64 ) == 0 && m_scratchBits == 0 );      // the head bytes flushed the scratch at the word boundary
+            serialize_assert( ( m_bitsWritten % 64 ) == 0 && m_scratchBits == 0 && m_scratch == 0 );        // the head bytes filled the scratch to the word boundary
 
             int64_t numWords = ( bytes - headBytes ) / 8;
             if ( numWords > 0 )
@@ -1147,16 +1171,22 @@ namespace serialize
                 memcpy( m_data + (size_t) m_wordIndex * 8, data + headBytes, (size_t) ( numWords * 8 ) );
                 m_bitsWritten += numWords * 64;
                 m_wordIndex += numWords;
-                m_scratch = 0;
             }
 
-            serialize_assert( GetAlignBits() == 0 );
+            // tail: the remaining bytes land in the empty scratch as a single value
 
             int64_t tailStart = headBytes + numWords * 8;
             int64_t tailBytes = bytes - tailStart;
             serialize_assert( tailBytes >= 0 && tailBytes < 8 );
-            for ( int64_t i = 0; i < tailBytes; ++i )
-                WriteBits( data[tailStart+i], 8 );
+            if ( tailBytes > 0 )
+            {
+                uint64_t tail = 0;
+                for ( int64_t i = 0; i < tailBytes; ++i )
+                    tail |= uint64_t( data[tailStart+i] ) << ( 8 * i );
+                m_scratch = tail;
+                m_scratchBits = (int) tailBytes * 8;
+                m_bitsWritten += tailBytes * 8;
+            }
 
             serialize_assert( GetAlignBits() == 0 );
 
