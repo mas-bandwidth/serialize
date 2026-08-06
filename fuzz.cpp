@@ -143,12 +143,10 @@ template <typename Stream> bool FuzzRead( Stream & stream, const uint8_t * ops, 
                 serialize_fixed( stream, fixed64, 48, 16, -100000000000LL, +100000000000LL );
                 fuzz_check( fixed64 >= -100000000000LL * 65536 && fixed64 <= 100000000000LL * 65536 );
 
-#if defined(__SIZEOF_INT128__)
-                serialize::int128_t wide = 0;
+                serialize::int128_t wide = 0;                                   // exists on every platform: native or emulated
                 serialize_fixed( stream, wide, 112, 16, -1152921504606846976LL, +1152921504606846976LL );        // ±2^60 units: a raw range past 64 bits
-                fuzz_check( wide >= serialize::int128_t( -1152921504606846976LL ) * 65536 );
-                fuzz_check( wide <= serialize::int128_t( +1152921504606846976LL ) * 65536 );
-#endif // #if defined(__SIZEOF_INT128__)
+                fuzz_check( wide >= serialize::int128_t( -1152921504606846976LL ) * serialize::int128_t( 65536 ) );
+                fuzz_check( wide <= serialize::int128_t( +1152921504606846976LL ) * serialize::int128_t( 65536 ) );
             }
             break;
 
@@ -184,10 +182,8 @@ template <typename Stream> bool FuzzRead( Stream & stream, const uint8_t * ops, 
             {
                 uint64_t value = 0;
                 serialize_uint64( stream, value );
-#if defined(__SIZEOF_INT128__)
-                serialize::uint128_t value128 = 0;
+                serialize::uint128_t value128 = 0;                      // exists on every platform: native or emulated
                 serialize_uint128( stream, value128 );
-#endif // #if defined(__SIZEOF_INT128__)
             }
             break;
 
@@ -338,22 +334,21 @@ template <typename Stream> bool FuzzRoundTrip( Stream & stream, const uint8_t * 
                     fuzz_check( fixed64 == expected_fixed64 );
                 }
 
-#if defined(__SIZEOF_INT128__)
                 // wide fixed point: bounds ±2^60 whole units in Q112.16 give a raw range of 2^77,
-                // exercising the multi group path with values that cannot fit in 64 bits
+                // exercising the multi group path with values that cannot fit in 64 bits. the wide
+                // types exist on every platform: native __int128 or the emulated pair.
                 const serialize::uint128_t wide_range = serialize::uint128_t( 1152921504606846976ULL ) << 17;    // ( 2 * 2^60 ) << 16
                 const uint64_t wide_pool_high = pool.NextUint64();
                 const uint64_t wide_pool_low = pool.NextUint64();
                 const serialize::uint128_t wide_pool = ( serialize::uint128_t( wide_pool_high ) << 64 ) | wide_pool_low;
                 const serialize::uint128_t wide_raw_min = serialize::uint128_t( serialize::int128_t( -1152921504606846976LL ) ) << 16;
-                const serialize::int128_t expected_wide = serialize::int128_t( wide_raw_min + wide_pool % ( wide_range + 1 ) );
+                const serialize::int128_t expected_wide = serialize::int128_t( wide_raw_min + wide_pool % ( wide_range + serialize::uint128_t( 1 ) ) );
                 serialize::int128_t wide = Stream::IsWriting ? expected_wide : serialize::int128_t( 0 );
                 serialize_fixed( stream, wide, 112, 16, -1152921504606846976LL, +1152921504606846976LL );
                 if ( Stream::IsReading )
                 {
                     fuzz_check( wide == expected_wide );
                 }
-#endif // #if defined(__SIZEOF_INT128__)
             }
             break;
 
@@ -437,7 +432,6 @@ template <typename Stream> bool FuzzRoundTrip( Stream & stream, const uint8_t * 
                     fuzz_check( value == expected );
                 }
 
-#if defined(__SIZEOF_INT128__)
                 const uint64_t expected128_high = pool.NextUint64();
                 const uint64_t expected128_low = pool.NextUint64();
                 const serialize::uint128_t expected128 = ( serialize::uint128_t( expected128_high ) << 64 ) | expected128_low;
@@ -447,7 +441,6 @@ template <typename Stream> bool FuzzRoundTrip( Stream & stream, const uint8_t * 
                 {
                     fuzz_check( value128 == expected128 );
                 }
-#endif // #if defined(__SIZEOF_INT128__)
             }
             break;
 

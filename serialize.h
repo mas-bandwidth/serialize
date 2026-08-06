@@ -136,33 +136,37 @@
 #include <wchar.h>      // wcslen
 #include <math.h>       // ceil, floor
 
-// 128 bit unsigned integer support.
+// 128 bit integer support.
 //
-// serialize::uint128_t exists on every platform. Where the compiler provides native __int128
-// (gcc, clang, clang-cl) it is unsigned __int128: the fastest representation. On compilers
-// without it (pure MSVC), serialize defines the emulated mas_uint128_t below — a full unsigned
-// 128 bit integer type with standard semantics — and announces it with the MAS_UINT128_DEFINED
-// handshake macro.
+// serialize::uint128_t and serialize::int128_t exist on every platform. Where the compiler
+// provides native __int128 (gcc, clang, clang-cl) they are unsigned __int128 and __int128: the
+// fastest representation. On compilers without it (pure MSVC), serialize defines the emulated
+// pair below — mas_uint128_t and mas_int128_t, full 128 bit integer types with standard
+// semantics — and announces them with the MAS_UINT128_DEFINED handshake macro. The two structs
+// are one facility: one announce macro covers the pair, and copies are carried whole, never
+// just one half.
 //
 // THE SHARING CONVENTION: single header libraries cannot include each other, so this definition
 // block is carried, verbatim, by sibling projects under the same handshake (the fixed point
 // library, and games built on these libraries). Whichever header is included first defines the
-// type; everyone after sees MAS_UINT128_DEFINED and aliases it, so the type is defined exactly
-// once per translation unit instead of two or three times. The copies exist by design; the
-// handshake makes them mutually exclusive per translation unit, and the differential test
-// against native __int128 in each C++ home is what keeps every copy honest — drift fails loudly.
+// pair; everyone after sees MAS_UINT128_DEFINED and aliases them, so the types are defined
+// exactly once per translation unit instead of two or three times. The copies exist by design;
+// the handshake makes them mutually exclusive per translation unit, and the differential tests
+// against native __int128 in each C++ home are what keep every copy honest — drift fails loudly.
 //
-// The block is dual language: in C the type is the bare POD struct of two uint64_t members,
+// The block is dual language: in C the types are bare POD structs of two uint64_t members,
 // low half then high half, matching little endian layout and the wire order. C projects add
 // their own function wrappers in their own tree. Everything else — constructors, the full
-// operator surface, the explicit uint64_t conversion — is C++ only, inside #ifdef __cplusplus.
+// operator surface, the explicit conversions — is C++ only, inside #ifdef __cplusplus.
 //
-// Semantics match native unsigned __int128 exactly, with two documented choices where native
-// has none: shift counts outside [0,127] yield zero (native shifts by 128 or more are undefined
-// behavior), and division or modulo by zero yields zero quotient and zero remainder (this block
-// has no assert dependency by design, and deterministic zero is the safest portable behavior).
+// Semantics match native __int128 exactly, with documented choices where native has none:
+// shift counts outside [0,127] yield zero (all sign bits for the signed arithmetic right
+// shift; native shifts by 128 or more are undefined behavior), division or modulo by zero
+// yields zero quotient and zero remainder (this block has no assert dependency by design, and
+// deterministic zero is the safest portable behavior), and signed INT128_MIN over -1 wraps to
+// INT128_MIN, the bit pattern native hardware produces.
 //
-// When tests are enabled the type is defined even where native __int128 exists, so the test
+// When tests are enabled the pair is defined even where native __int128 exists, so the test
 // suite can prove the emulation agrees with native operator by operator and produces byte
 // identical wire.
 
@@ -424,6 +428,212 @@ typedef struct mas_uint128_t
 
 } mas_uint128_t;
 
+/**
+    The emulated signed 128 bit integer: a thin two's complement layer over the unsigned lanes.
+    Addition, subtraction, multiplication and the bitwise operators produce the same bit patterns
+    as the unsigned type (two's complement), so they delegate to it instead of duplicating the
+    arithmetic. The signed specific pieces are the comparisons (the high lane compares signed),
+    operator>> (ARITHMETIC shift: vacated bits fill with the sign), division and modulo (sign
+    extraction, unsigned divmod on the magnitudes, sign application — C++ truncation toward zero
+    with the remainder sign following the dividend), unary minus, the sign extending int64_t
+    constructor, and the bit preserving conversions to and from the unsigned type.
+    Documented choices where native has none: shift counts outside [0,127] yield zero for <<
+    and all sign bits for >> (the limit of shifting further); division or modulo by zero yields
+    zero quotient and zero remainder, matching the unsigned type; and the one overflowing
+    division, INT128_MIN over -1, wraps to INT128_MIN quotient and zero remainder — the same bit
+    pattern native two's complement hardware produces.
+    This struct is part of the mas_uint128_t definition block above and is carried with it: the
+    two types are one facility, announced together by the single MAS_UINT128_DEFINED handshake
+    macro and defined exactly once per translation unit. Copies in sibling projects carry the
+    whole pair, never just one half.
+ */
+
+typedef struct mas_int128_t
+{
+    uint64_t lo;            ///< the low 64 bits. first, matching the little endian layout and the wire order
+    uint64_t hi;            ///< the high 64 bits. the top bit is the sign
+
+#ifdef __cplusplus
+
+    mas_int128_t() = default;
+
+    mas_int128_t( int64_t value ) : lo( uint64_t( value ) ), hi( ( value < 0 ) ? 0xFFFFFFFFFFFFFFFFULL : 0 ) {}     // sign extending
+
+    explicit mas_int128_t( mas_uint128_t value ) : lo( value.lo ), hi( value.hi ) {}        // bit preserving
+
+    explicit operator mas_uint128_t () const                                                // bit preserving
+    {
+        mas_uint128_t result( 0 );
+        result.lo = lo;
+        result.hi = hi;
+        return result;
+    }
+
+    explicit operator int64_t () const
+    {
+        return int64_t( lo );               // the low lane, wrapping two's complement like a native narrowing conversion
+    }
+
+    bool IsNegative() const
+    {
+        return ( hi >> 63 ) != 0;
+    }
+
+    bool operator == ( mas_int128_t other ) const
+    {
+        return lo == other.lo && hi == other.hi;
+    }
+
+    bool operator != ( mas_int128_t other ) const
+    {
+        return ! ( *this == other );
+    }
+
+    bool operator < ( mas_int128_t other ) const
+    {
+        // signed ordering: the high lanes compare signed, the low lanes break ties unsigned
+        if ( hi != other.hi )
+        {
+            return int64_t( hi ) < int64_t( other.hi );
+        }
+        return lo < other.lo;
+    }
+
+    bool operator > ( mas_int128_t other ) const
+    {
+        return other < *this;
+    }
+
+    bool operator <= ( mas_int128_t other ) const
+    {
+        return ! ( other < *this );
+    }
+
+    bool operator >= ( mas_int128_t other ) const
+    {
+        return ! ( *this < other );
+    }
+
+    // two's complement: addition, subtraction, multiplication and the bitwise operators are the
+    // same bit patterns as unsigned, so they delegate to the unsigned type. signed overflow wraps
+    // by construction, exactly like the underlying hardware.
+
+    mas_int128_t operator + ( mas_int128_t other ) const { return mas_int128_t( mas_uint128_t( *this ) + mas_uint128_t( other ) ); }
+    mas_int128_t operator - ( mas_int128_t other ) const { return mas_int128_t( mas_uint128_t( *this ) - mas_uint128_t( other ) ); }
+    mas_int128_t operator * ( mas_int128_t other ) const { return mas_int128_t( mas_uint128_t( *this ) * mas_uint128_t( other ) ); }
+
+    mas_int128_t operator ~ () const                     { return mas_int128_t( ~mas_uint128_t( *this ) ); }
+    mas_int128_t operator & ( mas_int128_t other ) const { return mas_int128_t( mas_uint128_t( *this ) & mas_uint128_t( other ) ); }
+    mas_int128_t operator | ( mas_int128_t other ) const { return mas_int128_t( mas_uint128_t( *this ) | mas_uint128_t( other ) ); }
+    mas_int128_t operator ^ ( mas_int128_t other ) const { return mas_int128_t( mas_uint128_t( *this ) ^ mas_uint128_t( other ) ); }
+
+    mas_int128_t operator << ( int shift ) const
+    {
+        // a logical shift of the bit pattern, matching what native two's complement hardware does.
+        // shift counts outside [0,127] yield zero, matching the unsigned type
+        return mas_int128_t( mas_uint128_t( *this ) << shift );
+    }
+
+    mas_int128_t operator >> ( int shift ) const
+    {
+        // ARITHMETIC shift right: the vacated high bits fill with the sign. shift counts outside
+        // [0,127] yield all sign bits — 0 for non negative values, -1 for negative ones — which is
+        // the limit of shifting further, documented above
+        if ( shift < 0 || shift >= 128 )
+        {
+            return IsNegative() ? mas_int128_t( -1 ) : mas_int128_t( 0 );
+        }
+        mas_uint128_t result = mas_uint128_t( *this ) >> shift;
+        if ( IsNegative() && shift > 0 )
+        {
+            result = result | ( ~mas_uint128_t( 0 ) << ( 128 - shift ) );
+        }
+        return mas_int128_t( result );
+    }
+
+    mas_int128_t operator + () const
+    {
+        return *this;
+    }
+
+    mas_int128_t operator - () const
+    {
+        return mas_int128_t( -mas_uint128_t( *this ) );                 // two's complement negation. -INT128_MIN wraps to itself, like native
+    }
+
+    static void DivMod( mas_int128_t dividend, mas_int128_t divisor, mas_int128_t & quotient, mas_int128_t & remainder )
+    {
+        // sign extraction, unsigned shift subtract division on the magnitudes, then sign
+        // application: C++ semantics, truncation toward zero with the remainder sign following
+        // the dividend. the documented edge choices live in the comment block above.
+        const bool dividend_negative = dividend.IsNegative();
+        const bool divisor_negative = divisor.IsNegative();
+        const mas_uint128_t dividend_magnitude = dividend_negative ? -mas_uint128_t( dividend ) : mas_uint128_t( dividend );
+        const mas_uint128_t divisor_magnitude = divisor_negative ? -mas_uint128_t( divisor ) : mas_uint128_t( divisor );
+        mas_uint128_t unsigned_quotient( 0 );
+        mas_uint128_t unsigned_remainder( 0 );
+        mas_uint128_t::DivMod( dividend_magnitude, divisor_magnitude, unsigned_quotient, unsigned_remainder );
+        quotient = mas_int128_t( ( dividend_negative != divisor_negative ) ? -unsigned_quotient : unsigned_quotient );
+        remainder = mas_int128_t( dividend_negative ? -unsigned_remainder : unsigned_remainder );
+    }
+
+    mas_int128_t operator / ( mas_int128_t other ) const
+    {
+        mas_int128_t quotient( 0 );
+        mas_int128_t remainder( 0 );
+        DivMod( *this, other, quotient, remainder );
+        return quotient;
+    }
+
+    mas_int128_t operator % ( mas_int128_t other ) const
+    {
+        mas_int128_t quotient( 0 );
+        mas_int128_t remainder( 0 );
+        DivMod( *this, other, quotient, remainder );
+        return remainder;
+    }
+
+    mas_int128_t & operator += ( mas_int128_t other ) { *this = *this + other; return *this; }
+    mas_int128_t & operator -= ( mas_int128_t other ) { *this = *this - other; return *this; }
+    mas_int128_t & operator *= ( mas_int128_t other ) { *this = *this * other; return *this; }
+    mas_int128_t & operator /= ( mas_int128_t other ) { *this = *this / other; return *this; }
+    mas_int128_t & operator %= ( mas_int128_t other ) { *this = *this % other; return *this; }
+    mas_int128_t & operator &= ( mas_int128_t other ) { *this = *this & other; return *this; }
+    mas_int128_t & operator |= ( mas_int128_t other ) { *this = *this | other; return *this; }
+    mas_int128_t & operator ^= ( mas_int128_t other ) { *this = *this ^ other; return *this; }
+    mas_int128_t & operator <<= ( int shift )         { *this = *this << shift; return *this; }
+    mas_int128_t & operator >>= ( int shift )         { *this = *this >> shift; return *this; }
+
+    mas_int128_t & operator ++ ()
+    {
+        *this = *this + mas_int128_t( 1 );
+        return *this;
+    }
+
+    mas_int128_t operator ++ ( int )
+    {
+        mas_int128_t before = *this;
+        ++( *this );
+        return before;
+    }
+
+    mas_int128_t & operator -- ()
+    {
+        *this = *this - mas_int128_t( 1 );
+        return *this;
+    }
+
+    mas_int128_t operator -- ( int )
+    {
+        mas_int128_t before = *this;
+        --( *this );
+        return before;
+    }
+
+#endif // #ifdef __cplusplus
+
+} mas_int128_t;
+
 #define MAS_UINT128_DEFINED 1
 
 #endif // #if !defined( MAS_UINT128_DEFINED ) && ( !defined( __SIZEOF_INT128__ ) || SERIALIZE_ENABLE_TESTS )
@@ -434,7 +644,7 @@ namespace serialize
 
     /**
         Native 128 bit integer types, where the compiler provides them (gcc, clang, clang-cl).
-        int128_t is the storage type for wide fixed point (Q112.16 and friends). uint128_t is the 128 bit wire interchange type: native here, and the emulated ::mas_uint128_t on compilers without __int128, so serialize::uint128_t exists on every platform.
+        int128_t is the storage type for wide fixed point (Q112.16 and friends). uint128_t is the 128 bit wire interchange type. On compilers without __int128 both fall back to the emulated pair below, so serialize::int128_t and serialize::uint128_t exist on every platform.
         __extension__ keeps -Wpedantic quiet: __int128 is a language extension.
      */
 
@@ -444,10 +654,11 @@ namespace serialize
 #else // #if defined(__SIZEOF_INT128__)
 
     /**
-        The 128 bit wire interchange type on compilers without native __int128: the emulated ::mas_uint128_t.
+        The 128 bit integer types on compilers without native __int128: the emulated ::mas_uint128_t and ::mas_int128_t pair.
         See the comment block on mas_uint128_t above for the sharing convention between projects.
      */
 
+    typedef ::mas_int128_t   int128_t;
     typedef ::mas_uint128_t uint128_t;
 
 #endif // #if defined(__SIZEOF_INT128__)
@@ -2072,7 +2283,7 @@ namespace serialize
     /**
         Serialize unsigned 128 bit integer (read/write/measure).
         The wire format is 128 bits raw: the low 64 bit half first, then the high half, following the lo-then-hi convention of serialize_bits.
-        The value may be the native unsigned __int128 (serialize::uint128_t, behind the __SIZEOF_INT128__ guard) or any emulated 128 bit unsigned integer type meeting the requirements documented on serialize_uint128_internal, so the operation works on compilers without native 128 bit support too. All representations produce identical bytes.
+        The value may be serialize::uint128_t — which exists on every platform: native unsigned __int128 where the compiler provides it, the emulated mas_uint128_t elsewhere — or any 128 bit unsigned integer type meeting the requirements documented on serialize_uint128_internal. All representations produce identical bytes.
         IMPORTANT: This macro must be called inside a templated serialize function with template \<typename Stream\>. The serialize method must have a bool return value.
         @param stream The stream object. May be a read, write or measure stream.
         @param value The 128 bit unsigned integer value.
@@ -2402,11 +2613,37 @@ namespace serialize
     template <> struct FixedPointInteger<int128_t>                  { enum { is_integer = 1, is_signed = 1 }; };
     template <> struct FixedPointInteger<uint128_t>                 { enum { is_integer = 1, is_signed = 0 }; };
 #endif // #if defined(__SIZEOF_INT128__)
+#if defined(MAS_UINT128_DEFINED)
+    // the emulated pair works as storage too. without native __int128 these ARE the serialize
+    // typedefs; with it they are a distinct set of types (present when tests are enabled, or
+    // when a sibling header defined the block first), so the specializations never collide
+    template <> struct FixedPointInteger<::mas_int128_t>            { enum { is_integer = 1, is_signed = 1 }; };
+    template <> struct FixedPointInteger<::mas_uint128_t>           { enum { is_integer = 1, is_signed = 0 }; };
+#endif // #if defined(MAS_UINT128_DEFINED)
+
+    /**
+        Compile time map from a 128 bit fixed point storage type to its unsigned counterpart,
+        in which the wide codec runs its raw offset math. Both the native and the emulated types
+        map to their unsigned partner; two's complement wrap around is exact in both, so the
+        codec is representation generic and wide fixed point works on compilers without native
+        __int128.
+     */
+
+    template <typename T> struct FixedPointUnsigned;
+
+#if defined(__SIZEOF_INT128__)
+    template <> struct FixedPointUnsigned<int128_t>                 { typedef uint128_t type; };
+    template <> struct FixedPointUnsigned<uint128_t>                { typedef uint128_t type; };
+#endif // #if defined(__SIZEOF_INT128__)
+#if defined(MAS_UINT128_DEFINED)
+    template <> struct FixedPointUnsigned<::mas_int128_t>           { typedef ::mas_uint128_t type; };
+    template <> struct FixedPointUnsigned<::mas_uint128_t>          { typedef ::mas_uint128_t type; };
+#endif // #if defined(MAS_UINT128_DEFINED)
 
     /**
         Fixed point codec, specialized on storage width.
         The false specialization covers storage of 64 bits or fewer and works entirely in the 64 bit unsigned domain.
-        The true specialization covers 128 bit storage and lives behind the __SIZEOF_INT128__ guard, so compilers without __int128 never see 128 bit code.
+        The true specialization covers 128 bit storage. It is representation generic — the raw offset math runs in the storage type's unsigned counterpart via FixedPointUnsigned, and its compile time constants live in the 64 bit domain — so it works with native __int128 storage and with the emulated pair alike, and wide fixed point is available on every platform.
         Splitting on width keeps every shift and every compile time bit count valid for the domain it runs in.
         IMPORTANT: Generally, you don't use this directly. Use the serialize_fixed, read_fixed and write_fixed macros instead.
      */
@@ -2485,37 +2722,47 @@ namespace serialize
         }
     };
 
-#if defined(__SIZEOF_INT128__)
-
     template <> struct FixedPointSerializer<true>
     {
         template <int IntegerBits, int FractionalBits, int64_t MinUnits, int64_t MaxUnits, typename Stream, typename Storage>
         static bool Serialize( Stream & stream, Storage & value )
         {
-            // the whole unit capacity of the Q format. computed in the unsigned domain so the widest formats cannot overflow signed arithmetic
-            const int128_t min_representable_units = FixedPointInteger<Storage>::is_signed ?
-                int128_t( uint128_t(0) - ( uint128_t(1) << ( IntegerBits - 1 ) ) ) : int128_t(0);
-            const int128_t max_representable_units = FixedPointInteger<Storage>::is_signed ?
-                int128_t( ( uint128_t(1) << ( IntegerBits - 1 ) ) - 1 ) :
-                ( ( IntegerBits >= 64 ) ? int128_t( INT64_MAX ) : int128_t( ( uint128_t(1) << ( IntegerBits < 64 ? IntegerBits : 0 ) ) - 1 ) );
+            // the unsigned counterpart of the storage type: native unsigned __int128 for native
+            // storage, the emulated mas_uint128_t for emulated storage. all raw offset math runs
+            // in this type, where wrap around is exact two's complement in both representations,
+            // so this codec is representation generic and needs no compiler guard at all.
+            typedef typename FixedPointUnsigned<Storage>::type Unsigned;
 
-            static_assert( int128_t( MinUnits ) >= min_representable_units, "serialize_fixed min bound in whole units does not fit the Q format" );
-            static_assert( int128_t( MaxUnits ) <= max_representable_units, "serialize_fixed max bound in whole units does not fit the Q format" );
+            // the whole unit capacity of the Q format, in the 64 bit compile time domain: with 65
+            // or more integer bits the capacity covers any int64 bound, and below that the
+            // capacity math fits 64 bits. the inner clamps keep the unselected ternary arms free
+            // of invalid shift counts.
+            const int64_t min_representable_units = FixedPointInteger<Storage>::is_signed ?
+                ( ( IntegerBits >= 65 ) ? INT64_MIN : int64_t( uint64_t(0) - ( uint64_t(1) << ( ( IntegerBits <= 64 ? IntegerBits : 1 ) - 1 ) ) ) ) : int64_t(0);
+            const int64_t max_representable_units = FixedPointInteger<Storage>::is_signed ?
+                ( ( IntegerBits >= 64 ) ? INT64_MAX : int64_t( ( uint64_t(1) << ( ( IntegerBits < 64 ? IntegerBits : 1 ) - 1 ) ) - 1 ) ) :
+                ( ( IntegerBits >= 64 ) ? INT64_MAX : int64_t( ( uint64_t(1) << ( IntegerBits < 64 ? IntegerBits : 0 ) ) - 1 ) );
 
-            // shift the whole unit bounds into raw fixed point units in the 128 bit unsigned domain, so negative bounds wrap two's complement instead of invoking undefined behavior.
-            // everything below is a compile time constant: the bounds, the range, the bit count and the group structure all fold.
-            const uint128_t raw_min = uint128_t( int128_t( MinUnits ) ) << FractionalBits;
-            const uint128_t raw_max = uint128_t( int128_t( MaxUnits ) ) << FractionalBits;
-            const uint128_t raw_range = raw_max - raw_min;
+            static_assert( MinUnits >= min_representable_units, "serialize_fixed min bound in whole units does not fit the Q format" );
+            static_assert( MaxUnits <= max_representable_units, "serialize_fixed max bound in whole units does not fit the Q format" );
 
-            const int bits = BitsRequired128<raw_min, raw_max>::result;
+            // shift the whole unit bounds into raw fixed point units in the unsigned 128 bit domain, so negative bounds wrap two's complement instead of invoking undefined behavior.
+            // the storage constructor sign extends the int64 bounds for signed storage. everything below folds: the bounds, the range, the bit count and the group structure.
+            const Unsigned raw_min = Unsigned( Storage( MinUnits ) ) << FractionalBits;
+            const Unsigned raw_max = Unsigned( Storage( MaxUnits ) ) << FractionalBits;
+            const Unsigned raw_range = raw_max - raw_min;
 
-            uint128_t offset = 0;
+            // the wire cost, computed in the 64 bit compile time domain: the range in whole units
+            // is exact in a uint64, and shifting it left by FractionalBits adds exactly
+            // FractionalBits to its bit length.
+            const int bits = BitsRequired64< uint64_t( MinUnits ), uint64_t( MaxUnits ) >::result + FractionalBits;
+
+            Unsigned offset = 0;
 
             if ( Stream::IsWriting )
             {
                 // subtract in the unsigned domain: raw - raw_min overflows signed arithmetic when the range is wider than 2^127
-                offset = uint128_t( value ) - raw_min;
+                offset = Unsigned( value ) - raw_min;
                 serialize_assert( offset <= raw_range );        // the value must be within [min,max] whole units. all checking is performed by debug asserts on write
             }
 
@@ -2589,7 +2836,7 @@ namespace serialize
 
             if ( Stream::IsReading )
             {
-                offset = ( uint128_t( group3 ) << 96 ) | ( uint128_t( group2 ) << 64 ) | ( uint128_t( group1 ) << 32 ) | group0;
+                offset = ( Unsigned( group3 ) << 96 ) | ( Unsigned( group2 ) << 64 ) | ( Unsigned( group1 ) << 32 ) | Unsigned( group0 );
 
                 // reject raw values outside [raw_min,raw_max] smuggled into the bit headroom. reject, never clamp
                 if ( offset > raw_range )
@@ -2603,8 +2850,6 @@ namespace serialize
             return true;
         }
     };
-
-#endif // #if defined(__SIZEOF_INT128__)
 
     template <int IntegerBits, int FractionalBits, int64_t MinUnits, int64_t MaxUnits, typename Stream, typename Storage>
     bool serialize_fixed_internal( Stream & stream, Storage & value )
@@ -2621,7 +2866,7 @@ namespace serialize
     /**
         Serialize a fixed point value to the stream (read/write/measure).
         This is a helper macro to make writing unified serialize functions easier.
-        The Q format and the bounds are compile time constants: integer_bits plus fraction_bits must equal the number of bits in the storage type, with the sign bit counting towards integer_bits for signed storage. For example, Q48.16 in an int64_t is ( 48, 16 ) and Q112.16 in an __int128 is ( 112, 16 ). Any integer storage type works, including __int128 where the compiler provides it.
+        The Q format and the bounds are compile time constants: integer_bits plus fraction_bits must equal the number of bits in the storage type, with the sign bit counting towards integer_bits for signed storage. For example, Q48.16 in an int64_t is ( 48, 16 ) and Q112.16 in a serialize::int128_t is ( 112, 16 ). Any integer storage type works, including 128 bit storage on every platform: native __int128 where the compiler provides it, the emulated pair where it doesn't.
         The bounds are whole units and must be constant expressions: a runtime bound fails to compile, and bounds that don't fit the Q format fail with a static assert. The value is serialized as an offset from min in the minimal number of bits for the range — a constant of the call site — and the round trip is exact: fixed point values are integers underneath, so unlike compressed floats there is no quantization error and results are identical across platforms.
         For storage of 64 bits or fewer the wire format is byte identical to serialize_int64 of the raw value over the raw bounds.
         Serialize macros returns false on error so we don't need to use exceptions for error handling on read. This is an important safety measure because packet data comes from the network and may be malicious.
@@ -2722,8 +2967,6 @@ namespace serialize
     #define read_uint32( stream, value )    read_bits( stream, value, 32 )
     #define read_uint64( stream, value )    read_bits( stream, value, 64 )
 
-#if defined(__SIZEOF_INT128__)
-
     #define read_uint128( stream, value )                                                   \
         do                                                                                  \
         {                                                                                   \
@@ -2732,8 +2975,6 @@ namespace serialize
                 return false;                                                               \
             }                                                                               \
         } while (0)
-
-#endif // #if defined(__SIZEOF_INT128__)
 
     #define read_float                  serialize_float
     #define read_double                 serialize_double
@@ -2825,16 +3066,12 @@ namespace serialize
     #define write_uint32( stream, value )       write_bits( stream, value, 32 )
     #define write_uint64( stream, value )       write_bits( stream, value, 64 )
 
-#if defined(__SIZEOF_INT128__)
-
     #define write_uint128( stream, value )                                                  \
         do                                                                                  \
         {                                                                                   \
             serialize::uint128_t uint128_value = ( value );                                 \
             serialize::serialize_uint128_internal( stream, uint128_value );                 \
         } while (0)
-
-#endif // #if defined(__SIZEOF_INT128__)
 
     #define write_float( stream, value )                                                    \
         do                                                                                  \
@@ -3329,13 +3566,11 @@ bool ReadFunction( serialize::ReadStream & readStream )
         serialize_check( value == int64_t( 12345 ) * 65536 + 32768 );       // 12345.5 in Q48.16
     }
 
-#if defined(__SIZEOF_INT128__)
     {
         serialize::uint128_t value = 0;
         read_uint128( readStream, value );
         serialize_check( value == ( ( serialize::uint128_t( 0x0123456789ABCDEFULL ) << 64 ) | 0xFEDCBA9876543210ULL ) );
     }
-#endif // #if defined(__SIZEOF_INT128__)
 
     {
         float value;
@@ -3435,10 +3670,8 @@ inline void test_read_write()
         int64_t fixed_point_value = int64_t( 12345 ) * 65536 + 32768;               // 12345.5 in Q48.16
         write_fixed( writeStream, fixed_point_value, 48, 16, -100000, +100000 );
 
-#if defined(__SIZEOF_INT128__)
         serialize::uint128_t big_value = ( serialize::uint128_t( 0x0123456789ABCDEFULL ) << 64 ) | 0xFEDCBA9876543210ULL;
         write_uint128( writeStream, big_value );
-#endif // #if defined(__SIZEOF_INT128__)
 
         write_float( writeStream, 100.0f );
         write_double( writeStream, 1000000000.0f );
@@ -3882,8 +4115,10 @@ inline void check_fixed_round_trip( Storage raw_value )
 template <int IntegerBits, int FractionalBits, int64_t MinUnits, int64_t MaxUnits, typename Storage>
 inline void check_fixed_cases( Storage one_unit )
 {
-    const Storage raw_min = Storage( MinUnits * one_unit );
-    const Storage raw_max = Storage( MaxUnits * one_unit );
+    // the multiplications keep the Storage typed operand on the left, so the emulated 128 bit
+    // types (member operators only) work as Storage here too
+    const Storage raw_min = Storage( one_unit * Storage( MinUnits ) );
+    const Storage raw_max = Storage( one_unit * Storage( MaxUnits ) );
 
     // exact raw bounds, and one raw step inside each
     check_fixed_round_trip<IntegerBits, FractionalBits, MinUnits, MaxUnits>( raw_min );
@@ -3892,8 +4127,8 @@ inline void check_fixed_cases( Storage one_unit )
     check_fixed_round_trip<IntegerBits, FractionalBits, MinUnits, MaxUnits>( Storage( raw_max - 1 ) );
 
     // whole unit values one unit inside each bound
-    check_fixed_round_trip<IntegerBits, FractionalBits, MinUnits, MaxUnits>( Storage( ( MinUnits + 1 ) * one_unit ) );
-    check_fixed_round_trip<IntegerBits, FractionalBits, MinUnits, MaxUnits>( Storage( ( MaxUnits - 1 ) * one_unit ) );
+    check_fixed_round_trip<IntegerBits, FractionalBits, MinUnits, MaxUnits>( Storage( one_unit * Storage( MinUnits + 1 ) ) );
+    check_fixed_round_trip<IntegerBits, FractionalBits, MinUnits, MaxUnits>( Storage( one_unit * Storage( MaxUnits - 1 ) ) );
 
     // a value with every fraction bit set
     check_fixed_round_trip<IntegerBits, FractionalBits, MinUnits, MaxUnits>( Storage( raw_min + one_unit - 1 ) );
@@ -4058,6 +4293,7 @@ inline void test_serialize_fixed_matches_int64()
 
     for ( int i = 0; i < (int) ( sizeof( values ) / sizeof( values[0] ) ); i++ )
     {
+        // > 32 bit range: the two group path
         uint8_t fixed_buffer[16] = { 0 };
         serialize::WriteStream fixedStream( fixed_buffer, 16 );
         int64_t fixed_value = values[i];
@@ -4072,9 +4308,49 @@ inline void test_serialize_fixed_matches_int64()
         serialize_check( fixedStream.GetBitsProcessed() == int64Stream.GetBitsProcessed() );
         serialize_check( memcmp( fixed_buffer, int64_buffer, sizeof( fixed_buffer ) ) == 0 );
     }
-}
 
-#if defined(__SIZEOF_INT128__)
+    // <= 32 bit range: the single group path, on 32 bit storage
+    const int32_t narrow_values[] = { -100000, -99999, -1, 0, +1, 54321, 99999, 100000 };
+
+    for ( int i = 0; i < (int) ( sizeof( narrow_values ) / sizeof( narrow_values[0] ) ); i++ )
+    {
+        uint8_t fixed_buffer[16] = { 0 };
+        serialize::WriteStream fixedStream( fixed_buffer, 16 );
+        int32_t fixed_value = narrow_values[i];
+        serialize_check( ( serialize::serialize_fixed_internal<32, 0, -100000, +100000>( fixedStream, fixed_value ) ) == true );
+        fixedStream.Flush();
+
+        uint8_t int64_buffer[16] = { 0 };
+        serialize::WriteStream int64Stream( int64_buffer, 16 );
+        serialize_check( int64Stream.SerializeInteger64( narrow_values[i], -100000, +100000 ) == true );
+        int64Stream.Flush();
+
+        serialize_check( fixedStream.GetBitsProcessed() == int64Stream.GetBitsProcessed() );
+        serialize_check( memcmp( fixed_buffer, int64_buffer, sizeof( fixed_buffer ) ) == 0 );
+    }
+
+    // the equivalence is not limited to fraction_bits == 0: for any Q format the wire is
+    // serialize_int64 of the raw value over the raw bounds. fixed point adds no wire structure,
+    // only the compile time scaling convention.
+    const int32_t q16_16_raw_values[] = { -30000 * 65536, -( 3 * 65536 + 16384 ), 0, 65536 / 2, 12345 * 65536 + 1, 30000 * 65536 };
+
+    for ( int i = 0; i < (int) ( sizeof( q16_16_raw_values ) / sizeof( q16_16_raw_values[0] ) ); i++ )
+    {
+        uint8_t fixed_buffer[16] = { 0 };
+        serialize::WriteStream fixedStream( fixed_buffer, 16 );
+        int32_t fixed_value = q16_16_raw_values[i];
+        serialize_check( ( serialize::serialize_fixed_internal<16, 16, -30000, +30000>( fixedStream, fixed_value ) ) == true );
+        fixedStream.Flush();
+
+        uint8_t int64_buffer[16] = { 0 };
+        serialize::WriteStream int64Stream( int64_buffer, 16 );
+        serialize_check( int64Stream.SerializeInteger64( q16_16_raw_values[i], int64_t( -30000 ) * 65536, int64_t( +30000 ) * 65536 ) == true );
+        int64Stream.Flush();
+
+        serialize_check( fixedStream.GetBitsProcessed() == int64Stream.GetBitsProcessed() );
+        serialize_check( memcmp( fixed_buffer, int64_buffer, sizeof( fixed_buffer ) ) == 0 );
+    }
+}
 
 template <int IntegerBits, int FractionalBits, int64_t MinUnits, int64_t MaxUnits, typename Storage>
 inline void check_fixed_wide_rejects_out_of_range( Storage )
@@ -4119,11 +4395,14 @@ inline void check_fixed_wide_rejects_out_of_range( Storage )
 
 inline void test_serialize_fixed_wide()
 {
-    // compile time bit counts in the 128 bit domain
+#if defined(__SIZEOF_INT128__)
+    // compile time bit counts in the 128 bit domain. the metafunction needs native __int128
+    // template parameters, so these checks are the one native only piece of this test
     serialize_check( ( serialize::BitsRequired128<0, 0>::result ) == 0 );
     serialize_check( ( serialize::BitsRequired128<0, 1>::result ) == 1 );
     serialize_check( ( serialize::BitsRequired128<0, ( serialize::uint128_t( 1 ) << 64 )>::result ) == 65 );
     serialize_check( ( serialize::BitsRequired128<0, ~( serialize::uint128_t( 0 ) )>::result ) == 128 );
+#endif // #if defined(__SIZEOF_INT128__)
 
     // the matrix, wide: Q112.16 with a raw range past 64 bits (three groups on the wire), Q112.16
     // with a small range (a single group on wide storage), Q64.64 (the fraction alone spans 64 bits),
@@ -4164,6 +4443,53 @@ inline void test_serialize_fixed_wide()
         serialize::int128_t value = 0;
         serialize_check( ( serialize::serialize_fixed_internal<112, 16, -1152921504606846976LL, +1152921504606846976LL>( readStream, value ) ) == false );
     }
+}
+
+inline void test_serialize_fixed_wide_emulated()
+{
+    // the wide codec is representation generic: the emulated 128 bit pair works as storage, which
+    // is what makes wide fixed point available on compilers without native __int128. run the wide
+    // case list through the emulated types explicitly, on every platform — where native exists
+    // this doubles as proof that both representations drive the same codec.
+    check_fixed_cases<112, 16, -1152921504606846976LL, +1152921504606846976LL>( ::mas_int128_t( 65536 ) );
+    check_fixed_cases<112, 16, -2, +2>( ::mas_int128_t( 65536 ) );
+    check_fixed_cases<64, 64, -1000, +1000>( ::mas_int128_t( 1 ) << 64 );
+    check_fixed_cases<64, 64, INT64_MIN, INT64_MAX>( ::mas_int128_t( 1 ) << 64 );
+    check_fixed_cases<112, 16, 0, 2305843009213693952LL>( ::mas_uint128_t( 65536 ) );
+
+    // one raw step past raw_max must be rejected through the emulated read path too
+    check_fixed_wide_rejects_out_of_range<112, 16, -1152921504606846976LL, +1152921504606846976LL>( ::mas_int128_t( 0 ) );
+    check_fixed_wide_rejects_out_of_range<64, 64, -1000, +1000>( ::mas_int128_t( 0 ) );
+    check_fixed_wide_rejects_out_of_range<112, 16, 0, 2305843009213693952LL>( ::mas_uint128_t( 0 ) );
+
+#if defined(__SIZEOF_INT128__)
+    // cross representation wire identity: native and emulated storage must produce byte identical
+    // wire through the same configuration, and each must read the other's bytes back exactly
+    {
+        const int64_t raw = -( int64_t( 54321 ) * 65536 + 12345 );
+
+        uint8_t native_buffer[16 + 8] = { 0 };          // + 8: read buffer allocations extend 8 bytes past the data
+        serialize::WriteStream nativeStream( native_buffer, 16 );
+        serialize::int128_t native_value = raw;
+        serialize_check( ( serialize::serialize_fixed_internal<112, 16, -1152921504606846976LL, +1152921504606846976LL>( nativeStream, native_value ) ) == true );
+        nativeStream.Flush();
+
+        uint8_t emulated_buffer[16 + 8] = { 0 };
+        serialize::WriteStream emulatedStream( emulated_buffer, 16 );
+        ::mas_int128_t emulated_value( raw );
+        serialize_check( ( serialize::serialize_fixed_internal<112, 16, -1152921504606846976LL, +1152921504606846976LL>( emulatedStream, emulated_value ) ) == true );
+        emulatedStream.Flush();
+
+        serialize_check( nativeStream.GetBitsProcessed() == emulatedStream.GetBitsProcessed() );
+        serialize_check( memcmp( native_buffer, emulated_buffer, 16 ) == 0 );
+
+        // read the native bytes back through emulated storage
+        serialize::ReadStream readStream( native_buffer, nativeStream.GetBytesProcessed() );
+        ::mas_int128_t read_back( 0 );
+        serialize_check( ( serialize::serialize_fixed_internal<112, 16, -1152921504606846976LL, +1152921504606846976LL>( readStream, read_back ) ) == true );
+        serialize_check( read_back == ::mas_int128_t( raw ) );
+    }
+#endif // #if defined(__SIZEOF_INT128__)
 }
 
 inline void test_serialize_uint128()
@@ -4225,8 +4551,9 @@ inline void test_serialize_uint128()
     }
 
     // golden pin: the wire format for a uint128 is its 16 bytes in little endian order, low half
-    // first. pinned forever. additive: the platform independent golden test above is untouched,
-    // because this pin needs a 128 bit type to produce and so lives behind the compiler guard.
+    // first. pinned forever. additive: the pre-existing golden test below is untouched, and this
+    // pin runs on every platform — serialize::uint128_t exists everywhere, so the native and
+    // emulated representations must both reproduce exactly these bytes.
     {
         static const uint8_t golden_uint128_bytes[] =
         {
@@ -4251,6 +4578,594 @@ inline void test_serialize_uint128()
         serialize_check( serialize::serialize_uint128_internal( readStream, read_back ) == true );
         serialize_check( read_back == golden_value );
     }
+}
+
+// builds an emulated 128 bit value from its two lanes. the emulated type is defined on every
+// platform when tests are enabled — where native __int128 exists it coexists with it, so the
+// tests below run everywhere and the differential test can compare the two representations.
+
+inline ::mas_uint128_t uint128_emulated( uint64_t hi, uint64_t lo )
+{
+    ::mas_uint128_t result( lo );
+    result.hi = hi;
+    return result;
+}
+
+inline void test_uint128_emulation()
+{
+    // known answer checks for the emulated 128 bit unsigned integer, unguarded so they run on
+    // every platform — including the ones with no native __int128, where the emulation is the
+    // only implementation and the differential test below cannot run.
+
+    const uint64_t lo = 0xFEDCBA9876543210ULL;
+    const uint64_t hi = 0x0123456789ABCDEFULL;
+
+    // construction from uint64_t fills the low lane. explicit conversion truncates back to it
+    {
+        ::mas_uint128_t value( lo );
+        serialize_check( value.lo == lo && value.hi == 0 );
+        serialize_check( uint64_t( value ) == lo );
+        serialize_check( uint64_t( uint128_emulated( hi, lo ) ) == lo );
+    }
+
+    // all six comparisons, driven by the high lane, the low lane, and equality
+    {
+        const ::mas_uint128_t a = uint128_emulated( 1, 0 );
+        const ::mas_uint128_t b = uint128_emulated( 0, 0xFFFFFFFFFFFFFFFFULL );
+        const ::mas_uint128_t c = uint128_emulated( 1, 1 );
+        serialize_check( a > b );                                       // the high lane dominates
+        serialize_check( b < a );
+        serialize_check( c > a );                                       // the low lane breaks ties
+        serialize_check( a >= b && a <= a && a >= a );
+        serialize_check( b <= a && b != a && a == a );
+        serialize_check( !( a < b ) && !( a == b ) && !( a != a ) );
+    }
+
+    // left shift edges: 0, 1, 63, 64, 65, 127, and out of range counts
+    {
+        const ::mas_uint128_t value = uint128_emulated( hi, lo );
+        serialize_check( ( value << 0 ) == value );
+        serialize_check( ( value << 1 ) == uint128_emulated( ( hi << 1 ) | ( lo >> 63 ), lo << 1 ) );
+        serialize_check( ( value << 63 ) == uint128_emulated( ( hi << 63 ) | ( lo >> 1 ), lo << 63 ) );
+        serialize_check( ( value << 64 ) == uint128_emulated( lo, 0 ) );                    // the low lane becomes the high lane
+        serialize_check( ( value << 65 ) == uint128_emulated( lo << 1, 0 ) );
+        serialize_check( ( value << 127 ) == uint128_emulated( lo << 63, 0 ) );
+        serialize_check( ( value << 128 ) == ::mas_uint128_t( 0 ) );                        // >= 128 yields zero, documented
+        serialize_check( ( value << 200 ) == ::mas_uint128_t( 0 ) );
+    }
+
+    // right shift edges: the mirror image
+    {
+        const ::mas_uint128_t value = uint128_emulated( hi, lo );
+        serialize_check( ( value >> 0 ) == value );
+        serialize_check( ( value >> 1 ) == uint128_emulated( hi >> 1, ( lo >> 1 ) | ( hi << 63 ) ) );
+        serialize_check( ( value >> 63 ) == uint128_emulated( hi >> 63, ( lo >> 63 ) | ( hi << 1 ) ) );
+        serialize_check( ( value >> 64 ) == uint128_emulated( 0, hi ) );                    // the high lane becomes the low lane
+        serialize_check( ( value >> 65 ) == uint128_emulated( 0, hi >> 1 ) );
+        serialize_check( ( value >> 127 ) == uint128_emulated( 0, hi >> 63 ) );
+        serialize_check( ( value >> 128 ) == ::mas_uint128_t( 0 ) );                        // >= 128 yields zero, documented
+        serialize_check( ( value >> 200 ) == ::mas_uint128_t( 0 ) );
+    }
+
+    // addition carries out of the low lane, subtraction borrows back into it
+    {
+        const ::mas_uint128_t max64( 0xFFFFFFFFFFFFFFFFULL );
+        const ::mas_uint128_t all_ones = uint128_emulated( 0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFFFFFFFFFFULL );
+        serialize_check( max64 + ::mas_uint128_t( 1 ) == uint128_emulated( 1, 0 ) );        // carry
+        serialize_check( all_ones + ::mas_uint128_t( 1 ) == ::mas_uint128_t( 0 ) );         // wraps modulo 2^128
+        serialize_check( ::mas_uint128_t( 0 ) - ::mas_uint128_t( 1 ) == all_ones );         // borrow wraps back
+        serialize_check( uint128_emulated( 1, 0 ) - ::mas_uint128_t( 1 ) == max64 );        // borrow out of the high lane
+
+        ::mas_uint128_t accumulator( 0xFFFFFFFFFFFFFFFFULL );
+        accumulator += ::mas_uint128_t( 1 );
+        serialize_check( accumulator == uint128_emulated( 1, 0 ) );
+        accumulator -= ::mas_uint128_t( 1 );
+        serialize_check( accumulator == max64 );
+    }
+
+    // increment and decrement, both forms, across the lane boundary
+    {
+        ::mas_uint128_t value( 0xFFFFFFFFFFFFFFFFULL );
+        serialize_check( value++ == ::mas_uint128_t( 0xFFFFFFFFFFFFFFFFULL ) );             // post returns the value before
+        serialize_check( value == uint128_emulated( 1, 0 ) );
+        serialize_check( ++value == uint128_emulated( 1, 1 ) );                             // pre returns the value after
+        serialize_check( value-- == uint128_emulated( 1, 1 ) );
+        serialize_check( --value == ::mas_uint128_t( 0xFFFFFFFFFFFFFFFFULL ) );
+    }
+
+    // multiplication: lane crossing products with known answers
+    {
+        const ::mas_uint128_t two_to_32( uint64_t( 1 ) << 32 );
+        const ::mas_uint128_t max64( 0xFFFFFFFFFFFFFFFFULL );
+        const ::mas_uint128_t all_ones = uint128_emulated( 0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFFFFFFFFFFULL );
+        serialize_check( ::mas_uint128_t( 3 ) * ::mas_uint128_t( 5 ) == ::mas_uint128_t( 15 ) );
+        serialize_check( two_to_32 * two_to_32 == uint128_emulated( 1, 0 ) );                                       // 2^64 crosses into the high lane
+        serialize_check( max64 * max64 == uint128_emulated( 0xFFFFFFFFFFFFFFFEULL, 1 ) );                           // 2^128 - 2^65 + 1
+        serialize_check( uint128_emulated( 1, 0 ) * ::mas_uint128_t( 5 ) == uint128_emulated( 5, 0 ) );             // the high lane path
+        serialize_check( all_ones * all_ones == ::mas_uint128_t( 1 ) );                                             // ( 2^128 - 1 )^2 mod 2^128
+
+        ::mas_uint128_t accumulator( 3 );
+        accumulator *= ::mas_uint128_t( 5 );
+        serialize_check( accumulator == ::mas_uint128_t( 15 ) );
+    }
+
+    // division and modulo: the small fast path, wide dividends, wide divisors, and the
+    // documented division by zero choice — zero quotient, zero remainder
+    {
+        const ::mas_uint128_t all_ones = uint128_emulated( 0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFFFFFFFFFFULL );
+        serialize_check( ::mas_uint128_t( 100 ) / ::mas_uint128_t( 7 ) == ::mas_uint128_t( 14 ) );
+        serialize_check( ::mas_uint128_t( 100 ) % ::mas_uint128_t( 7 ) == ::mas_uint128_t( 2 ) );
+        serialize_check( uint128_emulated( 1, 7 ) / ::mas_uint128_t( 16 ) == ::mas_uint128_t( uint64_t( 1 ) << 60 ) );      // 2^64 + 7 over 16
+        serialize_check( uint128_emulated( 1, 7 ) % ::mas_uint128_t( 16 ) == ::mas_uint128_t( 7 ) );
+        serialize_check( uint128_emulated( uint64_t( 1 ) << 63, 0 ) / uint128_emulated( 1, 0 ) == ::mas_uint128_t( uint64_t( 1 ) << 63 ) );     // 2^127 over 2^64
+        serialize_check( all_ones / ::mas_uint128_t( 3 ) == uint128_emulated( 0x5555555555555555ULL, 0x5555555555555555ULL ) );
+        serialize_check( all_ones % ::mas_uint128_t( 3 ) == ::mas_uint128_t( 0 ) );
+        serialize_check( ::mas_uint128_t( 7 ) / uint128_emulated( 1, 0 ) == ::mas_uint128_t( 0 ) );                 // dividend below divisor
+        serialize_check( ::mas_uint128_t( 7 ) % uint128_emulated( 1, 0 ) == ::mas_uint128_t( 7 ) );
+        serialize_check( all_ones / ::mas_uint128_t( 0 ) == ::mas_uint128_t( 0 ) );                                 // division by zero: zero, documented
+        serialize_check( all_ones % ::mas_uint128_t( 0 ) == ::mas_uint128_t( 0 ) );
+
+        ::mas_uint128_t accumulator( 100 );
+        accumulator /= ::mas_uint128_t( 7 );
+        serialize_check( accumulator == ::mas_uint128_t( 14 ) );
+        accumulator = ::mas_uint128_t( 100 );
+        accumulator %= ::mas_uint128_t( 7 );
+        serialize_check( accumulator == ::mas_uint128_t( 2 ) );
+    }
+
+    // bitwise operators work lane by lane
+    {
+        const ::mas_uint128_t a = uint128_emulated( 0xF0F0F0F0F0F0F0F0ULL, 0xAAAAAAAAAAAAAAAAULL );
+        const ::mas_uint128_t b = uint128_emulated( 0xFF00FF00FF00FF00ULL, 0xCCCCCCCCCCCCCCCCULL );
+        serialize_check( ( a & b ) == uint128_emulated( 0xF000F000F000F000ULL, 0x8888888888888888ULL ) );
+        serialize_check( ( a | b ) == uint128_emulated( 0xFFF0FFF0FFF0FFF0ULL, 0xEEEEEEEEEEEEEEEEULL ) );
+        serialize_check( ( a ^ b ) == uint128_emulated( 0x0FF00FF00FF00FF0ULL, 0x6666666666666666ULL ) );
+        serialize_check( ~a == uint128_emulated( 0x0F0F0F0F0F0F0F0FULL, 0x5555555555555555ULL ) );
+
+        ::mas_uint128_t accumulator = a;
+        accumulator &= b;
+        serialize_check( accumulator == ( a & b ) );
+        accumulator = a;
+        accumulator |= b;
+        serialize_check( accumulator == ( a | b ) );
+        accumulator = a;
+        accumulator ^= b;
+        serialize_check( accumulator == ( a ^ b ) );
+        accumulator = a;
+        accumulator <<= 64;
+        serialize_check( accumulator == ( a << 64 ) );
+        accumulator = a;
+        accumulator >>= 64;
+        serialize_check( accumulator == ( a >> 64 ) );
+    }
+
+    // unary plus is the identity, unary minus is two's complement negation
+    {
+        const ::mas_uint128_t value = uint128_emulated( hi, lo );
+        serialize_check( +value == value );
+        serialize_check( -::mas_uint128_t( 0 ) == ::mas_uint128_t( 0 ) );
+        serialize_check( -::mas_uint128_t( 1 ) == uint128_emulated( 0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFFFFFFFFFFULL ) );
+        serialize_check( -value + value == ::mas_uint128_t( 0 ) );
+    }
+}
+
+inline ::mas_int128_t int128_emulated( uint64_t hi, uint64_t lo )
+{
+    ::mas_int128_t result( 0 );
+    result.hi = hi;
+    result.lo = lo;
+    return result;
+}
+
+inline void test_int128_emulation()
+{
+    // known answer checks for the emulated signed 128 bit integer, unguarded so they run on every
+    // platform. the signed type is a thin two's complement layer over the unsigned lanes, so these
+    // concentrate on the signed specific pieces: sign extension, signed ordering, the arithmetic
+    // right shift, division sign quadrants, and the documented edge choices.
+
+    const ::mas_int128_t int128_min = int128_emulated( 0x8000000000000000ULL, 0 );
+    const ::mas_int128_t int128_max = int128_emulated( 0x7FFFFFFFFFFFFFFFULL, 0xFFFFFFFFFFFFFFFFULL );
+
+    // the int64_t constructor sign extends into the high lane; the explicit conversion truncates
+    // back to the low lane; the unsigned conversions preserve the bit pattern both ways
+    {
+        serialize_check( ::mas_int128_t( -1 ) == int128_emulated( 0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFFFFFFFFFFULL ) );
+        serialize_check( ::mas_int128_t( INT64_MIN ) == int128_emulated( 0xFFFFFFFFFFFFFFFFULL, 0x8000000000000000ULL ) );
+        serialize_check( ::mas_int128_t( INT64_MAX ) == int128_emulated( 0, 0x7FFFFFFFFFFFFFFFULL ) );
+        serialize_check( ::mas_int128_t( 1 ) == int128_emulated( 0, 1 ) );
+        serialize_check( int64_t( ::mas_int128_t( -5 ) ) == -5 );
+        serialize_check( int64_t( ::mas_int128_t( INT64_MIN ) ) == INT64_MIN );
+
+        const ::mas_uint128_t bit_pattern = ::mas_uint128_t( ::mas_int128_t( -1 ) );
+        serialize_check( bit_pattern.lo == 0xFFFFFFFFFFFFFFFFULL && bit_pattern.hi == 0xFFFFFFFFFFFFFFFFULL );
+        serialize_check( ::mas_int128_t( bit_pattern ) == ::mas_int128_t( -1 ) );
+    }
+
+    // signed ordering: negatives below positives, the high lane compares signed, the low lane
+    // breaks ties unsigned
+    {
+        serialize_check( ::mas_int128_t( -1 ) < ::mas_int128_t( 0 ) );
+        serialize_check( ::mas_int128_t( 0 ) < ::mas_int128_t( 1 ) );
+        serialize_check( int128_min < ::mas_int128_t( INT64_MIN ) );
+        serialize_check( int128_min < ::mas_int128_t( -1 ) );
+        serialize_check( int128_max > ::mas_int128_t( INT64_MAX ) );
+        serialize_check( int128_min < int128_max );
+        serialize_check( int128_emulated( 0xFFFFFFFFFFFFFFFFULL, 5 ) < int128_emulated( 0xFFFFFFFFFFFFFFFFULL, 7 ) );       // low lane tiebreak among negatives
+        serialize_check( ::mas_int128_t( -3 ) <= ::mas_int128_t( -3 ) && ::mas_int128_t( -3 ) >= ::mas_int128_t( -3 ) );
+        serialize_check( ::mas_int128_t( -3 ) != ::mas_int128_t( 3 ) );
+        serialize_check( !( ::mas_int128_t( 1 ) < ::mas_int128_t( -1 ) ) );
+    }
+
+    // addition, subtraction and multiplication with mixed signs, and the documented wrap
+    {
+        serialize_check( ::mas_int128_t( -3 ) + ::mas_int128_t( 5 ) == ::mas_int128_t( 2 ) );
+        serialize_check( ::mas_int128_t( 3 ) - ::mas_int128_t( 5 ) == ::mas_int128_t( -2 ) );
+        serialize_check( ::mas_int128_t( -3 ) * ::mas_int128_t( 5 ) == ::mas_int128_t( -15 ) );
+        serialize_check( ::mas_int128_t( -3 ) * ::mas_int128_t( -5 ) == ::mas_int128_t( 15 ) );
+        serialize_check( int128_max + ::mas_int128_t( 1 ) == int128_min );                          // wraps two's complement, documented
+        serialize_check( int128_min - ::mas_int128_t( 1 ) == int128_max );
+        serialize_check( ::mas_int128_t( INT64_MAX ) * ::mas_int128_t( 4 ) == int128_emulated( 1, 0xFFFFFFFFFFFFFFFCULL ) );        // crosses the lane boundary
+    }
+
+    // the arithmetic right shift fills with the sign: edges 0, 1, 63, 64, 65, 127 and out of range
+    {
+        serialize_check( ( int128_min >> 0 ) == int128_min );
+        serialize_check( ( int128_min >> 1 ) == int128_emulated( 0xC000000000000000ULL, 0 ) );
+        serialize_check( ( int128_min >> 63 ) == int128_emulated( 0xFFFFFFFFFFFFFFFFULL, 0 ) );                             // -2^64
+        serialize_check( ( int128_min >> 64 ) == ::mas_int128_t( INT64_MIN ) );
+        serialize_check( ( int128_min >> 65 ) == ::mas_int128_t( INT64_MIN / 2 ) );
+        serialize_check( ( int128_min >> 127 ) == ::mas_int128_t( -1 ) );
+        serialize_check( ( int128_min >> 128 ) == ::mas_int128_t( -1 ) );                           // all sign bits, documented
+        serialize_check( ( int128_min >> 200 ) == ::mas_int128_t( -1 ) );
+        serialize_check( ( ::mas_int128_t( -7 ) >> 1 ) == ::mas_int128_t( -4 ) );                   // arithmetic shift rounds toward negative infinity
+        serialize_check( ( int128_max >> 127 ) == ::mas_int128_t( 0 ) );
+        serialize_check( ( int128_max >> 128 ) == ::mas_int128_t( 0 ) );                            // non negative: sign fill is zero
+        serialize_check( ( ( ::mas_int128_t( 1 ) << 100 ) >> 100 ) == ::mas_int128_t( 1 ) );
+    }
+
+    // the left shift moves the bit pattern like hardware: negative values included
+    {
+        serialize_check( ( ::mas_int128_t( -1 ) << 1 ) == ::mas_int128_t( -2 ) );
+        serialize_check( ( ::mas_int128_t( -1 ) << 64 ) == int128_emulated( 0xFFFFFFFFFFFFFFFFULL, 0 ) );
+        serialize_check( ( ::mas_int128_t( 1 ) << 127 ) == int128_min );
+        serialize_check( ( ::mas_int128_t( -1 ) << 128 ) == ::mas_int128_t( 0 ) );                  // out of range yields zero, documented
+    }
+
+    // division and modulo: all four sign quadrants, truncation toward zero, the remainder sign
+    // follows the dividend, and the documented edge choices
+    {
+        serialize_check( ::mas_int128_t( 7 ) / ::mas_int128_t( 3 ) == ::mas_int128_t( 2 ) );
+        serialize_check( ::mas_int128_t( 7 ) % ::mas_int128_t( 3 ) == ::mas_int128_t( 1 ) );
+        serialize_check( ::mas_int128_t( -7 ) / ::mas_int128_t( 3 ) == ::mas_int128_t( -2 ) );
+        serialize_check( ::mas_int128_t( -7 ) % ::mas_int128_t( 3 ) == ::mas_int128_t( -1 ) );
+        serialize_check( ::mas_int128_t( 7 ) / ::mas_int128_t( -3 ) == ::mas_int128_t( -2 ) );
+        serialize_check( ::mas_int128_t( 7 ) % ::mas_int128_t( -3 ) == ::mas_int128_t( 1 ) );
+        serialize_check( ::mas_int128_t( -7 ) / ::mas_int128_t( -3 ) == ::mas_int128_t( 2 ) );
+        serialize_check( ::mas_int128_t( -7 ) % ::mas_int128_t( -3 ) == ::mas_int128_t( -1 ) );
+        serialize_check( ::mas_int128_t( -1 ) / ::mas_int128_t( 2 ) == ::mas_int128_t( 0 ) );       // truncation toward zero, not the floor
+        serialize_check( ::mas_int128_t( -1 ) % ::mas_int128_t( 2 ) == ::mas_int128_t( -1 ) );
+        serialize_check( int128_min / ::mas_int128_t( 2 ) == int128_emulated( 0xC000000000000000ULL, 0 ) );
+        serialize_check( int128_min / ::mas_int128_t( 1 ) == int128_min );
+        serialize_check( int128_min / ::mas_int128_t( -1 ) == int128_min );                         // the one overflowing case wraps, documented
+        serialize_check( int128_min % ::mas_int128_t( -1 ) == ::mas_int128_t( 0 ) );
+        serialize_check( int128_max / ::mas_int128_t( 0 ) == ::mas_int128_t( 0 ) );                 // division by zero: zero, documented
+        serialize_check( int128_max % ::mas_int128_t( 0 ) == ::mas_int128_t( 0 ) );
+    }
+
+    // unary minus is two's complement negation; ~ and the bitwise operators work on the pattern
+    {
+        serialize_check( -::mas_int128_t( 5 ) == ::mas_int128_t( -5 ) );
+        serialize_check( -::mas_int128_t( -5 ) == ::mas_int128_t( 5 ) );
+        serialize_check( -int128_min == int128_min );                                               // -INT128_MIN wraps to itself, documented
+        serialize_check( +::mas_int128_t( -5 ) == ::mas_int128_t( -5 ) );
+        serialize_check( ~::mas_int128_t( 0 ) == ::mas_int128_t( -1 ) );
+        serialize_check( ( ::mas_int128_t( -1 ) & ::mas_int128_t( 5 ) ) == ::mas_int128_t( 5 ) );
+        serialize_check( ( ::mas_int128_t( 0 ) | ::mas_int128_t( -1 ) ) == ::mas_int128_t( -1 ) );
+        serialize_check( ( ::mas_int128_t( -1 ) ^ ::mas_int128_t( -1 ) ) == ::mas_int128_t( 0 ) );
+    }
+
+    // increment and decrement, both forms, across zero and across the lane boundary
+    {
+        ::mas_int128_t value( -1 );
+        serialize_check( ++value == ::mas_int128_t( 0 ) );
+        serialize_check( value++ == ::mas_int128_t( 0 ) );
+        serialize_check( value == ::mas_int128_t( 1 ) );
+        serialize_check( --value == ::mas_int128_t( 0 ) );
+        serialize_check( value-- == ::mas_int128_t( 0 ) );
+        serialize_check( value == ::mas_int128_t( -1 ) );
+
+        ::mas_int128_t boundary = int128_emulated( 0, 0xFFFFFFFFFFFFFFFFULL );                      // 2^64 - 1
+        serialize_check( ++boundary == int128_emulated( 1, 0 ) );
+
+        ::mas_int128_t accumulator( -10 );
+        accumulator += ::mas_int128_t( 4 );  serialize_check( accumulator == ::mas_int128_t( -6 ) );
+        accumulator -= ::mas_int128_t( -6 ); serialize_check( accumulator == ::mas_int128_t( 0 ) );
+        accumulator = ::mas_int128_t( -3 );
+        accumulator *= ::mas_int128_t( -3 ); serialize_check( accumulator == ::mas_int128_t( 9 ) );
+        accumulator /= ::mas_int128_t( -2 ); serialize_check( accumulator == ::mas_int128_t( -4 ) );
+        accumulator %= ::mas_int128_t( 3 );  serialize_check( accumulator == ::mas_int128_t( -1 ) );
+        accumulator <<= 64;                  serialize_check( accumulator == int128_emulated( 0xFFFFFFFFFFFFFFFFULL, 0 ) );
+        accumulator >>= 64;                  serialize_check( accumulator == ::mas_int128_t( -1 ) );
+        accumulator &= ::mas_int128_t( 6 );  serialize_check( accumulator == ::mas_int128_t( 6 ) );
+        accumulator |= ::mas_int128_t( 1 );  serialize_check( accumulator == ::mas_int128_t( 7 ) );
+        accumulator ^= ::mas_int128_t( -1 ); serialize_check( accumulator == ::mas_int128_t( -8 ) );
+    }
+}
+
+#if defined(__SIZEOF_INT128__)
+
+inline serialize::uint128_t uint128_native_from_emulated( ::mas_uint128_t value )
+{
+    return ( serialize::uint128_t( value.hi ) << 64 ) | value.lo;
+}
+
+inline void check_uint128_agree( ::mas_uint128_t emulated, serialize::uint128_t native )
+{
+    serialize_check( emulated.lo == uint64_t( native ) );
+    serialize_check( emulated.hi == uint64_t( native >> 64 ) );
+}
+
+inline void test_uint128_differential()
+{
+    // where native __int128 exists, the emulated type is proven against it operator by operator:
+    // a fixed seed LCG generates operand pairs, and every operator must agree exactly. this is
+    // the test that keeps the sibling copies of the emulation block honest — drift fails loudly.
+
+    uint64_t lcg = 0x123456789ABCDEF0ULL;
+
+    #define serialize_test_next_lcg() ( lcg = lcg * 6364136223846793005ULL + 1442695040888963407ULL )
+
+    for ( int i = 0; i < 400; i++ )
+    {
+        uint64_t a_hi = serialize_test_next_lcg();
+        uint64_t a_lo = serialize_test_next_lcg();
+        uint64_t b_hi = serialize_test_next_lcg();
+        uint64_t b_lo = serialize_test_next_lcg();
+
+        // bias some operands toward the interesting edges: empty lanes, saturated lanes, equal operands
+        switch ( i % 8 )
+        {
+            case 1: a_hi = 0; break;
+            case 2: a_lo = 0; break;
+            case 3: b_hi = 0; break;
+            case 4: b_lo = 0; break;
+            case 5: a_hi = 0xFFFFFFFFFFFFFFFFULL; a_lo = 0xFFFFFFFFFFFFFFFFULL; break;
+            case 6: b_hi = 0; b_lo = uint64_t( 1 ) << ( i % 63 ); break;                    // powers of two divide cleanly
+            case 7: b_hi = a_hi; b_lo = a_lo; break;
+            default: break;
+        }
+
+        const ::mas_uint128_t ea = uint128_emulated( a_hi, a_lo );
+        const ::mas_uint128_t eb = uint128_emulated( b_hi, b_lo );
+        const serialize::uint128_t na = ( serialize::uint128_t( a_hi ) << 64 ) | a_lo;
+        const serialize::uint128_t nb = ( serialize::uint128_t( b_hi ) << 64 ) | b_lo;
+
+        check_uint128_agree( ea + eb, na + nb );
+        check_uint128_agree( ea - eb, na - nb );
+        check_uint128_agree( ea * eb, na * nb );
+        check_uint128_agree( ea & eb, na & nb );
+        check_uint128_agree( ea | eb, na | nb );
+        check_uint128_agree( ea ^ eb, na ^ nb );
+        check_uint128_agree( ~ea, ~na );
+        check_uint128_agree( -ea, serialize::uint128_t( 0 ) - na );
+        check_uint128_agree( +ea, na );
+
+        if ( eb != ::mas_uint128_t( 0 ) )
+        {
+            check_uint128_agree( ea / eb, na / nb );            // native division by zero is undefined; the emulated choice is pinned in test_uint128_emulation
+            check_uint128_agree( ea % eb, na % nb );
+        }
+
+        const int shift = int( b_lo % 128 );                    // native shifts of 128 or more are undefined; the emulated choice is pinned in test_uint128_emulation
+        check_uint128_agree( ea << shift, na << shift );
+        check_uint128_agree( ea >> shift, na >> shift );
+
+        serialize_check( ( ea == eb ) == ( na == nb ) );
+        serialize_check( ( ea != eb ) == ( na != nb ) );
+        serialize_check( ( ea <  eb ) == ( na <  nb ) );
+        serialize_check( ( ea >  eb ) == ( na >  nb ) );
+        serialize_check( ( ea <= eb ) == ( na <= nb ) );
+        serialize_check( ( ea >= eb ) == ( na >= nb ) );
+
+        ::mas_uint128_t emulated_accumulator = ea;
+        serialize::uint128_t native_accumulator = na;
+        check_uint128_agree( ++emulated_accumulator, ++native_accumulator );
+        check_uint128_agree( emulated_accumulator++, native_accumulator++ );
+        check_uint128_agree( emulated_accumulator, native_accumulator );
+        check_uint128_agree( --emulated_accumulator, --native_accumulator );
+        check_uint128_agree( emulated_accumulator--, native_accumulator-- );
+        check_uint128_agree( emulated_accumulator, native_accumulator );
+
+        emulated_accumulator = ea;
+        native_accumulator = na;
+        emulated_accumulator += eb; native_accumulator += nb; check_uint128_agree( emulated_accumulator, native_accumulator );
+        emulated_accumulator -= eb; native_accumulator -= nb; check_uint128_agree( emulated_accumulator, native_accumulator );
+        emulated_accumulator *= eb; native_accumulator *= nb; check_uint128_agree( emulated_accumulator, native_accumulator );
+        emulated_accumulator &= eb; native_accumulator &= nb; check_uint128_agree( emulated_accumulator, native_accumulator );
+        emulated_accumulator |= eb; native_accumulator |= nb; check_uint128_agree( emulated_accumulator, native_accumulator );
+        emulated_accumulator ^= eb; native_accumulator ^= nb; check_uint128_agree( emulated_accumulator, native_accumulator );
+        emulated_accumulator <<= shift; native_accumulator <<= shift; check_uint128_agree( emulated_accumulator, native_accumulator );
+        emulated_accumulator >>= shift; native_accumulator >>= shift; check_uint128_agree( emulated_accumulator, native_accumulator );
+        if ( eb != ::mas_uint128_t( 0 ) )
+        {
+            emulated_accumulator = ea; native_accumulator = na;
+            emulated_accumulator /= eb; native_accumulator /= nb; check_uint128_agree( emulated_accumulator, native_accumulator );
+            emulated_accumulator = ea; native_accumulator = na;
+            emulated_accumulator %= eb; native_accumulator %= nb; check_uint128_agree( emulated_accumulator, native_accumulator );
+        }
+    }
+
+    #undef serialize_test_next_lcg
+
+    // cross representation wire identity: the emulated type and native __int128 must produce
+    // byte identical wire through serialize_uint128, and each must read the other's bytes back
+    // exactly. this is what makes the emulation a drop in replacement on compilers without
+    // native 128 bit support.
+    {
+        const uint64_t lanes[][2] =                             // { hi, lo }
+        {
+            { 0, 0 },
+            { 0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFFFFFFFFFFULL },
+            { 0xFFFFFFFFFFFFFFFFULL, 0 },                                       // high half only
+            { 0, 0xFFFFFFFFFFFFFFFFULL },                                       // low half only
+            { 0x0123456789ABCDEFULL, 0xFEDCBA9876543210ULL },                   // distinct halves
+        };
+
+        for ( int i = 0; i < (int) ( sizeof( lanes ) / sizeof( lanes[0] ) ); i++ )
+        {
+            ::mas_uint128_t emulated = uint128_emulated( lanes[i][0], lanes[i][1] );
+            serialize::uint128_t native = uint128_native_from_emulated( emulated );
+
+            uint8_t emulated_buffer[16 + 8] = { 0 };            // + 8: read buffer allocations extend 8 bytes past the data
+            serialize::WriteStream emulatedStream( emulated_buffer, 16 );
+            serialize_check( serialize::serialize_uint128_internal( emulatedStream, emulated ) == true );
+            emulatedStream.Flush();
+
+            uint8_t native_buffer[16 + 8] = { 0 };
+            serialize::WriteStream nativeStream( native_buffer, 16 );
+            serialize_check( serialize::serialize_uint128_internal( nativeStream, native ) == true );
+            nativeStream.Flush();
+
+            serialize_check( emulatedStream.GetBitsProcessed() == nativeStream.GetBitsProcessed() );
+            serialize_check( memcmp( emulated_buffer, native_buffer, 16 ) == 0 );
+
+            // read the native bytes back through the emulated type
+            serialize::ReadStream readStream( native_buffer, 16 );
+            ::mas_uint128_t read_back( 0 );
+            serialize_check( serialize::serialize_uint128_internal( readStream, read_back ) == true );
+            serialize_check( read_back == uint128_emulated( lanes[i][0], lanes[i][1] ) );
+        }
+    }
+}
+
+inline serialize::int128_t int128_native_from_emulated( ::mas_int128_t value )
+{
+    return serialize::int128_t( ( serialize::uint128_t( value.hi ) << 64 ) | value.lo );
+}
+
+inline void check_int128_agree( ::mas_int128_t emulated, serialize::int128_t native )
+{
+    serialize_check( emulated.lo == uint64_t( serialize::uint128_t( native ) ) );
+    serialize_check( emulated.hi == uint64_t( serialize::uint128_t( native ) >> 64 ) );
+}
+
+inline void test_int128_differential()
+{
+    // the signed counterpart of test_uint128_differential: a fixed seed LCG generates operand
+    // pairs biased toward the sign boundaries, and every operator must agree exactly with native
+    // signed __int128. where the native operation would be undefined behavior — signed overflow
+    // in + - * << and unary minus — the native expectation is computed in the unsigned domain,
+    // which is the defined spelling of the two's complement wrap the emulation implements.
+
+    const serialize::int128_t native_int128_min = serialize::int128_t( serialize::uint128_t( 1 ) << 127 );
+
+    uint64_t lcg = 0xFEDCBA9876543210ULL;
+
+    #define serialize_test_next_lcg() ( lcg = lcg * 6364136223846793005ULL + 1442695040888963407ULL )
+
+    for ( int i = 0; i < 400; i++ )
+    {
+        uint64_t a_hi = serialize_test_next_lcg();
+        uint64_t a_lo = serialize_test_next_lcg();
+        uint64_t b_hi = serialize_test_next_lcg();
+        uint64_t b_lo = serialize_test_next_lcg();
+
+        // bias operands toward the sign boundaries: zero, ±1, INT64_MIN/MAX sign extended,
+        // INT128_MIN/MAX, negated and equal pairs
+        switch ( i % 10 )
+        {
+            case 1: a_hi = 0; a_lo = 0; break;
+            case 2: a_hi = 0xFFFFFFFFFFFFFFFFULL; a_lo = 0xFFFFFFFFFFFFFFFFULL; break;              // -1
+            case 3: a_hi = 0xFFFFFFFFFFFFFFFFULL; a_lo = 0x8000000000000000ULL; break;              // INT64_MIN sign extended
+            case 4: a_hi = 0; a_lo = 0x7FFFFFFFFFFFFFFFULL; break;                                  // INT64_MAX
+            case 5: a_hi = 0x8000000000000000ULL; a_lo = 0; break;                                  // INT128_MIN
+            case 6: a_hi = 0x7FFFFFFFFFFFFFFFULL; a_lo = 0xFFFFFFFFFFFFFFFFULL; break;              // INT128_MAX
+            case 7: b_hi = 0xFFFFFFFFFFFFFFFFULL; b_lo = 0xFFFFFFFFFFFFFFFFULL; break;              // -1: the overflowing divisor
+            case 8: b_hi = ~a_hi; b_lo = ~a_lo; break;                                              // ~a: b = -a - 1, mixed signs
+            case 9: b_hi = a_hi; b_lo = a_lo; break;
+            default: break;
+        }
+
+        const ::mas_int128_t ea = int128_emulated( a_hi, a_lo );
+        const ::mas_int128_t eb = int128_emulated( b_hi, b_lo );
+        const serialize::uint128_t ua = ( serialize::uint128_t( a_hi ) << 64 ) | a_lo;
+        const serialize::uint128_t ub = ( serialize::uint128_t( b_hi ) << 64 ) | b_lo;
+        const serialize::int128_t na = serialize::int128_t( ua );
+        const serialize::int128_t nb = serialize::int128_t( ub );
+
+        // + - * and unary minus: native expectations via the unsigned domain, avoiding native
+        // signed overflow, which is undefined behavior. the wrap is the semantics under test.
+        check_int128_agree( ea + eb, serialize::int128_t( ua + ub ) );
+        check_int128_agree( ea - eb, serialize::int128_t( ua - ub ) );
+        check_int128_agree( ea * eb, serialize::int128_t( ua * ub ) );
+        check_int128_agree( -ea, serialize::int128_t( serialize::uint128_t( 0 ) - ua ) );
+        check_int128_agree( +ea, na );
+
+        check_int128_agree( ea & eb, na & nb );
+        check_int128_agree( ea | eb, na | nb );
+        check_int128_agree( ea ^ eb, na ^ nb );
+        check_int128_agree( ~ea, ~na );
+
+        if ( nb != 0 && ! ( na == native_int128_min && nb == -1 ) )
+        {
+            check_int128_agree( ea / eb, na / nb );         // the excluded case is native undefined behavior; the emulated wrap is pinned in test_int128_emulation
+            check_int128_agree( ea % eb, na % nb );
+        }
+
+        const int shift = int( b_lo % 128 );                // native shifts of 128 or more are undefined; the emulated choice is pinned in test_int128_emulation
+        check_int128_agree( ea >> shift, na >> shift );                                             // native >> on negatives is the arithmetic shift on every target compiler
+        check_int128_agree( ea << shift, serialize::int128_t( ua << shift ) );                      // native << on negatives is undefined pre C++20: the unsigned domain is the defined spelling
+
+        serialize_check( ( ea == eb ) == ( na == nb ) );
+        serialize_check( ( ea != eb ) == ( na != nb ) );
+        serialize_check( ( ea <  eb ) == ( na <  nb ) );
+        serialize_check( ( ea >  eb ) == ( na >  nb ) );
+        serialize_check( ( ea <= eb ) == ( na <= nb ) );
+        serialize_check( ( ea >= eb ) == ( na >= nb ) );
+
+        // increments and decrements via the unsigned domain, since native ++ overflows at INT128_MAX
+        ::mas_int128_t incremented = ea;
+        ++incremented;
+        check_int128_agree( incremented, serialize::int128_t( ua + 1 ) );
+        incremented--;
+        check_int128_agree( incremented, na );
+        ::mas_int128_t decremented = ea;
+        --decremented;
+        check_int128_agree( decremented, serialize::int128_t( ua - 1 ) );
+
+        // conversions: the sign extending constructor and the truncating conversion match native
+        const int64_t seed64 = int64_t( a_lo );
+        check_int128_agree( ::mas_int128_t( seed64 ), serialize::int128_t( seed64 ) );
+        serialize_check( int64_t( ea ) == int64_t( uint64_t( ua ) ) );
+
+        // compound forms via the unsigned domain where overflow could occur
+        ::mas_int128_t accumulator = ea;
+        accumulator += eb; check_int128_agree( accumulator, serialize::int128_t( ua + ub ) );
+        accumulator = ea;
+        accumulator -= eb; check_int128_agree( accumulator, serialize::int128_t( ua - ub ) );
+        accumulator = ea;
+        accumulator *= eb; check_int128_agree( accumulator, serialize::int128_t( ua * ub ) );
+        accumulator = ea;
+        accumulator &= eb; check_int128_agree( accumulator, na & nb );
+        accumulator = ea;
+        accumulator |= eb; check_int128_agree( accumulator, na | nb );
+        accumulator = ea;
+        accumulator ^= eb; check_int128_agree( accumulator, na ^ nb );
+        accumulator = ea;
+        accumulator >>= shift; check_int128_agree( accumulator, na >> shift );
+        accumulator = ea;
+        accumulator <<= shift; check_int128_agree( accumulator, serialize::int128_t( ua << shift ) );
+        if ( nb != 0 && ! ( na == native_int128_min && nb == -1 ) )
+        {
+            accumulator = ea;
+            accumulator /= eb; check_int128_agree( accumulator, na / nb );
+            accumulator = ea;
+            accumulator %= eb; check_int128_agree( accumulator, na % nb );
+        }
+    }
+
+    #undef serialize_test_next_lcg
 }
 
 #endif // #if defined(__SIZEOF_INT128__)
@@ -4540,9 +5455,14 @@ inline void serialize_test()
         SERIALIZE_RUN_TEST( test_serialize_fixed );
         SERIALIZE_RUN_TEST( test_serialize_fixed_validation );
         SERIALIZE_RUN_TEST( test_serialize_fixed_matches_int64 );
-#if defined(__SIZEOF_INT128__)
         SERIALIZE_RUN_TEST( test_serialize_fixed_wide );
+        SERIALIZE_RUN_TEST( test_serialize_fixed_wide_emulated );
         SERIALIZE_RUN_TEST( test_serialize_uint128 );
+        SERIALIZE_RUN_TEST( test_uint128_emulation );
+        SERIALIZE_RUN_TEST( test_int128_emulation );
+#if defined(__SIZEOF_INT128__)
+        SERIALIZE_RUN_TEST( test_uint128_differential );
+        SERIALIZE_RUN_TEST( test_int128_differential );
 #endif // #if defined(__SIZEOF_INT128__)
         SERIALIZE_RUN_TEST( test_golden_wire_format );
         SERIALIZE_RUN_TEST( test_unaligned_writer );

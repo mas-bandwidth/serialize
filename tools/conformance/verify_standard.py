@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Check serialize/STANDARD.md against the implementation.
 
-Decodes the library's own golden wire-format vector using ONLY what
+Decodes the library's own golden wire-format vectors using ONLY what
 STANDARD.md states — the bit packing, the ranged-integer widths, the alignment
-rules, the relative-integer ladder — and asserts every field of the golden
-message. Nothing here consults serialize.h's implementation; the golden array
-and the expected values are read out of the header as data.
+rules, the relative-integer ladder, the fixed-point offset encoding, the
+uint128 half order — and asserts every field of the golden message plus the
+additive uint128 pin. Nothing here consults serialize.h's implementation; the
+golden arrays and the expected values are read out of the header as data.
 
 usage: python3 tools/conformance/verify_standard.py
 exit:  0 = the document matches the implementation, 1 = it does not
@@ -52,15 +53,28 @@ def relative(r, prev):
     return prev + r.bits(32)
 
 
-def golden_bytes():
+def hex_array(name):
     src = open(HDR).read()
-    m = re.search(r"golden_wire_bytes\[\]\s*=\s*\{(.*?)\};", src, re.S)
-    if not m: raise SystemExit("golden_wire_bytes not found in serialize.h")
+    m = re.search(name + r"\[\]\s*=\s*\{(.*?)\};", src, re.S)
+    if not m: raise SystemExit(name + " not found in serialize.h")
     return bytes(int(x, 16) for x in re.findall(r"0x([0-9A-Fa-f]{2})", m.group(1)))
 
 
+def fixed(r, fraction_bits, lo, hi):
+    """STANDARD.md, 'fixed': offset encoding over the raw (scaled) bounds,
+    written in 32-bit groups from least significant upward."""
+    raw_lo, raw_hi = lo << fraction_bits, hi << fraction_bits
+    n = bits_required(raw_lo, raw_hi)
+    v = 0
+    for g in range(0, n, 32):
+        v |= r.bits(min(32, n - g)) << g
+    if v > raw_hi - raw_lo:
+        raise ValueError("fixed offset out of range")
+    return v + raw_lo
+
+
 def main():
-    data = golden_bytes()
+    data = hex_array("golden_wire_bytes")
     r = BitReader(data)
     fails, n = [], 0
 
@@ -97,7 +111,20 @@ def main():
     ln = sint(r, 0, 7)
     eq("wstring (32 bits per char, NO alignment)",
        [r.bits(32) for _ in range(ln)], [0x043C, 0x0438, 0x0440])
+    r.align()
+    eq("fixed q8.8 (-3.25 in ±100 units)", fixed(r, 8, -100, 100), -(3 * 256 + 64))
+    eq("fixed q16.16 (1234.5 in ±2000 units)", fixed(r, 16, -2000, 2000), 1234 * 65536 + 32768)
+    eq("fixed q48.16 (in ±100000 units)", fixed(r, 16, -100000, 100000), -(54321 * 65536 + 12345))
+    eq("fixed q16.16 unsigned (every fraction bit set)", fixed(r, 16, 0, 30000), 29999 * 65536 + 65535)
     eq("consumed exactly the golden bytes", math.ceil(r.i / 8), len(data))
+
+    # STANDARD.md, 'uint128': 128 raw bits, low 64-bit half first, each half as
+    # serialize_bits( half, 64 ). Verified against the library's second, additive pin.
+    u = BitReader(hex_array("golden_uint128_bytes"))
+    lo = u.bits(32) | (u.bits(32) << 32)
+    hi = u.bits(32) | (u.bits(32) << 32)
+    eq("uint128 (low half first, little endian bytes)",
+       (hi << 64) | lo, 0x0123456789ABCDEF_FEDCBA9876543210)
 
     print(f"{n} checks against STANDARD.md, {len(fails)} failures")
     for f in fails: print("  FAIL " + f)

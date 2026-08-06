@@ -298,10 +298,8 @@ struct PacketF
     int64_t position_y;
     int64_t position_z;
     int32_t health;                         // Q16.16 fixed point health, in [0,100] whole units
-#if defined(__SIZEOF_INT128__)
-    serialize::uint128_t entity_id;         // 128 bit globally unique entity id
-    serialize::int128_t galactic_x;         // Q112.16 wide fixed point coordinate, in ±10^11 whole units
-#endif // #if defined(__SIZEOF_INT128__)
+    serialize::uint128_t entity_id;         // 128 bit globally unique entity id. serialize::uint128_t exists on every platform
+    serialize::int128_t galactic_x;         // Q112.16 wide fixed point coordinate, in ±10^11 whole units. also on every platform: native __int128 or the emulated type
 
     template <typename Stream> bool Serialize( Stream & stream )
     {
@@ -309,10 +307,8 @@ struct PacketF
         serialize_fixed( stream, position_y, 48, 16, -8192, +8192 );
         serialize_fixed( stream, position_z, 48, 16, -8192, +8192 );
         serialize_fixed( stream, health, 16, 16, 0, 100 );
-#if defined(__SIZEOF_INT128__)
         serialize_uint128( stream, entity_id );
         serialize_fixed( stream, galactic_x, 112, 16, -100000000000LL, +100000000000LL );
-#endif // #if defined(__SIZEOF_INT128__)
         return true;
     }
 };
@@ -350,6 +346,7 @@ struct Packet
         PacketC c;
         PacketD d;
         PacketE e;
+        PacketF f;
     };
 
     template <typename Stream> bool Serialize( Stream & stream )
@@ -384,6 +381,12 @@ struct Packet
             case E:
             {
                 serialize_object( stream, e );
+            }
+            break;
+
+            case F:
+            {
+                serialize_object( stream, f );
             }
             break;
         }
@@ -564,6 +567,28 @@ int main()
                 }
             }
             break;
+
+            case F:
+            {
+                // random raw Q48.16 values across the full ±8192 whole unit range, fraction bits included
+                const int64_t position_min = int64_t( -8192 ) * 65536;
+                const uint64_t position_range = uint64_t( 16384 ) * 65536;
+                input.f.position_x = position_min + int64_t( ( ( uint64_t( rand() ) << 32 ) | uint64_t( rand() ) ) % ( position_range + 1 ) );
+                input.f.position_y = position_min + int64_t( ( ( uint64_t( rand() ) << 32 ) | uint64_t( rand() ) ) % ( position_range + 1 ) );
+                input.f.position_z = position_min + int64_t( ( ( uint64_t( rand() ) << 32 ) | uint64_t( rand() ) ) % ( position_range + 1 ) );
+
+                input.f.health = int32_t( ( ( uint64_t( rand() ) << 32 ) | uint64_t( rand() ) ) % ( 100 * 65536 + 1 ) );
+
+                input.f.entity_id = ( serialize::uint128_t( ( uint64_t( rand() ) << 32 ) | uint64_t( rand() ) ) << 64 )
+                                  | serialize::uint128_t( ( uint64_t( rand() ) << 32 ) | uint64_t( rand() ) );
+
+                const serialize::int128_t galactic_min = serialize::int128_t( -100000000000LL ) * serialize::int128_t( 65536 );
+                const serialize::uint128_t galactic_range = serialize::uint128_t( 200000000000ULL ) * serialize::uint128_t( 65536 );
+                const serialize::uint128_t galactic_random = ( serialize::uint128_t( ( uint64_t( rand() ) << 32 ) | uint64_t( rand() ) ) << 64 )
+                                                           | serialize::uint128_t( ( uint64_t( rand() ) << 32 ) | uint64_t( rand() ) );
+                input.f.galactic_x = galactic_min + serialize::int128_t( galactic_random % ( galactic_range + serialize::uint128_t( 1 ) ) );
+            }
+            break;
         }
 
         uint8_t buffer[100*1024];
@@ -592,6 +617,7 @@ int main()
         if ( input.packetType == B )
         {
             // compressed floats are quantized, so compare with a tolerance of the resolution
+            // (contrast packet f: fixed point round trips are exact, so it takes the memcmp path below with no carve out)
             if ( fabs( input.b.x - output.b.x ) > 0.001f ||
                  fabs( input.b.y - output.b.y ) > 0.001f ||
                  fabs( input.b.z - output.b.z ) > 0.001f )
