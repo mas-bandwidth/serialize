@@ -283,7 +283,7 @@ truncating**.
 ## Worked Example
 
 The library's golden test serializes a fixed message and asserts an exact
-86-byte output. One field is a wide string in a `wchar_t[8]` buffer
+112-byte output. One field is a wide string in a `wchar_t[8]` buffer
 containing three characters — `0x043C`, `0x0438`, `0x0440` — and it produces
 this 13-byte run:
 
@@ -310,6 +310,14 @@ is `serialize_fixed( value, 8, 8, -100, +100 )` — Q8.8, so `raw_min` is
 The next two bytes of the golden vector are `0xC0 0x60`, which is the offset
 `0x60C0 = 24768`; adding `raw_min` gives a raw value of `-832`, which is
 `-3.25` in Q8.8 — exactly the value the golden message stores.
+
+After another align the message ends with two wide fixed point fields that
+make the multi-group split load-bearing: a Q112.16 field over ±2^57 whole
+units (75 bits — two full 32-bit groups from the bottom, then the 11-bit
+remainder on top), and a Q64.64 field over the full int64 unit range (128
+bits — four 32-bit groups). A decoder that assembles the groups in the wrong
+order, or puts the remainder anywhere but the most significant position,
+decodes the wrong values here.
 
 ## Read-only and write-only forms
 

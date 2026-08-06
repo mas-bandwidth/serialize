@@ -116,6 +116,11 @@ def main():
     eq("fixed q16.16 (1234.5 in ±2000 units)", fixed(r, 16, -2000, 2000), 1234 * 65536 + 32768)
     eq("fixed q48.16 (in ±100000 units)", fixed(r, 16, -100000, 100000), -(54321 * 65536 + 12345))
     eq("fixed q16.16 unsigned (every fraction bit set)", fixed(r, 16, 0, 30000), 29999 * 65536 + 65535)
+    r.align()
+    eq("fixed q112.16 wide (75 bits: the 3-group structure)",
+       fixed(r, 16, -(2**57), 2**57), -(98765432109 * 65536 + 4321))
+    eq("fixed q64.64 wide (128 bits: the 4-group structure)",
+       fixed(r, 64, -(2**63), 2**63 - 1), (0x0123456789ABCDEF << 64) + 0x0FEDCBA987654321)
     eq("consumed exactly the golden bytes", math.ceil(r.i / 8), len(data))
 
     # STANDARD.md, 'uint128': 128 raw bits, low 64-bit half first, each half as

@@ -181,7 +181,18 @@ typedef struct mas_uint128_t
 
     mas_uint128_t() = default;
 
-    mas_uint128_t( uint64_t value ) : lo( value ), hi( 0 ) {}
+    // construction mirrors native conversion to unsigned __int128 exactly: unsigned sources zero
+    // extend, signed sources sign extend (a negative value wraps modulo 2^128, so the high lane
+    // fills with ones). one constructor per standard integer type keeps every call an exact match
+    // after integer promotion — a lone uint64_t constructor would zero extend negative int64
+    // values where native sign extends, silently diverging the wire between representations.
+
+    mas_uint128_t( int value )                : lo( uint64_t( int64_t( value ) ) ), hi( ( value < 0 ) ? 0xFFFFFFFFFFFFFFFFULL : 0 ) {}
+    mas_uint128_t( long value )               : lo( uint64_t( int64_t( value ) ) ), hi( ( value < 0 ) ? 0xFFFFFFFFFFFFFFFFULL : 0 ) {}
+    mas_uint128_t( long long value )          : lo( uint64_t( int64_t( value ) ) ), hi( ( value < 0 ) ? 0xFFFFFFFFFFFFFFFFULL : 0 ) {}
+    mas_uint128_t( unsigned int value )       : lo( value ), hi( 0 ) {}
+    mas_uint128_t( unsigned long value )      : lo( value ), hi( 0 ) {}
+    mas_uint128_t( unsigned long long value ) : lo( value ), hi( 0 ) {}
 
     explicit operator uint64_t () const
     {
@@ -457,7 +468,19 @@ typedef struct mas_int128_t
 
     mas_int128_t() = default;
 
-    mas_int128_t( int64_t value ) : lo( uint64_t( value ) ), hi( ( value < 0 ) ? 0xFFFFFFFFFFFFFFFFULL : 0 ) {}     // sign extending
+    // construction mirrors native conversion to __int128 exactly: signed sources sign extend,
+    // unsigned sources zero extend (any uint64 is below 2^127, so the conversion is value
+    // preserving with a zero high lane). one constructor per standard integer type keeps every
+    // call an exact match after integer promotion — a lone int64_t constructor would wrap large
+    // uint64 values negative where native keeps them positive, silently diverging the wire
+    // between representations.
+
+    mas_int128_t( int value )                : lo( uint64_t( int64_t( value ) ) ), hi( ( value < 0 ) ? 0xFFFFFFFFFFFFFFFFULL : 0 ) {}
+    mas_int128_t( long value )               : lo( uint64_t( int64_t( value ) ) ), hi( ( value < 0 ) ? 0xFFFFFFFFFFFFFFFFULL : 0 ) {}
+    mas_int128_t( long long value )          : lo( uint64_t( int64_t( value ) ) ), hi( ( value < 0 ) ? 0xFFFFFFFFFFFFFFFFULL : 0 ) {}
+    mas_int128_t( unsigned int value )       : lo( value ), hi( 0 ) {}
+    mas_int128_t( unsigned long value )      : lo( value ), hi( 0 ) {}
+    mas_int128_t( unsigned long long value ) : lo( value ), hi( 0 ) {}
 
     explicit mas_int128_t( mas_uint128_t value ) : lo( value.lo ), hi( value.hi ) {}        // bit preserving
 
@@ -2264,6 +2287,10 @@ namespace serialize
 
     template <typename Stream, typename UInt128> bool serialize_uint128_internal( Stream & stream, UInt128 & value )
     {
+        // refuse narrower types at compile time: a uint64_t here would shift by 64 — undefined
+        // behavior — and silently is not the 128 bit operation the caller asked for
+        static_assert( sizeof( UInt128 ) == 16, "serialize_uint128 requires a 128 bit type (did you mean serialize_uint64?)" );
+
         uint64_t low_half = 0;
         uint64_t high_half = 0;
         if ( Stream::IsWriting )
@@ -4413,6 +4440,12 @@ inline void test_serialize_fixed_wide()
     check_fixed_cases<64, 64, INT64_MIN, INT64_MAX>( serialize::int128_t( 1 ) << 64 );                              // full unit range: 128 bits on the wire
     check_fixed_cases<112, 16, 0, 2305843009213693952LL>( serialize::uint128_t( 65536 ) );                          // 2^61 units, unsigned
 
+    // the 33..64 bit two group band on wide storage: both boundaries exactly, plus the example's
+    // own Q112.16 ±1e11 shape (54 bits), which used to live only in example.cpp and not in CI
+    check_fixed_cases<112, 16, -32768, +32768>( serialize::int128_t( 65536 ) );                                     // 33 bits: the band's low edge
+    check_fixed_cases<112, 16, -100000000000LL, +100000000000LL>( serialize::int128_t( 65536 ) );                   // 54 bits: the example's shape
+    check_fixed_cases<112, 16, -140737488355328LL, +140737488355327LL>( serialize::int128_t( 65536 ) );             // 64 bits: the band's high edge
+
     // the wire cost is a compile time constant of the call site, wide paths included. pin a few
     {
         uint8_t buffer[16];
@@ -4428,12 +4461,37 @@ inline void test_serialize_fixed_wide()
         serialize_check( ( serialize::serialize_fixed_internal<64, 64, INT64_MIN, INT64_MAX>( stream, value ) ) == true );
         serialize_check( stream.GetBitsProcessed() == 128 );        // the full unit range costs the full storage width
     }
+    {
+        uint8_t buffer[16];
+        serialize::WriteStream stream( buffer, 16 );
+        serialize::int128_t value = serialize::int128_t( 12345678901LL ) * serialize::int128_t( 65536 );
+        serialize_check( ( serialize::serialize_fixed_internal<112, 16, -100000000000LL, +100000000000LL>( stream, value ) ) == true );
+        serialize_check( stream.GetBitsProcessed() == 54 );         // the example's shape: 2e11 << 16 raw values needs 54 bits, inside the two group band
+    }
+    {
+        uint8_t buffer[16];
+        serialize::WriteStream stream( buffer, 16 );
+        serialize::int128_t value = 0;
+        serialize_check( ( serialize::serialize_fixed_internal<112, 16, -32768, +32768>( stream, value ) ) == true );
+        serialize_check( stream.GetBitsProcessed() == 33 );         // the band's low edge
+    }
+    {
+        uint8_t buffer[16];
+        serialize::WriteStream stream( buffer, 16 );
+        serialize::int128_t value = 0;
+        serialize_check( ( serialize::serialize_fixed_internal<112, 16, -140737488355328LL, +140737488355327LL>( stream, value ) ) == true );
+        serialize_check( stream.GetBitsProcessed() == 64 );         // the band's high edge
+    }
 
-    // one raw step past raw_max must be rejected on read, through every group structure
+    // one raw step past raw_max must be rejected on read, through every group structure —
+    // the 33..64 bit two group band included
     check_fixed_wide_rejects_out_of_range<112, 16, -1152921504606846976LL, +1152921504606846976LL>( serialize::int128_t( 0 ) );
     check_fixed_wide_rejects_out_of_range<112, 16, -2, +2>( serialize::int128_t( 0 ) );
     check_fixed_wide_rejects_out_of_range<64, 64, -1000, +1000>( serialize::int128_t( 0 ) );
     check_fixed_wide_rejects_out_of_range<112, 16, 0, 2305843009213693952LL>( serialize::uint128_t( 0 ) );
+    check_fixed_wide_rejects_out_of_range<112, 16, -32768, +32768>( serialize::int128_t( 0 ) );
+    check_fixed_wide_rejects_out_of_range<112, 16, -100000000000LL, +100000000000LL>( serialize::int128_t( 0 ) );
+    check_fixed_wide_rejects_out_of_range<112, 16, -140737488355328LL, +140737488355327LL>( serialize::int128_t( 0 ) );
 
     // reads past the end of the buffer must fail cleanly
     {
@@ -4457,10 +4515,18 @@ inline void test_serialize_fixed_wide_emulated()
     check_fixed_cases<64, 64, INT64_MIN, INT64_MAX>( ::mas_int128_t( 1 ) << 64 );
     check_fixed_cases<112, 16, 0, 2305843009213693952LL>( ::mas_uint128_t( 65536 ) );
 
+    // the 33..64 bit two group band on emulated wide storage: both boundaries and the example's shape
+    check_fixed_cases<112, 16, -32768, +32768>( ::mas_int128_t( 65536 ) );
+    check_fixed_cases<112, 16, -100000000000LL, +100000000000LL>( ::mas_int128_t( 65536 ) );
+    check_fixed_cases<112, 16, -140737488355328LL, +140737488355327LL>( ::mas_int128_t( 65536 ) );
+
     // one raw step past raw_max must be rejected through the emulated read path too
     check_fixed_wide_rejects_out_of_range<112, 16, -1152921504606846976LL, +1152921504606846976LL>( ::mas_int128_t( 0 ) );
     check_fixed_wide_rejects_out_of_range<64, 64, -1000, +1000>( ::mas_int128_t( 0 ) );
     check_fixed_wide_rejects_out_of_range<112, 16, 0, 2305843009213693952LL>( ::mas_uint128_t( 0 ) );
+    check_fixed_wide_rejects_out_of_range<112, 16, -32768, +32768>( ::mas_int128_t( 0 ) );
+    check_fixed_wide_rejects_out_of_range<112, 16, -100000000000LL, +100000000000LL>( ::mas_int128_t( 0 ) );
+    check_fixed_wide_rejects_out_of_range<112, 16, -140737488355328LL, +140737488355327LL>( ::mas_int128_t( 0 ) );
 
 #if defined(__SIZEOF_INT128__)
     // cross representation wire identity: native and emulated storage must produce byte identical
@@ -4606,6 +4672,19 @@ inline void test_uint128_emulation()
         serialize_check( value.lo == lo && value.hi == 0 );
         serialize_check( uint64_t( value ) == lo );
         serialize_check( uint64_t( uint128_emulated( hi, lo ) ) == lo );
+    }
+
+    // construction from every standard integer type mirrors native conversion: signed sources
+    // sign extend (negatives wrap modulo 2^128), unsigned sources zero extend. these are the
+    // exact cross signed cases that diverged before the per-type constructors existed.
+    {
+        serialize_check( ::mas_uint128_t( int64_t( -1 ) ) == uint128_emulated( 0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFFFFFFFFFFULL ) );
+        serialize_check( ::mas_uint128_t( INT64_MIN ) == uint128_emulated( 0xFFFFFFFFFFFFFFFFULL, 0x8000000000000000ULL ) );
+        serialize_check( ::mas_uint128_t( uint64_t( 1 ) << 63 ) == uint128_emulated( 0, 0x8000000000000000ULL ) );
+        serialize_check( ::mas_uint128_t( UINT64_MAX ) == uint128_emulated( 0, 0xFFFFFFFFFFFFFFFFULL ) );
+        serialize_check( ::mas_uint128_t( -5 ) == uint128_emulated( 0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFFFFFFFFFBULL ) );       // int: sign extends
+        serialize_check( ::mas_uint128_t( 3000000000U ) == uint128_emulated( 0, 3000000000ULL ) );                          // unsigned: zero extends
+        serialize_check( ::mas_uint128_t( int64_t( 7 ) ) == uint128_emulated( 0, 7 ) );                                     // non negative signed: zero high lane
     }
 
     // all six comparisons, driven by the high lane, the low lane, and equality
@@ -4776,6 +4855,16 @@ inline void test_int128_emulation()
         serialize_check( ::mas_int128_t( 1 ) == int128_emulated( 0, 1 ) );
         serialize_check( int64_t( ::mas_int128_t( -5 ) ) == -5 );
         serialize_check( int64_t( ::mas_int128_t( INT64_MIN ) ) == INT64_MIN );
+
+        // unsigned sources are value preserving with a zero high lane, exactly like native: a
+        // uint64 with the top bit set stays a large positive value, it does NOT wrap negative.
+        // these are the exact cross signed cases that diverged before the per-type constructors.
+        serialize_check( ::mas_int128_t( uint64_t( 1 ) << 63 ) == int128_emulated( 0, 0x8000000000000000ULL ) );
+        serialize_check( ::mas_int128_t( uint64_t( 1 ) << 63 ) > ::mas_int128_t( 0 ) );
+        serialize_check( ::mas_int128_t( UINT64_MAX ) == int128_emulated( 0, 0xFFFFFFFFFFFFFFFFULL ) );
+        serialize_check( ::mas_int128_t( UINT64_MAX ) > ::mas_int128_t( 0 ) );
+        serialize_check( ::mas_int128_t( -5 ) == int128_emulated( 0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFFFFFFFFFBULL ) );     // int: sign extends
+        serialize_check( ::mas_int128_t( 3000000000U ) == int128_emulated( 0, 3000000000ULL ) );                        // unsigned: zero extends
 
         const ::mas_uint128_t bit_pattern = ::mas_uint128_t( ::mas_int128_t( -1 ) );
         serialize_check( bit_pattern.lo == 0xFFFFFFFFFFFFFFFFULL && bit_pattern.hi == 0xFFFFFFFFFFFFFFFFULL );
@@ -4968,6 +5057,10 @@ inline void test_uint128_differential()
         serialize_check( ( ea <= eb ) == ( na <= nb ) );
         serialize_check( ( ea >= eb ) == ( na >= nb ) );
 
+        // construction agreement from both signednesses of the drawn lanes
+        check_uint128_agree( ::mas_uint128_t( a_lo ), serialize::uint128_t( a_lo ) );
+        check_uint128_agree( ::mas_uint128_t( int64_t( a_lo ) ), serialize::uint128_t( int64_t( a_lo ) ) );
+
         ::mas_uint128_t emulated_accumulator = ea;
         serialize::uint128_t native_accumulator = na;
         check_uint128_agree( ++emulated_accumulator, ++native_accumulator );
@@ -4997,6 +5090,17 @@ inline void test_uint128_differential()
     }
 
     #undef serialize_test_next_lcg
+
+    // construction differential: the exact cross signed cases the audit proved uncovered.
+    // identical source expressions must construct identical values in both representations.
+    {
+        check_uint128_agree( ::mas_uint128_t( int64_t( -1 ) ),       serialize::uint128_t( int64_t( -1 ) ) );
+        check_uint128_agree( ::mas_uint128_t( INT64_MIN ),           serialize::uint128_t( INT64_MIN ) );
+        check_uint128_agree( ::mas_uint128_t( uint64_t( 1 ) << 63 ), serialize::uint128_t( uint64_t( 1 ) << 63 ) );
+        check_uint128_agree( ::mas_uint128_t( UINT64_MAX ),          serialize::uint128_t( UINT64_MAX ) );
+        check_uint128_agree( ::mas_uint128_t( -5 ),                  serialize::uint128_t( -5 ) );
+        check_uint128_agree( ::mas_uint128_t( 3000000000U ),         serialize::uint128_t( 3000000000U ) );
+    }
 
     // cross representation wire identity: the emulated type and native __int128 must produce
     // byte identical wire through serialize_uint128, and each must read the other's bytes back
@@ -5134,9 +5238,11 @@ inline void test_int128_differential()
         --decremented;
         check_int128_agree( decremented, serialize::int128_t( ua - 1 ) );
 
-        // conversions: the sign extending constructor and the truncating conversion match native
+        // conversions: the sign extending and value preserving constructors and the truncating
+        // conversion match native, from both signednesses of the drawn lane
         const int64_t seed64 = int64_t( a_lo );
         check_int128_agree( ::mas_int128_t( seed64 ), serialize::int128_t( seed64 ) );
+        check_int128_agree( ::mas_int128_t( a_lo ), serialize::int128_t( a_lo ) );
         serialize_check( int64_t( ea ) == int64_t( uint64_t( ua ) ) );
 
         // compound forms via the unsigned domain where overflow could occur
@@ -5166,6 +5272,17 @@ inline void test_int128_differential()
     }
 
     #undef serialize_test_next_lcg
+
+    // construction differential: the exact cross signed cases the audit proved uncovered.
+    // identical source expressions must construct identical values in both representations.
+    {
+        check_int128_agree( ::mas_int128_t( int64_t( -1 ) ),       serialize::int128_t( int64_t( -1 ) ) );
+        check_int128_agree( ::mas_int128_t( INT64_MIN ),           serialize::int128_t( INT64_MIN ) );
+        check_int128_agree( ::mas_int128_t( uint64_t( 1 ) << 63 ), serialize::int128_t( uint64_t( 1 ) << 63 ) );
+        check_int128_agree( ::mas_int128_t( UINT64_MAX ),          serialize::int128_t( UINT64_MAX ) );
+        check_int128_agree( ::mas_int128_t( -5 ),                  serialize::int128_t( -5 ) );
+        check_int128_agree( ::mas_int128_t( 3000000000U ),         serialize::int128_t( 3000000000U ) );
+    }
 }
 
 #endif // #if defined(__SIZEOF_INT128__)
@@ -5200,6 +5317,8 @@ struct GoldenWireData
     int32_t fixed_q16_16;
     int64_t fixed_q48_16;
     uint32_t fixed_q16_16_unsigned;
+    serialize::int128_t fixed_q112_16_wide;
+    serialize::int128_t fixed_q64_64_wide;
 };
 
 inline void GoldenWireInit( GoldenWireData & data )
@@ -5231,6 +5350,9 @@ inline void GoldenWireInit( GoldenWireData & data )
     data.fixed_q16_16 = 1234 * 65536 + 32768;                                       // 1234.5 in Q16.16
     data.fixed_q48_16 = -( int64_t( 54321 ) * 65536 + 12345 );                      // -54321.1883... in Q48.16
     data.fixed_q16_16_unsigned = 29999u * 65536 + 65535;                            // 29999.99998... in Q16.16: every fraction bit set
+    data.fixed_q112_16_wide = serialize::int128_t( -( int64_t( 98765432109LL ) * 65536 + 4321 ) );      // -98765432109.066 in Q112.16: 75 bits on the wire, three groups
+    data.fixed_q64_64_wide = ( serialize::int128_t( 0x0123456789ABCDEFLL ) << 64 )
+                           + serialize::int128_t( 0x0FEDCBA987654321LL );           // Q64.64 over the full unit range: 128 bits, four groups, every group distinct
 }
 
 template <typename Stream> bool GoldenWireSerialize( Stream & stream, GoldenWireData & data )
@@ -5261,6 +5383,9 @@ template <typename Stream> bool GoldenWireSerialize( Stream & stream, GoldenWire
     serialize_fixed( stream, data.fixed_q16_16, 16, 16, -2000, +2000 );
     serialize_fixed( stream, data.fixed_q48_16, 48, 16, -100000, +100000 );
     serialize_fixed( stream, data.fixed_q16_16_unsigned, 16, 16, 0, 30000 );
+    serialize_align( stream );                  // the wide fixed section starts byte aligned, so every byte pinned above it stays put
+    serialize_fixed( stream, data.fixed_q112_16_wide, 112, 16, -144115188075855872LL, +144115188075855872LL );      // ±2^57 units: 75 bits, the three group structure
+    serialize_fixed( stream, data.fixed_q64_64_wide, 64, 64, INT64_MIN, INT64_MAX );                                // full unit range: 128 bits, the four group structure
     return true;
 }
 
@@ -5273,7 +5398,9 @@ static const uint8_t golden_wire_bytes[] =
     0xEF, 0xCA, 0xFE, 0x01, 0x06, 0x67, 0x6F, 0x6C, 0x64, 0x65, 0x6E, 0xE3,
     0x21, 0x00, 0x00, 0xC0, 0x21, 0x00, 0x00, 0x00, 0x22, 0x00, 0x00, 0x00,
     0xC0, 0x60, 0x00, 0x80, 0xA2, 0x7C, 0xFC, 0xEC, 0x26, 0xCB, 0xFF, 0xFF,
-    0x4B, 0x1D
+    0x4B, 0x1D, 0x1F, 0xEF, 0xD2, 0x1A, 0x1F, 0x01, 0xE9, 0xFF, 0xFF, 0x09,
+    0x19, 0x2A, 0x3B, 0x4C, 0x5D, 0x6E, 0x7F, 0x78, 0x6F, 0x5E, 0x4D, 0x3C,
+    0x2B, 0x1A, 0x09, 0x04
 };
 
 inline void test_golden_wire_format()
@@ -5326,6 +5453,8 @@ inline void test_golden_wire_format()
         serialize_check( data.fixed_q16_16 == expected.fixed_q16_16 );
         serialize_check( data.fixed_q48_16 == expected.fixed_q48_16 );
         serialize_check( data.fixed_q16_16_unsigned == expected.fixed_q16_16_unsigned );
+        serialize_check( data.fixed_q112_16_wide == expected.fixed_q112_16_wide );
+        serialize_check( data.fixed_q64_64_wide == expected.fixed_q64_64_wide );
     }
 }
 
