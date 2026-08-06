@@ -136,8 +136,322 @@
 #include <wchar.h>      // wcslen
 #include <math.h>       // ceil, floor
 
-namespace serialize 
+// 128 bit unsigned integer support.
+//
+// serialize::uint128_t exists on every platform. Where the compiler provides native __int128
+// (gcc, clang, clang-cl) it is unsigned __int128: the fastest representation. On compilers
+// without it (pure MSVC), serialize defines the emulated mas_uint128_t below — a full unsigned
+// 128 bit integer type with standard semantics — and announces it with the MAS_UINT128_DEFINED
+// handshake macro.
+//
+// THE SHARING CONVENTION: single header libraries cannot include each other, so this definition
+// block is carried, verbatim, by sibling projects under the same handshake (the fixed point
+// library, and games built on these libraries). Whichever header is included first defines the
+// type; everyone after sees MAS_UINT128_DEFINED and aliases it, so the type is defined exactly
+// once per translation unit instead of two or three times. The copies exist by design; the
+// handshake makes them mutually exclusive per translation unit, and the differential test
+// against native __int128 in each C++ home is what keeps every copy honest — drift fails loudly.
+//
+// The block is dual language: in C the type is the bare POD struct of two uint64_t members,
+// low half then high half, matching little endian layout and the wire order. C projects add
+// their own function wrappers in their own tree. Everything else — constructors, the full
+// operator surface, the explicit uint64_t conversion — is C++ only, inside #ifdef __cplusplus.
+//
+// Semantics match native unsigned __int128 exactly, with two documented choices where native
+// has none: shift counts outside [0,127] yield zero (native shifts by 128 or more are undefined
+// behavior), and division or modulo by zero yields zero quotient and zero remainder (this block
+// has no assert dependency by design, and deterministic zero is the safest portable behavior).
+//
+// When tests are enabled the type is defined even where native __int128 exists, so the test
+// suite can prove the emulation agrees with native operator by operator and produces byte
+// identical wire.
+
+#if !defined( MAS_UINT128_DEFINED ) && ( !defined( __SIZEOF_INT128__ ) || SERIALIZE_ENABLE_TESTS )
+
+typedef struct mas_uint128_t
 {
+    uint64_t lo;            ///< the low 64 bits. first, matching the little endian layout and the wire order
+    uint64_t hi;            ///< the high 64 bits
+
+#ifdef __cplusplus
+
+    mas_uint128_t() = default;
+
+    mas_uint128_t( uint64_t value ) : lo( value ), hi( 0 ) {}
+
+    explicit operator uint64_t () const
+    {
+        return lo;
+    }
+
+    bool operator == ( mas_uint128_t other ) const
+    {
+        return lo == other.lo && hi == other.hi;
+    }
+
+    bool operator != ( mas_uint128_t other ) const
+    {
+        return ! ( *this == other );
+    }
+
+    bool operator < ( mas_uint128_t other ) const
+    {
+        return ( hi != other.hi ) ? ( hi < other.hi ) : ( lo < other.lo );
+    }
+
+    bool operator > ( mas_uint128_t other ) const
+    {
+        return other < *this;
+    }
+
+    bool operator <= ( mas_uint128_t other ) const
+    {
+        return ! ( other < *this );
+    }
+
+    bool operator >= ( mas_uint128_t other ) const
+    {
+        return ! ( *this < other );
+    }
+
+    mas_uint128_t operator ~ () const
+    {
+        mas_uint128_t result( 0 );
+        result.lo = ~lo;
+        result.hi = ~hi;
+        return result;
+    }
+
+    mas_uint128_t operator & ( mas_uint128_t other ) const
+    {
+        mas_uint128_t result( 0 );
+        result.lo = lo & other.lo;
+        result.hi = hi & other.hi;
+        return result;
+    }
+
+    mas_uint128_t operator | ( mas_uint128_t other ) const
+    {
+        mas_uint128_t result( 0 );
+        result.lo = lo | other.lo;
+        result.hi = hi | other.hi;
+        return result;
+    }
+
+    mas_uint128_t operator ^ ( mas_uint128_t other ) const
+    {
+        mas_uint128_t result( 0 );
+        result.lo = lo ^ other.lo;
+        result.hi = hi ^ other.hi;
+        return result;
+    }
+
+    mas_uint128_t operator << ( int shift ) const
+    {
+        // shifting a uint64 lane by 64 is undefined behavior, so the half boundary is an explicit
+        // branch. shift counts outside [0,127] yield zero, documented above.
+        mas_uint128_t result( 0 );
+        if ( shift == 0 )
+        {
+            result = *this;
+        }
+        else if ( shift > 0 && shift < 64 )
+        {
+            result.hi = ( hi << shift ) | ( lo >> ( 64 - shift ) );
+            result.lo = lo << shift;
+        }
+        else if ( shift >= 64 && shift < 128 )
+        {
+            result.hi = lo << ( shift - 64 );
+            result.lo = 0;
+        }
+        return result;
+    }
+
+    mas_uint128_t operator >> ( int shift ) const
+    {
+        // shifting a uint64 lane by 64 is undefined behavior, so the half boundary is an explicit
+        // branch. shift counts outside [0,127] yield zero, documented above.
+        mas_uint128_t result( 0 );
+        if ( shift == 0 )
+        {
+            result = *this;
+        }
+        else if ( shift > 0 && shift < 64 )
+        {
+            result.lo = ( lo >> shift ) | ( hi << ( 64 - shift ) );
+            result.hi = hi >> shift;
+        }
+        else if ( shift >= 64 && shift < 128 )
+        {
+            result.lo = hi >> ( shift - 64 );
+            result.hi = 0;
+        }
+        return result;
+    }
+
+    mas_uint128_t operator + ( mas_uint128_t other ) const
+    {
+        mas_uint128_t result( 0 );
+        result.lo = lo + other.lo;
+        result.hi = hi + other.hi + ( ( result.lo < lo ) ? 1 : 0 );         // carry out of the low lane
+        return result;
+    }
+
+    mas_uint128_t operator - ( mas_uint128_t other ) const
+    {
+        mas_uint128_t result( 0 );
+        result.lo = lo - other.lo;
+        result.hi = hi - other.hi - ( ( lo < other.lo ) ? 1 : 0 );          // borrow out of the low lane
+        return result;
+    }
+
+    mas_uint128_t operator * ( mas_uint128_t other ) const
+    {
+        // schoolbook multiplication in 32 bit limbs over the uint64 lanes: the low 64 x 64 product
+        // is computed exactly, then the cross products fold into the high lane modulo 2^64
+        const uint64_t a_low = lo & 0xFFFFFFFFULL;
+        const uint64_t a_high = lo >> 32;
+        const uint64_t b_low = other.lo & 0xFFFFFFFFULL;
+        const uint64_t b_high = other.lo >> 32;
+
+        const uint64_t product_ll = a_low * b_low;
+        const uint64_t product_lh = a_low * b_high;
+        const uint64_t product_hl = a_high * b_low;
+        const uint64_t product_hh = a_high * b_high;
+
+        const uint64_t carry = ( ( product_ll >> 32 ) + ( product_lh & 0xFFFFFFFFULL ) + ( product_hl & 0xFFFFFFFFULL ) ) >> 32;
+
+        mas_uint128_t result( 0 );
+        result.lo = product_ll + ( product_lh << 32 ) + ( product_hl << 32 );
+        result.hi = product_hh + ( product_lh >> 32 ) + ( product_hl >> 32 ) + carry;
+        result.hi += lo * other.hi + hi * other.lo;
+        return result;
+    }
+
+    static void DivMod( mas_uint128_t dividend, mas_uint128_t divisor, mas_uint128_t & quotient, mas_uint128_t & remainder )
+    {
+        // shift subtract long division. division by zero yields zero quotient and zero remainder,
+        // documented above: this block has no assert dependency by design.
+        quotient = mas_uint128_t( 0 );
+        remainder = mas_uint128_t( 0 );
+        if ( divisor == mas_uint128_t( 0 ) )
+        {
+            return;
+        }
+        if ( dividend.hi == 0 && divisor.hi == 0 )
+        {
+            quotient = mas_uint128_t( dividend.lo / divisor.lo );
+            remainder = mas_uint128_t( dividend.lo % divisor.lo );
+            return;
+        }
+        for ( int i = 127; i >= 0; i-- )
+        {
+            remainder = remainder << 1;
+            remainder.lo |= ( dividend >> i ).lo & 1;
+            if ( remainder >= divisor )
+            {
+                remainder = remainder - divisor;
+                quotient = quotient | ( mas_uint128_t( 1 ) << i );
+            }
+        }
+    }
+
+    mas_uint128_t operator / ( mas_uint128_t other ) const
+    {
+        mas_uint128_t quotient( 0 );
+        mas_uint128_t remainder( 0 );
+        DivMod( *this, other, quotient, remainder );
+        return quotient;
+    }
+
+    mas_uint128_t operator % ( mas_uint128_t other ) const
+    {
+        mas_uint128_t quotient( 0 );
+        mas_uint128_t remainder( 0 );
+        DivMod( *this, other, quotient, remainder );
+        return remainder;
+    }
+
+    mas_uint128_t operator + () const
+    {
+        return *this;
+    }
+
+    mas_uint128_t operator - () const
+    {
+        return mas_uint128_t( 0 ) - *this;
+    }
+
+    mas_uint128_t & operator += ( mas_uint128_t other ) { *this = *this + other; return *this; }
+    mas_uint128_t & operator -= ( mas_uint128_t other ) { *this = *this - other; return *this; }
+    mas_uint128_t & operator *= ( mas_uint128_t other ) { *this = *this * other; return *this; }
+    mas_uint128_t & operator /= ( mas_uint128_t other ) { *this = *this / other; return *this; }
+    mas_uint128_t & operator %= ( mas_uint128_t other ) { *this = *this % other; return *this; }
+    mas_uint128_t & operator &= ( mas_uint128_t other ) { *this = *this & other; return *this; }
+    mas_uint128_t & operator |= ( mas_uint128_t other ) { *this = *this | other; return *this; }
+    mas_uint128_t & operator ^= ( mas_uint128_t other ) { *this = *this ^ other; return *this; }
+    mas_uint128_t & operator <<= ( int shift )          { *this = *this << shift; return *this; }
+    mas_uint128_t & operator >>= ( int shift )          { *this = *this >> shift; return *this; }
+
+    mas_uint128_t & operator ++ ()
+    {
+        *this = *this + mas_uint128_t( 1 );
+        return *this;
+    }
+
+    mas_uint128_t operator ++ ( int )
+    {
+        mas_uint128_t before = *this;
+        ++( *this );
+        return before;
+    }
+
+    mas_uint128_t & operator -- ()
+    {
+        *this = *this - mas_uint128_t( 1 );
+        return *this;
+    }
+
+    mas_uint128_t operator -- ( int )
+    {
+        mas_uint128_t before = *this;
+        --( *this );
+        return before;
+    }
+
+#endif // #ifdef __cplusplus
+
+} mas_uint128_t;
+
+#define MAS_UINT128_DEFINED 1
+
+#endif // #if !defined( MAS_UINT128_DEFINED ) && ( !defined( __SIZEOF_INT128__ ) || SERIALIZE_ENABLE_TESTS )
+
+namespace serialize
+{
+#if defined(__SIZEOF_INT128__)
+
+    /**
+        Native 128 bit integer types, where the compiler provides them (gcc, clang, clang-cl).
+        int128_t is the storage type for wide fixed point (Q112.16 and friends). uint128_t is the 128 bit wire interchange type: native here, and the emulated ::mas_uint128_t on compilers without __int128, so serialize::uint128_t exists on every platform.
+        __extension__ keeps -Wpedantic quiet: __int128 is a language extension.
+     */
+
+    __extension__ typedef          __int128  int128_t;
+    __extension__ typedef unsigned __int128 uint128_t;
+
+#else // #if defined(__SIZEOF_INT128__)
+
+    /**
+        The 128 bit wire interchange type on compilers without native __int128: the emulated ::mas_uint128_t.
+        See the comment block on mas_uint128_t above for the sharing convention between projects.
+     */
+
+    typedef ::mas_uint128_t uint128_t;
+
+#endif // #if defined(__SIZEOF_INT128__)
+
     /**
         Calculates the population count of an unsigned 32 bit integer at compile time.
         Population count is the number of bits in the integer that set to 1.
@@ -187,6 +501,65 @@ namespace serialize
     {
         static const uint32_t result = ( min == max ) ? 0 : ( Log2<uint32_t(max-min)>::result + 1 );
     };
+
+    /**
+        Calculates the number of bits needed to represent an unsigned 64 bit integer at compile time.
+        This is floor( log2( x ) ) + 1, and zero for an input of zero.
+        @see serialize::BitsRequired64
+     */
+
+    template <uint64_t x> struct BitCount64
+    {
+        static const int result = 1 + BitCount64< ( x >> 1 ) >::result;
+    };
+
+    template <> struct BitCount64<0>
+    {
+        static const int result = 0;
+    };
+
+    /**
+        Calculates the number of bits required to serialize a 64 bit integer value in [min,max] at compile time.
+        The subtraction is performed in the unsigned domain, so ranges wider than 2^63 work.
+        @see serialize::BitsRequired
+        @see serialize::bits_required64
+     */
+
+    template <uint64_t min, uint64_t max> struct BitsRequired64
+    {
+        static const int result = BitCount64< max - min >::result;
+    };
+
+#if defined(__SIZEOF_INT128__)
+
+    /**
+        Calculates the number of bits needed to represent an unsigned 128 bit integer at compile time.
+        This is floor( log2( x ) ) + 1, and zero for an input of zero.
+        @see serialize::BitsRequired128
+     */
+
+    template <uint128_t x> struct BitCount128
+    {
+        static const int result = 1 + BitCount128< ( x >> 1 ) >::result;
+    };
+
+    template <> struct BitCount128<0>
+    {
+        static const int result = 0;
+    };
+
+    /**
+        Calculates the number of bits required to serialize a 128 bit integer value in [min,max] at compile time.
+        The subtraction is performed in the unsigned domain, so ranges wider than 2^127 work.
+        @see serialize::BitsRequired64
+     */
+
+    template <uint128_t min, uint128_t max> struct BitsRequired128
+    {
+        static const int result = BitCount128< max - min >::result;
+    };
+
+#endif // #if defined(__SIZEOF_INT128__)
 
     /**
         Calculates the population count of an unsigned 32 bit integer.
@@ -1668,6 +2041,53 @@ namespace serialize
     #define serialize_uint64( stream, value ) serialize_bits( stream, value, 64 )
 
     /**
+        Serialize a 128 bit unsigned integer (read/write/measure), templated over the 128 bit type.
+        The wire format is 128 bits raw: the low 64 bit half first, then the high half, following the lo-then-hi convention of serialize_bits.
+        UInt128 may be the native unsigned __int128 (see serialize::uint128_t) or an emulated 128 bit unsigned integer type on compilers without native support, such as pure MSVC.
+        The requirements on UInt128 are exactly: construction from uint64_t, operator\<\< and operator\>\> with int shift counts, operator|, and explicit conversion (static_cast) to uint64_t truncating to the low 64 bits.
+        This function is a template and only compiles when instantiated, so it is available on every compiler; only the serialize::uint128_t convenience typedef needs the __SIZEOF_INT128__ guard.
+        @param stream The stream object. May be a read, write or measure stream.
+        @param value The 128 bit unsigned integer value.
+        @returns True if the serialize succeeded, false otherwise.
+     */
+
+    template <typename Stream, typename UInt128> bool serialize_uint128_internal( Stream & stream, UInt128 & value )
+    {
+        uint64_t low_half = 0;
+        uint64_t high_half = 0;
+        if ( Stream::IsWriting )
+        {
+            low_half = uint64_t( value );
+            high_half = uint64_t( value >> 64 );
+        }
+        serialize_bits( stream, low_half, 64 );
+        serialize_bits( stream, high_half, 64 );
+        if ( Stream::IsReading )
+        {
+            value = ( UInt128( high_half ) << 64 ) | UInt128( low_half );
+        }
+        return true;
+    }
+
+    /**
+        Serialize unsigned 128 bit integer (read/write/measure).
+        The wire format is 128 bits raw: the low 64 bit half first, then the high half, following the lo-then-hi convention of serialize_bits.
+        The value may be the native unsigned __int128 (serialize::uint128_t, behind the __SIZEOF_INT128__ guard) or any emulated 128 bit unsigned integer type meeting the requirements documented on serialize_uint128_internal, so the operation works on compilers without native 128 bit support too. All representations produce identical bytes.
+        IMPORTANT: This macro must be called inside a templated serialize function with template \<typename Stream\>. The serialize method must have a bool return value.
+        @param stream The stream object. May be a read, write or measure stream.
+        @param value The 128 bit unsigned integer value.
+     */
+
+    #define serialize_uint128( stream, value )                                      \
+        do                                                                          \
+        {                                                                           \
+            if ( !serialize::serialize_uint128_internal( stream, value ) )          \
+            {                                                                       \
+                return false;                                                       \
+            }                                                                       \
+        } while (0)
+
+    /**
         Serialize an array of bytes to the stream (read/write/measure).
         This is a helper macro to make unified serialize functions easier.
         Serialize macros returns false on error so we don't need to use exceptions for error handling on read. This is an important safety measure because packet data comes from the network and may be malicious.
@@ -1962,6 +2382,267 @@ namespace serialize
             }                                                                               \
         } while (0)
 
+    /**
+        Compile time trait marking the integer types usable as fixed point storage.
+        Written locally because std::is_integral is not guaranteed to cover __int128 on every compiler, and this header does not include \<type_traits\>.
+     */
+
+    template <typename T> struct FixedPointInteger                  { enum { is_integer = 0, is_signed = 0 }; };
+    template <> struct FixedPointInteger<signed char>               { enum { is_integer = 1, is_signed = 1 }; };
+    template <> struct FixedPointInteger<unsigned char>             { enum { is_integer = 1, is_signed = 0 }; };
+    template <> struct FixedPointInteger<short>                     { enum { is_integer = 1, is_signed = 1 }; };
+    template <> struct FixedPointInteger<unsigned short>            { enum { is_integer = 1, is_signed = 0 }; };
+    template <> struct FixedPointInteger<int>                       { enum { is_integer = 1, is_signed = 1 }; };
+    template <> struct FixedPointInteger<unsigned int>              { enum { is_integer = 1, is_signed = 0 }; };
+    template <> struct FixedPointInteger<long>                      { enum { is_integer = 1, is_signed = 1 }; };
+    template <> struct FixedPointInteger<unsigned long>             { enum { is_integer = 1, is_signed = 0 }; };
+    template <> struct FixedPointInteger<long long>                 { enum { is_integer = 1, is_signed = 1 }; };
+    template <> struct FixedPointInteger<unsigned long long>        { enum { is_integer = 1, is_signed = 0 }; };
+#if defined(__SIZEOF_INT128__)
+    template <> struct FixedPointInteger<int128_t>                  { enum { is_integer = 1, is_signed = 1 }; };
+    template <> struct FixedPointInteger<uint128_t>                 { enum { is_integer = 1, is_signed = 0 }; };
+#endif // #if defined(__SIZEOF_INT128__)
+
+    /**
+        Fixed point codec, specialized on storage width.
+        The false specialization covers storage of 64 bits or fewer and works entirely in the 64 bit unsigned domain.
+        The true specialization covers 128 bit storage and lives behind the __SIZEOF_INT128__ guard, so compilers without __int128 never see 128 bit code.
+        Splitting on width keeps every shift and every compile time bit count valid for the domain it runs in.
+        IMPORTANT: Generally, you don't use this directly. Use the serialize_fixed, read_fixed and write_fixed macros instead.
+     */
+
+    template <bool WideStorage> struct FixedPointSerializer;
+
+    template <> struct FixedPointSerializer<false>
+    {
+        template <int IntegerBits, int FractionalBits, int64_t MinUnits, int64_t MaxUnits, typename Stream, typename Storage>
+        static bool Serialize( Stream & stream, Storage & value )
+        {
+            // the whole unit capacity of the Q format. computed in the unsigned domain so the widest formats (Q64.0 and friends) cannot overflow signed arithmetic
+            const int64_t min_representable_units = FixedPointInteger<Storage>::is_signed ?
+                int64_t( uint64_t(0) - ( uint64_t(1) << ( IntegerBits - 1 ) ) ) : int64_t(0);
+            const int64_t max_representable_units = FixedPointInteger<Storage>::is_signed ?
+                int64_t( ( uint64_t(1) << ( IntegerBits - 1 ) ) - 1 ) :
+                ( ( IntegerBits >= 64 ) ? INT64_MAX : int64_t( ( uint64_t(1) << ( IntegerBits < 64 ? IntegerBits : 0 ) ) - 1 ) );
+
+            static_assert( MinUnits >= min_representable_units, "serialize_fixed min bound in whole units does not fit the Q format" );
+            static_assert( MaxUnits <= max_representable_units, "serialize_fixed max bound in whole units does not fit the Q format" );
+
+            // shift the whole unit bounds into raw fixed point units in the unsigned domain, so negative bounds wrap two's complement instead of invoking undefined behavior.
+            // everything below is a compile time constant: the bounds, the range and the bit count all fold, so the call site carries no runtime bit width computation at all.
+            const uint64_t raw_min = uint64_t( MinUnits ) << FractionalBits;
+            const uint64_t raw_max = uint64_t( MaxUnits ) << FractionalBits;
+            const uint64_t raw_range = raw_max - raw_min;
+
+            const int bits = BitsRequired64<raw_min, raw_max>::result;
+
+            uint64_t offset = 0;
+
+            if ( Stream::IsWriting )
+            {
+                // subtract in the unsigned domain: raw - raw_min overflows signed arithmetic when the range is wider than 2^63
+                offset = uint64_t( value ) - raw_min;
+                serialize_assert( offset <= raw_range );        // the value must be within [min,max] whole units. all checking is performed by debug asserts on write
+            }
+
+            if ( bits <= 32 )
+            {
+                uint32_t unsigned_value = uint32_t( offset );
+                if ( !stream.SerializeBits( unsigned_value, bits ) )
+                {
+                    return false;
+                }
+                offset = unsigned_value;
+            }
+            else
+            {
+                // low dword first, then the high remainder: same convention as serialize_bits and serialize_int64
+                uint32_t low_half = uint32_t( offset & 0xFFFFFFFF );
+                uint32_t high_half = uint32_t( offset >> 32 );
+                if ( !stream.SerializeBits( low_half, 32 ) )
+                {
+                    return false;
+                }
+                if ( !stream.SerializeBits( high_half, bits - 32 ) )
+                {
+                    return false;
+                }
+                offset = ( uint64_t( high_half ) << 32 ) | low_half;
+            }
+
+            if ( Stream::IsReading )
+            {
+                // reject raw values outside [raw_min,raw_max] smuggled into the bit headroom. reject, never clamp
+                if ( offset > raw_range )
+                {
+                    return false;
+                }
+                // reconstruct in the unsigned domain, then convert: wraps two's complement for signed storage
+                value = Storage( raw_min + offset );
+            }
+
+            return true;
+        }
+    };
+
+#if defined(__SIZEOF_INT128__)
+
+    template <> struct FixedPointSerializer<true>
+    {
+        template <int IntegerBits, int FractionalBits, int64_t MinUnits, int64_t MaxUnits, typename Stream, typename Storage>
+        static bool Serialize( Stream & stream, Storage & value )
+        {
+            // the whole unit capacity of the Q format. computed in the unsigned domain so the widest formats cannot overflow signed arithmetic
+            const int128_t min_representable_units = FixedPointInteger<Storage>::is_signed ?
+                int128_t( uint128_t(0) - ( uint128_t(1) << ( IntegerBits - 1 ) ) ) : int128_t(0);
+            const int128_t max_representable_units = FixedPointInteger<Storage>::is_signed ?
+                int128_t( ( uint128_t(1) << ( IntegerBits - 1 ) ) - 1 ) :
+                ( ( IntegerBits >= 64 ) ? int128_t( INT64_MAX ) : int128_t( ( uint128_t(1) << ( IntegerBits < 64 ? IntegerBits : 0 ) ) - 1 ) );
+
+            static_assert( int128_t( MinUnits ) >= min_representable_units, "serialize_fixed min bound in whole units does not fit the Q format" );
+            static_assert( int128_t( MaxUnits ) <= max_representable_units, "serialize_fixed max bound in whole units does not fit the Q format" );
+
+            // shift the whole unit bounds into raw fixed point units in the 128 bit unsigned domain, so negative bounds wrap two's complement instead of invoking undefined behavior.
+            // everything below is a compile time constant: the bounds, the range, the bit count and the group structure all fold.
+            const uint128_t raw_min = uint128_t( int128_t( MinUnits ) ) << FractionalBits;
+            const uint128_t raw_max = uint128_t( int128_t( MaxUnits ) ) << FractionalBits;
+            const uint128_t raw_range = raw_max - raw_min;
+
+            const int bits = BitsRequired128<raw_min, raw_max>::result;
+
+            uint128_t offset = 0;
+
+            if ( Stream::IsWriting )
+            {
+                // subtract in the unsigned domain: raw - raw_min overflows signed arithmetic when the range is wider than 2^127
+                offset = uint128_t( value ) - raw_min;
+                serialize_assert( offset <= raw_range );        // the value must be within [min,max] whole units. all checking is performed by debug asserts on write
+            }
+
+            // the offset is written in 32 bit groups, least significant group first: the same convention as serialize_bits.
+            // the group structure is selected at compile time, so each SerializeBits call receives a constant bit count.
+            uint32_t group0 = 0;
+            uint32_t group1 = 0;
+            uint32_t group2 = 0;
+            uint32_t group3 = 0;
+
+            if ( Stream::IsWriting )
+            {
+                group0 = uint32_t( uint64_t( offset )       & 0xFFFFFFFF );
+                group1 = uint32_t( uint64_t( offset >> 32 ) & 0xFFFFFFFF );
+                group2 = uint32_t( uint64_t( offset >> 64 ) & 0xFFFFFFFF );
+                group3 = uint32_t( uint64_t( offset >> 96 ) & 0xFFFFFFFF );
+            }
+
+            if ( bits <= 32 )
+            {
+                if ( !stream.SerializeBits( group0, bits ) )
+                {
+                    return false;
+                }
+            }
+            else if ( bits <= 64 )
+            {
+                if ( !stream.SerializeBits( group0, 32 ) )
+                {
+                    return false;
+                }
+                if ( !stream.SerializeBits( group1, bits - 32 ) )
+                {
+                    return false;
+                }
+            }
+            else if ( bits <= 96 )
+            {
+                if ( !stream.SerializeBits( group0, 32 ) )
+                {
+                    return false;
+                }
+                if ( !stream.SerializeBits( group1, 32 ) )
+                {
+                    return false;
+                }
+                if ( !stream.SerializeBits( group2, bits - 64 ) )
+                {
+                    return false;
+                }
+            }
+            else
+            {
+                if ( !stream.SerializeBits( group0, 32 ) )
+                {
+                    return false;
+                }
+                if ( !stream.SerializeBits( group1, 32 ) )
+                {
+                    return false;
+                }
+                if ( !stream.SerializeBits( group2, 32 ) )
+                {
+                    return false;
+                }
+                if ( !stream.SerializeBits( group3, bits - 96 ) )
+                {
+                    return false;
+                }
+            }
+
+            if ( Stream::IsReading )
+            {
+                offset = ( uint128_t( group3 ) << 96 ) | ( uint128_t( group2 ) << 64 ) | ( uint128_t( group1 ) << 32 ) | group0;
+
+                // reject raw values outside [raw_min,raw_max] smuggled into the bit headroom. reject, never clamp
+                if ( offset > raw_range )
+                {
+                    return false;
+                }
+                // reconstruct in the unsigned domain, then convert: wraps two's complement for signed storage
+                value = Storage( raw_min + offset );
+            }
+
+            return true;
+        }
+    };
+
+#endif // #if defined(__SIZEOF_INT128__)
+
+    template <int IntegerBits, int FractionalBits, int64_t MinUnits, int64_t MaxUnits, typename Stream, typename Storage>
+    bool serialize_fixed_internal( Stream & stream, Storage & value )
+    {
+        static_assert( FixedPointInteger<Storage>::is_integer == 1, "serialize_fixed storage must be an integer type" );
+        static_assert( IntegerBits >= 1, "serialize_fixed needs at least one integer bit. the sign bit counts for signed storage" );
+        static_assert( FractionalBits >= 0, "serialize_fixed fractional bits can't be negative" );
+        static_assert( IntegerBits + FractionalBits == 8 * (int) sizeof( Storage ), "serialize_fixed integer bits plus fractional bits must equal the number of bits in the storage type" );
+        static_assert( MinUnits < MaxUnits, "serialize_fixed min must be below max" );
+
+        return FixedPointSerializer< ( 8 * (int) sizeof( Storage ) > 64 ) >::template Serialize<IntegerBits, FractionalBits, MinUnits, MaxUnits>( stream, value );
+    }
+
+    /**
+        Serialize a fixed point value to the stream (read/write/measure).
+        This is a helper macro to make writing unified serialize functions easier.
+        The Q format and the bounds are compile time constants: integer_bits plus fraction_bits must equal the number of bits in the storage type, with the sign bit counting towards integer_bits for signed storage. For example, Q48.16 in an int64_t is ( 48, 16 ) and Q112.16 in an __int128 is ( 112, 16 ). Any integer storage type works, including __int128 where the compiler provides it.
+        The bounds are whole units and must be constant expressions: a runtime bound fails to compile, and bounds that don't fit the Q format fail with a static assert. The value is serialized as an offset from min in the minimal number of bits for the range — a constant of the call site — and the round trip is exact: fixed point values are integers underneath, so unlike compressed floats there is no quantization error and results are identical across platforms.
+        For storage of 64 bits or fewer the wire format is byte identical to serialize_int64 of the raw value over the raw bounds.
+        Serialize macros returns false on error so we don't need to use exceptions for error handling on read. This is an important safety measure because packet data comes from the network and may be malicious.
+        IMPORTANT: This macro must be called inside a templated serialize function with template \<typename Stream\>. The serialize method must have a bool return value.
+        @param stream The stream object. May be a read, write or measure stream.
+        @param value The fixed point value to serialize, in [min,max] whole units. The storage type sets the width of the Q format.
+        @param integer_bits The number of integer bits in the Q format, including the sign bit for signed storage. Compile time constant.
+        @param fraction_bits The number of fractional bits in the Q format. Compile time constant.
+        @param min The minimum value in whole units. Compile time constant.
+        @param max The maximum value in whole units. Compile time constant.
+     */
+
+    #define serialize_fixed( stream, value, integer_bits, fraction_bits, min, max )                                 \
+        do                                                                                                          \
+        {                                                                                                           \
+            if ( !serialize::serialize_fixed_internal<integer_bits, fraction_bits, min, max>( stream, value ) )     \
+            {                                                                                                       \
+                return false;                                                                                       \
+            }                                                                                                       \
+        } while (0)
+
     // read macros corresponding to each serialize_*. useful when you want separate read and write functions.
 
     #define read_bits( stream, value, bits )                                                \
@@ -2026,11 +2707,33 @@ namespace serialize
             }                                                                               \
         } while (0)
 
+    #define read_fixed( stream, value, integer_bits, fraction_bits, min, max )                                  \
+        do                                                                                                      \
+        {                                                                                                       \
+            if ( !serialize::serialize_fixed_internal<integer_bits, fraction_bits, min, max>( stream, value ) ) \
+            {                                                                                                   \
+                return false;                                                                                   \
+            }                                                                                                   \
+        } while (0)
+
     #define read_bool( stream, value )      read_bits( stream, value, 1 )
     #define read_uint8( stream, value )     read_bits( stream, value, 8 )
     #define read_uint16( stream, value )    read_bits( stream, value, 16 )
     #define read_uint32( stream, value )    read_bits( stream, value, 32 )
     #define read_uint64( stream, value )    read_bits( stream, value, 64 )
+
+#if defined(__SIZEOF_INT128__)
+
+    #define read_uint128( stream, value )                                                   \
+        do                                                                                  \
+        {                                                                                   \
+            if ( !serialize::serialize_uint128_internal( stream, value ) )                  \
+            {                                                                               \
+                return false;                                                               \
+            }                                                                               \
+        } while (0)
+
+#endif // #if defined(__SIZEOF_INT128__)
 
     #define read_float                  serialize_float
     #define read_double                 serialize_double
@@ -2110,11 +2813,28 @@ namespace serialize
             stream.SerializeInteger64( int64_value, min, max );                             \
         } while (0)
 
+    #define write_fixed( stream, value, integer_bits, fraction_bits, min, max )                                 \
+        do                                                                                                      \
+        {                                                                                                       \
+            serialize::serialize_fixed_internal<integer_bits, fraction_bits, min, max>( stream, value );        \
+        } while (0)
+
     #define write_bool( stream, value )         write_bits( stream, value, 1 )
     #define write_uint8( stream, value )        write_bits( stream, value, 8 )
     #define write_uint16( stream, value )       write_bits( stream, value, 16 )
     #define write_uint32( stream, value )       write_bits( stream, value, 32 )
     #define write_uint64( stream, value )       write_bits( stream, value, 64 )
+
+#if defined(__SIZEOF_INT128__)
+
+    #define write_uint128( stream, value )                                                  \
+        do                                                                                  \
+        {                                                                                   \
+            serialize::uint128_t uint128_value = ( value );                                 \
+            serialize::serialize_uint128_internal( stream, uint128_value );                 \
+        } while (0)
+
+#endif // #if defined(__SIZEOF_INT128__)
 
     #define write_float( stream, value )                                                    \
         do                                                                                  \
@@ -2604,6 +3324,20 @@ bool ReadFunction( serialize::ReadStream & readStream )
     }
 
     {
+        int64_t value = 0;
+        read_fixed( readStream, value, 48, 16, -100000, +100000 );
+        serialize_check( value == int64_t( 12345 ) * 65536 + 32768 );       // 12345.5 in Q48.16
+    }
+
+#if defined(__SIZEOF_INT128__)
+    {
+        serialize::uint128_t value = 0;
+        read_uint128( readStream, value );
+        serialize_check( value == ( ( serialize::uint128_t( 0x0123456789ABCDEFULL ) << 64 ) | 0xFEDCBA9876543210ULL ) );
+    }
+#endif // #if defined(__SIZEOF_INT128__)
+
+    {
         float value;
         read_float( readStream, value );
         serialize_check( value == 100.0f );
@@ -2697,6 +3431,15 @@ inline void test_read_write()
         write_uint64( writeStream, 0xFFFFFFFFFFFFFFFFULL );
         write_int( writeStream, 55, 10, 90 );
         write_int64( writeStream, -50000000001LL, -60000000000LL, 60000000000LL );
+
+        int64_t fixed_point_value = int64_t( 12345 ) * 65536 + 32768;               // 12345.5 in Q48.16
+        write_fixed( writeStream, fixed_point_value, 48, 16, -100000, +100000 );
+
+#if defined(__SIZEOF_INT128__)
+        serialize::uint128_t big_value = ( serialize::uint128_t( 0x0123456789ABCDEFULL ) << 64 ) | 0xFEDCBA9876543210ULL;
+        write_uint128( writeStream, big_value );
+#endif // #if defined(__SIZEOF_INT128__)
+
         write_float( writeStream, 100.0f );
         write_double( writeStream, 1000000000.0f );
 
@@ -3111,6 +3854,407 @@ inline void test_compressed_float_validation()
     }
 }
 
+// Fixed point test helpers. Every configuration in the matrix runs the same case list, and every
+// round trip also runs the measure stream and requires exact agreement with the write stream:
+// fixed point serialization involves no alignment, so measure is exact, not just conservative.
+
+template <int IntegerBits, int FractionalBits, int64_t MinUnits, int64_t MaxUnits, typename Storage>
+inline void check_fixed_round_trip( Storage raw_value )
+{
+    uint8_t buffer[32 + 8] = { 0 };          // + 8: read buffer allocations extend 8 bytes past the data
+
+    serialize::WriteStream writeStream( buffer, 32 );
+    Storage written = raw_value;
+    serialize_check( ( serialize::serialize_fixed_internal<IntegerBits, FractionalBits, MinUnits, MaxUnits>( writeStream, written ) ) == true );
+    writeStream.Flush();
+
+    serialize::MeasureStream measureStream;
+    Storage measured = raw_value;
+    serialize_check( ( serialize::serialize_fixed_internal<IntegerBits, FractionalBits, MinUnits, MaxUnits>( measureStream, measured ) ) == true );
+    serialize_check( measureStream.GetBitsProcessed() == writeStream.GetBitsProcessed() );
+
+    serialize::ReadStream readStream( buffer, writeStream.GetBytesProcessed() );
+    Storage read_back = 0;
+    serialize_check( ( serialize::serialize_fixed_internal<IntegerBits, FractionalBits, MinUnits, MaxUnits>( readStream, read_back ) ) == true );
+    serialize_check( read_back == raw_value );
+}
+
+template <int IntegerBits, int FractionalBits, int64_t MinUnits, int64_t MaxUnits, typename Storage>
+inline void check_fixed_cases( Storage one_unit )
+{
+    const Storage raw_min = Storage( MinUnits * one_unit );
+    const Storage raw_max = Storage( MaxUnits * one_unit );
+
+    // exact raw bounds, and one raw step inside each
+    check_fixed_round_trip<IntegerBits, FractionalBits, MinUnits, MaxUnits>( raw_min );
+    check_fixed_round_trip<IntegerBits, FractionalBits, MinUnits, MaxUnits>( raw_max );
+    check_fixed_round_trip<IntegerBits, FractionalBits, MinUnits, MaxUnits>( Storage( raw_min + 1 ) );
+    check_fixed_round_trip<IntegerBits, FractionalBits, MinUnits, MaxUnits>( Storage( raw_max - 1 ) );
+
+    // whole unit values one unit inside each bound
+    check_fixed_round_trip<IntegerBits, FractionalBits, MinUnits, MaxUnits>( Storage( ( MinUnits + 1 ) * one_unit ) );
+    check_fixed_round_trip<IntegerBits, FractionalBits, MinUnits, MaxUnits>( Storage( ( MaxUnits - 1 ) * one_unit ) );
+
+    // a value with every fraction bit set
+    check_fixed_round_trip<IntegerBits, FractionalBits, MinUnits, MaxUnits>( Storage( raw_min + one_unit - 1 ) );
+
+    // the middle of the range, computed without overflowing the storage type
+    check_fixed_round_trip<IntegerBits, FractionalBits, MinUnits, MaxUnits>( Storage( raw_min / 2 + raw_max / 2 ) );
+
+    // zero, one and minus one whole units, where the bounds allow them
+    if ( MinUnits <= 0 && MaxUnits >= 0 )
+    {
+        check_fixed_round_trip<IntegerBits, FractionalBits, MinUnits, MaxUnits>( Storage( 0 ) );
+    }
+    if ( MinUnits <= 1 && MaxUnits >= 1 )
+    {
+        check_fixed_round_trip<IntegerBits, FractionalBits, MinUnits, MaxUnits>( one_unit );
+    }
+    if ( MinUnits <= -1 && MaxUnits >= -1 )
+    {
+        check_fixed_round_trip<IntegerBits, FractionalBits, MinUnits, MaxUnits>( Storage( Storage( 0 ) - one_unit ) );
+    }
+}
+
+template <int IntegerBits, int FractionalBits, int64_t MinUnits, int64_t MaxUnits, typename Storage>
+inline void check_fixed_rejects_out_of_range( Storage )
+{
+    // recompute the wire parameters independently of the codec, then hand build a stream encoding
+    // an offset of exactly raw_range + 1: one raw step past raw_max, smuggled into the bit headroom
+    const uint64_t raw_range = ( uint64_t( MaxUnits ) << FractionalBits ) - ( uint64_t( MinUnits ) << FractionalBits );
+    const int bits = serialize::bits_required64( 0, raw_range );
+
+    const uint64_t max_encodable = ( bits < 64 ) ? ( ( uint64_t(1) << bits ) - 1 ) : 0xFFFFFFFFFFFFFFFFULL;
+    if ( raw_range == max_encodable )
+    {
+        return;                             // no headroom: every encoding decodes in range for this configuration
+    }
+
+    const uint64_t smuggled = raw_range + 1;
+
+    uint8_t buffer[16 + 8] = { 0 };          // + 8: read buffer allocations extend 8 bytes past the data
+
+    serialize::WriteStream writeStream( buffer, 16 );
+    if ( bits <= 32 )
+    {
+        writeStream.SerializeBits( uint32_t( smuggled ), bits );
+    }
+    else
+    {
+        writeStream.SerializeBits( uint32_t( smuggled & 0xFFFFFFFF ), 32 );
+        writeStream.SerializeBits( uint32_t( smuggled >> 32 ), bits - 32 );
+    }
+    writeStream.Flush();
+
+    serialize::ReadStream readStream( buffer, 16 );
+    Storage value = 0;
+    serialize_check( ( serialize::serialize_fixed_internal<IntegerBits, FractionalBits, MinUnits, MaxUnits>( readStream, value ) ) == false );
+}
+
+inline void test_serialize_fixed()
+{
+    // the storage x Q format matrix. every configuration runs the full case list in check_fixed_cases:
+    // exact raw bounds, one raw step inside each, whole unit values inside each bound, all fraction
+    // bits set, the middle of the range, and zero / +1.0 / -1.0 units where the bounds allow them.
+
+    // int16_t
+    check_fixed_cases<8, 8, -100, +100>( int16_t( 256 ) );
+    check_fixed_cases<12, 4, -2000, +2000>( int16_t( 16 ) );
+
+    // int32_t
+    check_fixed_cases<16, 16, -30000, +30000>( int32_t( 65536 ) );
+    check_fixed_cases<24, 8, -8000000, +8000000>( int32_t( 256 ) );
+    check_fixed_cases<32, 0, -100000, +100000>( int32_t( 1 ) );                                 // pure integer Q: fraction_bits == 0 is legal
+
+    // int64_t
+    check_fixed_cases<48, 16, -100000000000LL, +100000000000LL>( int64_t( 65536 ) );
+    check_fixed_cases<32, 32, -1000000, +1000000>( int64_t( 1 ) << 32 );
+    check_fixed_cases<64, 0, -5000000000LL, +5000000000LL>( int64_t( 1 ) );                     // pure integer Q at full width
+
+    // unsigned storage
+    check_fixed_cases<16, 0, 0, 60000>( uint16_t( 1 ) );
+    check_fixed_cases<16, 16, 0, 60000>( uint32_t( 65536 ) );
+    check_fixed_cases<48, 16, 0, 1000000000>( uint64_t( 65536 ) );
+
+    // single unit range: the whole wire is the fractional part
+    check_fixed_cases<16, 16, 0, 1>( int32_t( 65536 ) );
+
+    // asymmetric bounds
+    check_fixed_cases<48, 16, -3, +100000>( int64_t( 65536 ) );
+
+    // the wire cost is a compile time constant of the call site. pin a few
+    {
+        uint8_t buffer[16];
+        serialize::WriteStream stream( buffer, 16 );
+        int64_t value = int64_t( 12345 ) * 65536 + 32768;                                       // 12345.5 in Q48.16
+        serialize_check( ( serialize::serialize_fixed_internal<48, 16, -100000, +100000>( stream, value ) ) == true );
+        serialize_check( stream.GetBitsProcessed() == 34 );         // 200000 << 16 raw values needs 34 bits
+    }
+    {
+        uint8_t buffer[8];
+        serialize::WriteStream stream( buffer, 8 );
+        int32_t value = 65536 / 2;                                                              // 0.5 in Q16.16
+        serialize_check( ( serialize::serialize_fixed_internal<16, 16, 0, 1>( stream, value ) ) == true );
+        serialize_check( stream.GetBitsProcessed() == 17 );         // 1 << 16 raw values needs 17 bits
+    }
+    {
+        uint8_t buffer[8];
+        serialize::WriteStream stream( buffer, 8 );
+        int16_t value = -832;                                                                   // -3.25 in Q8.8
+        serialize_check( ( serialize::serialize_fixed_internal<8, 8, -100, +100>( stream, value ) ) == true );
+        serialize_check( stream.GetBitsProcessed() == 16 );         // 200 << 8 raw values needs 16 bits
+    }
+
+    // compile time refusals. each of the following fails with a static_assert, which is the point.
+    // kept as comments because a compile failure can't run inside the suite: uncomment one to verify.
+    //
+    //     int32_t value = 0;
+    //     serialize::serialize_fixed_internal<16, 8, 0, 100>( stream, value );                 // 16 + 8 != 32: the Q format doesn't fill the storage type
+    //     serialize::serialize_fixed_internal<16, 16, -40000, +40000>( stream, value );        // bounds exceed the Q16.16 whole unit capacity [-32768,32767]
+    //     serialize::serialize_fixed_internal<16, 16, 100, 100>( stream, value );              // min must be below max
+    //     float not_an_integer = 0.0f;
+    //     serialize::serialize_fixed_internal<16, 16, 0, 100>( stream, not_an_integer );       // storage must be an integer type
+    //     int runtime_bound = 100;
+    //     serialize_fixed( stream, value, 16, 16, 0, runtime_bound );                          // bounds must be compile time constants
+}
+
+inline void test_serialize_fixed_validation()
+{
+    // a malicious packet can smuggle a raw value past raw_max into the bit headroom of the offset
+    // encoding. reads must reject one raw step past the top of the range, on every configuration
+    // in the matrix that has headroom.
+    check_fixed_rejects_out_of_range<8, 8, -100, +100>( int16_t( 0 ) );
+    check_fixed_rejects_out_of_range<12, 4, -2000, +2000>( int16_t( 0 ) );
+    check_fixed_rejects_out_of_range<16, 16, -30000, +30000>( int32_t( 0 ) );
+    check_fixed_rejects_out_of_range<24, 8, -8000000, +8000000>( int32_t( 0 ) );
+    check_fixed_rejects_out_of_range<32, 0, -100000, +100000>( int32_t( 0 ) );
+    check_fixed_rejects_out_of_range<48, 16, -100000000000LL, +100000000000LL>( int64_t( 0 ) );
+    check_fixed_rejects_out_of_range<32, 32, -1000000, +1000000>( int64_t( 0 ) );
+    check_fixed_rejects_out_of_range<64, 0, -5000000000LL, +5000000000LL>( int64_t( 0 ) );
+    check_fixed_rejects_out_of_range<16, 0, 0, 60000>( uint16_t( 0 ) );
+    check_fixed_rejects_out_of_range<16, 16, 0, 60000>( uint32_t( 0 ) );
+    check_fixed_rejects_out_of_range<48, 16, 0, 1000000000>( uint64_t( 0 ) );
+    check_fixed_rejects_out_of_range<16, 16, 0, 1>( int32_t( 0 ) );
+    check_fixed_rejects_out_of_range<48, 16, -3, +100000>( int64_t( 0 ) );
+
+    // reads past the end of the buffer must fail cleanly
+    {
+        uint8_t buffer[4 + 8] = { 0 };          // + 8: read buffer allocations extend 8 bytes past the data
+
+        serialize::ReadStream readStream( buffer, 2 );
+        int64_t value = 0;
+        serialize_check( ( serialize::serialize_fixed_internal<48, 16, -100000000000LL, +100000000000LL>( readStream, value ) ) == false );
+    }
+}
+
+inline void test_serialize_fixed_matches_int64()
+{
+    // fraction_bits == 0 is pure integer Q, and for storage of 64 bits or fewer the fixed point
+    // wire format is byte identical to serialize_int64 of the raw value over the raw bounds.
+    // sweep values and require identical bytes and identical bit counts: this equivalence binds
+    // the new path to the proven one.
+
+    const int64_t values[] = { -5000000000LL, -4999999999LL, -1, 0, +1, 12345678, 4999999999LL, 5000000000LL };
+
+    for ( int i = 0; i < (int) ( sizeof( values ) / sizeof( values[0] ) ); i++ )
+    {
+        uint8_t fixed_buffer[16] = { 0 };
+        serialize::WriteStream fixedStream( fixed_buffer, 16 );
+        int64_t fixed_value = values[i];
+        serialize_check( ( serialize::serialize_fixed_internal<64, 0, -5000000000LL, +5000000000LL>( fixedStream, fixed_value ) ) == true );
+        fixedStream.Flush();
+
+        uint8_t int64_buffer[16] = { 0 };
+        serialize::WriteStream int64Stream( int64_buffer, 16 );
+        serialize_check( int64Stream.SerializeInteger64( values[i], -5000000000LL, +5000000000LL ) == true );
+        int64Stream.Flush();
+
+        serialize_check( fixedStream.GetBitsProcessed() == int64Stream.GetBitsProcessed() );
+        serialize_check( memcmp( fixed_buffer, int64_buffer, sizeof( fixed_buffer ) ) == 0 );
+    }
+}
+
+#if defined(__SIZEOF_INT128__)
+
+template <int IntegerBits, int FractionalBits, int64_t MinUnits, int64_t MaxUnits, typename Storage>
+inline void check_fixed_wide_rejects_out_of_range( Storage )
+{
+    // recompute the wire parameters independently of the codec, then hand build a stream encoding
+    // an offset of exactly raw_range + 1: one raw step past raw_max, smuggled into the bit headroom
+    const serialize::uint128_t raw_min = serialize::uint128_t( serialize::int128_t( MinUnits ) ) << FractionalBits;
+    const serialize::uint128_t raw_max = serialize::uint128_t( serialize::int128_t( MaxUnits ) ) << FractionalBits;
+    const serialize::uint128_t raw_range = raw_max - raw_min;
+
+    int bits = 0;
+    for ( serialize::uint128_t x = raw_range; x != 0; x >>= 1 )
+    {
+        bits++;
+    }
+
+    const serialize::uint128_t max_encodable = ( bits < 128 ) ? ( ( serialize::uint128_t( 1 ) << bits ) - 1 ) : ~( serialize::uint128_t( 0 ) );
+    if ( raw_range == max_encodable )
+    {
+        return;                             // no headroom: every encoding decodes in range for this configuration
+    }
+
+    serialize::uint128_t smuggled = raw_range + 1;
+
+    uint8_t buffer[24 + 8] = { 0 };          // + 8: read buffer allocations extend 8 bytes past the data
+
+    serialize::WriteStream writeStream( buffer, 24 );
+    int bits_left = bits;
+    while ( bits_left > 0 )
+    {
+        const int group_bits = ( bits_left < 32 ) ? bits_left : 32;
+        writeStream.SerializeBits( uint32_t( uint64_t( smuggled ) & 0xFFFFFFFF ), group_bits );
+        smuggled >>= group_bits;
+        bits_left -= group_bits;
+    }
+    writeStream.Flush();
+
+    serialize::ReadStream readStream( buffer, 24 );
+    Storage value = 0;
+    serialize_check( ( serialize::serialize_fixed_internal<IntegerBits, FractionalBits, MinUnits, MaxUnits>( readStream, value ) ) == false );
+}
+
+inline void test_serialize_fixed_wide()
+{
+    // compile time bit counts in the 128 bit domain
+    serialize_check( ( serialize::BitsRequired128<0, 0>::result ) == 0 );
+    serialize_check( ( serialize::BitsRequired128<0, 1>::result ) == 1 );
+    serialize_check( ( serialize::BitsRequired128<0, ( serialize::uint128_t( 1 ) << 64 )>::result ) == 65 );
+    serialize_check( ( serialize::BitsRequired128<0, ~( serialize::uint128_t( 0 ) )>::result ) == 128 );
+
+    // the matrix, wide: Q112.16 with a raw range past 64 bits (three groups on the wire), Q112.16
+    // with a small range (a single group on wide storage), Q64.64 (the fraction alone spans 64 bits),
+    // Q64.64 over the full unit range (128 bits on the wire, four groups), and the unsigned wide case.
+    check_fixed_cases<112, 16, -1152921504606846976LL, +1152921504606846976LL>( serialize::int128_t( 65536 ) );     // ±2^60 units: 78 bits on the wire
+    check_fixed_cases<112, 16, -2, +2>( serialize::int128_t( 65536 ) );
+    check_fixed_cases<64, 64, -1000, +1000>( serialize::int128_t( 1 ) << 64 );
+    check_fixed_cases<64, 64, INT64_MIN, INT64_MAX>( serialize::int128_t( 1 ) << 64 );                              // full unit range: 128 bits on the wire
+    check_fixed_cases<112, 16, 0, 2305843009213693952LL>( serialize::uint128_t( 65536 ) );                          // 2^61 units, unsigned
+
+    // the wire cost is a compile time constant of the call site, wide paths included. pin a few
+    {
+        uint8_t buffer[16];
+        serialize::WriteStream stream( buffer, 16 );
+        serialize::int128_t value = serialize::int128_t( 12345 ) * 65536;
+        serialize_check( ( serialize::serialize_fixed_internal<112, 16, -1152921504606846976LL, +1152921504606846976LL>( stream, value ) ) == true );
+        serialize_check( stream.GetBitsProcessed() == 78 );         // 2^61 << 16 raw values needs 78 bits
+    }
+    {
+        uint8_t buffer[24];
+        serialize::WriteStream stream( buffer, 24 );
+        serialize::int128_t value = 0;
+        serialize_check( ( serialize::serialize_fixed_internal<64, 64, INT64_MIN, INT64_MAX>( stream, value ) ) == true );
+        serialize_check( stream.GetBitsProcessed() == 128 );        // the full unit range costs the full storage width
+    }
+
+    // one raw step past raw_max must be rejected on read, through every group structure
+    check_fixed_wide_rejects_out_of_range<112, 16, -1152921504606846976LL, +1152921504606846976LL>( serialize::int128_t( 0 ) );
+    check_fixed_wide_rejects_out_of_range<112, 16, -2, +2>( serialize::int128_t( 0 ) );
+    check_fixed_wide_rejects_out_of_range<64, 64, -1000, +1000>( serialize::int128_t( 0 ) );
+    check_fixed_wide_rejects_out_of_range<112, 16, 0, 2305843009213693952LL>( serialize::uint128_t( 0 ) );
+
+    // reads past the end of the buffer must fail cleanly
+    {
+        uint8_t buffer[4 + 8] = { 0 };          // + 8: read buffer allocations extend 8 bytes past the data
+
+        serialize::ReadStream readStream( buffer, 4 );
+        serialize::int128_t value = 0;
+        serialize_check( ( serialize::serialize_fixed_internal<112, 16, -1152921504606846976LL, +1152921504606846976LL>( readStream, value ) ) == false );
+    }
+}
+
+inline void test_serialize_uint128()
+{
+    // round trips across the value patterns: zero, max, each half alone, alternating bits, distinct halves
+    {
+        const serialize::uint128_t values[] = {
+            0,
+            ~( serialize::uint128_t( 0 ) ),
+            serialize::uint128_t( 0xFFFFFFFFFFFFFFFFULL ) << 64,                                // high half only
+            serialize::uint128_t( 0xFFFFFFFFFFFFFFFFULL ),                                      // low half only
+            ( serialize::uint128_t( 0xAAAAAAAAAAAAAAAAULL ) << 64 ) | 0x5555555555555555ULL,    // alternating bits
+            ( serialize::uint128_t( 0x0123456789ABCDEFULL ) << 64 ) | 0xFEDCBA9876543210ULL,    // distinct halves
+        };
+
+        for ( int i = 0; i < (int) ( sizeof( values ) / sizeof( values[0] ) ); i++ )
+        {
+            uint8_t buffer[16 + 8] = { 0 };          // + 8: read buffer allocations extend 8 bytes past the data
+
+            serialize::WriteStream writeStream( buffer, 16 );
+            serialize::uint128_t written = values[i];
+            serialize_check( serialize::serialize_uint128_internal( writeStream, written ) == true );
+            writeStream.Flush();
+
+            serialize::MeasureStream measureStream;
+            serialize::uint128_t measured = values[i];
+            serialize_check( serialize::serialize_uint128_internal( measureStream, measured ) == true );
+            serialize_check( measureStream.GetBitsProcessed() == writeStream.GetBitsProcessed() );
+            serialize_check( writeStream.GetBitsProcessed() == 128 );
+
+            serialize::ReadStream readStream( buffer, writeStream.GetBytesProcessed() );
+            serialize::uint128_t read_back = 0;
+            serialize_check( serialize::serialize_uint128_internal( readStream, read_back ) == true );
+            serialize_check( read_back == values[i] );
+        }
+    }
+
+    // cross form consistency: serialize_uint128 must be byte identical to two serialize_uint64
+    // operations on the halves, low half first. this is the portability story: an implementation
+    // without a 128 bit type reproduces the wire exactly with two 64 bit operations.
+    {
+        const uint64_t low_half = 0xFEDCBA9876543210ULL;
+        const uint64_t high_half = 0x0123456789ABCDEFULL;
+
+        uint8_t uint128_buffer[16 + 8] = { 0 };
+        serialize::WriteStream uint128Stream( uint128_buffer, 16 );
+        serialize::uint128_t value = ( serialize::uint128_t( high_half ) << 64 ) | low_half;
+        serialize_check( serialize::serialize_uint128_internal( uint128Stream, value ) == true );
+        uint128Stream.Flush();
+
+        uint8_t halves_buffer[16 + 8] = { 0 };
+        serialize::WriteStream halvesStream( halves_buffer, 16 );
+        write_uint64( halvesStream, low_half );
+        write_uint64( halvesStream, high_half );
+        halvesStream.Flush();
+
+        serialize_check( uint128Stream.GetBitsProcessed() == halvesStream.GetBitsProcessed() );
+        serialize_check( memcmp( uint128_buffer, halves_buffer, 16 ) == 0 );
+    }
+
+    // golden pin: the wire format for a uint128 is its 16 bytes in little endian order, low half
+    // first. pinned forever. additive: the platform independent golden test above is untouched,
+    // because this pin needs a 128 bit type to produce and so lives behind the compiler guard.
+    {
+        static const uint8_t golden_uint128_bytes[] =
+        {
+            0x10, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0xFE,
+            0xEF, 0xCD, 0xAB, 0x89, 0x67, 0x45, 0x23, 0x01
+        };
+
+        const serialize::uint128_t golden_value = ( serialize::uint128_t( 0x0123456789ABCDEFULL ) << 64 ) | 0xFEDCBA9876543210ULL;
+
+        uint8_t buffer[16 + 8] = { 0 };          // + 8: read buffer allocations extend 8 bytes past the data
+
+        serialize::WriteStream writeStream( buffer, 16 );
+        serialize::uint128_t written = golden_value;
+        serialize_check( serialize::serialize_uint128_internal( writeStream, written ) == true );
+        writeStream.Flush();
+        serialize_check( writeStream.GetBytesProcessed() == 16 );
+        serialize_check( memcmp( buffer, golden_uint128_bytes, 16 ) == 0 );
+
+        memcpy( buffer, golden_uint128_bytes, 16 );
+        serialize::ReadStream readStream( buffer, 16 );
+        serialize::uint128_t read_back = 0;
+        serialize_check( serialize::serialize_uint128_internal( readStream, read_back ) == true );
+        serialize_check( read_back == golden_value );
+    }
+}
+
+#endif // #if defined(__SIZEOF_INT128__)
+
 // Golden wire format test. The exact bytes produced by the serializer are pinned down here and must never change.
 // If this test fails, the wire format has changed and previously written data no longer decodes: a breaking change.
 // The values below are chosen so every platform quantizes identically (see the compressed float: 5.0 in [0,10]
@@ -3137,6 +4281,10 @@ struct GoldenWireData
     uint8_t bytes[7];
     char string[16];
     wchar_t wstring[8];
+    int16_t fixed_q8_8;
+    int32_t fixed_q16_16;
+    int64_t fixed_q48_16;
+    uint32_t fixed_q16_16_unsigned;
 };
 
 inline void GoldenWireInit( GoldenWireData & data )
@@ -3164,6 +4312,10 @@ inline void GoldenWireInit( GoldenWireData & data )
     // built from explicit code points so the source file encoding can never change the golden bytes
     const wchar_t golden_wide_string[4] = { 0x043C, 0x0438, 0x0440, 0 };            // cyrillic, BMP only
     serialize_copy_wstring( data.wstring, golden_wide_string, sizeof( data.wstring ) / sizeof( wchar_t ) );
+    data.fixed_q8_8 = int16_t( -( 3 * 256 + 64 ) );                                 // -3.25 in Q8.8
+    data.fixed_q16_16 = 1234 * 65536 + 32768;                                       // 1234.5 in Q16.16
+    data.fixed_q48_16 = -( int64_t( 54321 ) * 65536 + 12345 );                      // -54321.1883... in Q48.16
+    data.fixed_q16_16_unsigned = 29999u * 65536 + 65535;                            // 29999.99998... in Q16.16: every fraction bit set
 }
 
 template <typename Stream> bool GoldenWireSerialize( Stream & stream, GoldenWireData & data )
@@ -3189,6 +4341,11 @@ template <typename Stream> bool GoldenWireSerialize( Stream & stream, GoldenWire
     serialize_bytes( stream, data.bytes, (int) sizeof( data.bytes ) );
     serialize_string( stream, data.string, (int) sizeof( data.string ) );
     serialize_wstring( stream, data.wstring, (int) ( sizeof( data.wstring ) / sizeof( wchar_t ) ) );
+    serialize_align( stream );                  // the fixed point section starts byte aligned, so every byte pinned above it stays put
+    serialize_fixed( stream, data.fixed_q8_8, 8, 8, -100, +100 );
+    serialize_fixed( stream, data.fixed_q16_16, 16, 16, -2000, +2000 );
+    serialize_fixed( stream, data.fixed_q48_16, 48, 16, -100000, +100000 );
+    serialize_fixed( stream, data.fixed_q16_16_unsigned, 16, 16, 0, 30000 );
     return true;
 }
 
@@ -3199,7 +4356,9 @@ static const uint8_t golden_wire_bytes[] =
     0x55, 0x55, 0xFF, 0xFC, 0xD1, 0x48, 0xE0, 0x59, 0xD1, 0x48, 0xC0, 0x7B,
     0xF3, 0x6A, 0xE2, 0x59, 0xD1, 0x48, 0x84, 0xB7, 0x06, 0xDE, 0xAD, 0xBE,
     0xEF, 0xCA, 0xFE, 0x01, 0x06, 0x67, 0x6F, 0x6C, 0x64, 0x65, 0x6E, 0xE3,
-    0x21, 0x00, 0x00, 0xC0, 0x21, 0x00, 0x00, 0x00, 0x22, 0x00, 0x00, 0x00
+    0x21, 0x00, 0x00, 0xC0, 0x21, 0x00, 0x00, 0x00, 0x22, 0x00, 0x00, 0x00,
+    0xC0, 0x60, 0x00, 0x80, 0xA2, 0x7C, 0xFC, 0xEC, 0x26, 0xCB, 0xFF, 0xFF,
+    0x4B, 0x1D
 };
 
 inline void test_golden_wire_format()
@@ -3248,6 +4407,10 @@ inline void test_golden_wire_format()
         serialize_check( memcmp( data.bytes, expected.bytes, sizeof( data.bytes ) ) == 0 );
         serialize_check( strcmp( data.string, expected.string ) == 0 );
         serialize_check( wcscmp( data.wstring, expected.wstring ) == 0 );
+        serialize_check( data.fixed_q8_8 == expected.fixed_q8_8 );
+        serialize_check( data.fixed_q16_16 == expected.fixed_q16_16 );
+        serialize_check( data.fixed_q48_16 == expected.fixed_q48_16 );
+        serialize_check( data.fixed_q16_16_unsigned == expected.fixed_q16_16_unsigned );
     }
 }
 
@@ -3374,6 +4537,13 @@ inline void serialize_test()
         SERIALIZE_RUN_TEST( test_wstring_validation );
         SERIALIZE_RUN_TEST( test_int_relative_validation );
         SERIALIZE_RUN_TEST( test_compressed_float_validation );
+        SERIALIZE_RUN_TEST( test_serialize_fixed );
+        SERIALIZE_RUN_TEST( test_serialize_fixed_validation );
+        SERIALIZE_RUN_TEST( test_serialize_fixed_matches_int64 );
+#if defined(__SIZEOF_INT128__)
+        SERIALIZE_RUN_TEST( test_serialize_fixed_wide );
+        SERIALIZE_RUN_TEST( test_serialize_uint128 );
+#endif // #if defined(__SIZEOF_INT128__)
         SERIALIZE_RUN_TEST( test_golden_wire_format );
         SERIALIZE_RUN_TEST( test_unaligned_writer );
         SERIALIZE_RUN_TEST( test_large_buffer );

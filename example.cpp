@@ -292,6 +292,31 @@ struct PacketD
     }
 };
 
+struct PacketF
+{
+    int64_t position_x;                     // Q48.16 fixed point world position, in ±8192 whole units
+    int64_t position_y;
+    int64_t position_z;
+    int32_t health;                         // Q16.16 fixed point health, in [0,100] whole units
+#if defined(__SIZEOF_INT128__)
+    serialize::uint128_t entity_id;         // 128 bit globally unique entity id
+    serialize::int128_t galactic_x;         // Q112.16 wide fixed point coordinate, in ±10^11 whole units
+#endif // #if defined(__SIZEOF_INT128__)
+
+    template <typename Stream> bool Serialize( Stream & stream )
+    {
+        serialize_fixed( stream, position_x, 48, 16, -8192, +8192 );
+        serialize_fixed( stream, position_y, 48, 16, -8192, +8192 );
+        serialize_fixed( stream, position_z, 48, 16, -8192, +8192 );
+        serialize_fixed( stream, health, 16, 16, 0, 100 );
+#if defined(__SIZEOF_INT128__)
+        serialize_uint128( stream, entity_id );
+        serialize_fixed( stream, galactic_x, 112, 16, -100000000000LL, +100000000000LL );
+#endif // #if defined(__SIZEOF_INT128__)
+        return true;
+    }
+};
+
 struct PacketE
 {
     bool i,j,k;

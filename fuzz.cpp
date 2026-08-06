@@ -132,6 +132,23 @@ template <typename Stream> bool FuzzRead( Stream & stream, const uint8_t * ops, 
                 int64_t ranged64 = 0;
                 serialize_int64( stream, ranged64, -bound, +bound );
                 fuzz_check( ranged64 >= -bound && ranged64 <= +bound );
+
+                // fixed point: bounds are compile time, so the configurations are fixed. values read
+                // off hostile bytes must decode within the raw bounds or fail the read.
+                int32_t fixed32 = 0;
+                serialize_fixed( stream, fixed32, 16, 16, -1000, +1000 );
+                fuzz_check( fixed32 >= -1000 * 65536 && fixed32 <= 1000 * 65536 );
+
+                int64_t fixed64 = 0;
+                serialize_fixed( stream, fixed64, 48, 16, -100000000000LL, +100000000000LL );
+                fuzz_check( fixed64 >= -100000000000LL * 65536 && fixed64 <= 100000000000LL * 65536 );
+
+#if defined(__SIZEOF_INT128__)
+                serialize::int128_t wide = 0;
+                serialize_fixed( stream, wide, 112, 16, -1152921504606846976LL, +1152921504606846976LL );        // ±2^60 units: a raw range past 64 bits
+                fuzz_check( wide >= serialize::int128_t( -1152921504606846976LL ) * 65536 );
+                fuzz_check( wide <= serialize::int128_t( +1152921504606846976LL ) * 65536 );
+#endif // #if defined(__SIZEOF_INT128__)
             }
             break;
 
@@ -167,6 +184,10 @@ template <typename Stream> bool FuzzRead( Stream & stream, const uint8_t * ops, 
             {
                 uint64_t value = 0;
                 serialize_uint64( stream, value );
+#if defined(__SIZEOF_INT128__)
+                serialize::uint128_t value128 = 0;
+                serialize_uint128( stream, value128 );
+#endif // #if defined(__SIZEOF_INT128__)
             }
             break;
 
@@ -297,6 +318,42 @@ template <typename Stream> bool FuzzRoundTrip( Stream & stream, const uint8_t * 
                 {
                     fuzz_check( ranged64 == expected_ranged );
                 }
+
+                // fixed point: raw values generated uniformly inside the raw bounds must round trip exactly
+                const uint32_t fixed32_range = 2000U * 65536;                   // bounds [-1000,+1000] whole units in Q16.16
+                const int32_t expected_fixed32 = int32_t( uint32_t( -1000 * 65536 ) + pool.NextUint32() % ( fixed32_range + 1 ) );
+                int32_t fixed32 = Stream::IsWriting ? expected_fixed32 : 0;
+                serialize_fixed( stream, fixed32, 16, 16, -1000, +1000 );
+                if ( Stream::IsReading )
+                {
+                    fuzz_check( fixed32 == expected_fixed32 );
+                }
+
+                const uint64_t fixed64_range = uint64_t( 200000000000ULL ) * 65536;     // bounds [-1e11,+1e11] whole units in Q48.16
+                const int64_t expected_fixed64 = int64_t( uint64_t( -100000000000LL * 65536 ) + pool.NextUint64() % ( fixed64_range + 1 ) );
+                int64_t fixed64 = Stream::IsWriting ? expected_fixed64 : 0;
+                serialize_fixed( stream, fixed64, 48, 16, -100000000000LL, +100000000000LL );
+                if ( Stream::IsReading )
+                {
+                    fuzz_check( fixed64 == expected_fixed64 );
+                }
+
+#if defined(__SIZEOF_INT128__)
+                // wide fixed point: bounds ±2^60 whole units in Q112.16 give a raw range of 2^77,
+                // exercising the multi group path with values that cannot fit in 64 bits
+                const serialize::uint128_t wide_range = serialize::uint128_t( 1152921504606846976ULL ) << 17;    // ( 2 * 2^60 ) << 16
+                const uint64_t wide_pool_high = pool.NextUint64();
+                const uint64_t wide_pool_low = pool.NextUint64();
+                const serialize::uint128_t wide_pool = ( serialize::uint128_t( wide_pool_high ) << 64 ) | wide_pool_low;
+                const serialize::uint128_t wide_raw_min = serialize::uint128_t( serialize::int128_t( -1152921504606846976LL ) ) << 16;
+                const serialize::int128_t expected_wide = serialize::int128_t( wide_raw_min + wide_pool % ( wide_range + 1 ) );
+                serialize::int128_t wide = Stream::IsWriting ? expected_wide : serialize::int128_t( 0 );
+                serialize_fixed( stream, wide, 112, 16, -1152921504606846976LL, +1152921504606846976LL );
+                if ( Stream::IsReading )
+                {
+                    fuzz_check( wide == expected_wide );
+                }
+#endif // #if defined(__SIZEOF_INT128__)
             }
             break;
 
@@ -379,6 +436,18 @@ template <typename Stream> bool FuzzRoundTrip( Stream & stream, const uint8_t * 
                 {
                     fuzz_check( value == expected );
                 }
+
+#if defined(__SIZEOF_INT128__)
+                const uint64_t expected128_high = pool.NextUint64();
+                const uint64_t expected128_low = pool.NextUint64();
+                const serialize::uint128_t expected128 = ( serialize::uint128_t( expected128_high ) << 64 ) | expected128_low;
+                serialize::uint128_t value128 = Stream::IsWriting ? expected128 : serialize::uint128_t( 0 );
+                serialize_uint128( stream, value128 );
+                if ( Stream::IsReading )
+                {
+                    fuzz_check( value128 == expected128 );
+                }
+#endif // #if defined(__SIZEOF_INT128__)
             }
             break;
 
