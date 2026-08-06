@@ -147,6 +147,17 @@ template <typename Stream> bool FuzzRead( Stream & stream, const uint8_t * ops, 
                 serialize_fixed( stream, wide, 112, 16, -1152921504606846976LL, +1152921504606846976LL );        // ±2^60 units: a raw range past 64 bits
                 fuzz_check( wide >= serialize::int128_t( -1152921504606846976LL ) * serialize::int128_t( 65536 ) );
                 fuzz_check( wide <= serialize::int128_t( +1152921504606846976LL ) * serialize::int128_t( 65536 ) );
+
+                // ranged 128 bit integers, with the bound width varying by param so the run walks
+                // every group structure: one group, two, three and four. hostile bytes must decode
+                // inside the bounds or fail the read — never clamp, never wrap.
+                const serialize::int128_t bound128 = serialize::int128_t( 1 ) << ( 20 + ( param % 100 ) );
+                serialize::int128_t ranged128 = 0;
+                serialize_int128( stream, ranged128, -bound128, +bound128 );
+                fuzz_check( ranged128 >= -bound128 && ranged128 <= +bound128 );
+
+                serialize::int128_t full128 = 0;
+                serialize_int128( stream, full128, serialize::int128_t( serialize::uint128_t( 1 ) << 127 ), serialize::int128_t( ~( serialize::uint128_t( 1 ) << 127 ) ) );
             }
             break;
 

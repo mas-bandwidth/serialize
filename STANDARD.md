@@ -135,6 +135,35 @@ bits are written first, followed by the remaining `bits - 32` high bits.
 `serialize_bits( value, 64 )` and always costs a full 64 bits. The names are
 similar and the encodings are not.
 
+### int128 (ranged)
+
+    serialize_int128( stream, value, min, max )
+
+The 128-bit counterpart, and the only ranged 128-bit operation.
+`bits_required128( min, max )` bits are used, where `min` and `max` are
+converted to the unsigned 128-bit domain first, so a range wider than `2^127`
+is exact rather than overflowing. The offset `value - min` is computed in that
+same unsigned domain and written in 32-bit groups from least significant
+upward — the same splitting rule as `serialize_bits` and the wide fixed point
+path: `bits <= 32` is a single group, otherwise full 32-bit groups from the
+bottom with the final group carrying the remainder, up to four groups.
+
+Where the range fits 64 bits or fewer the bytes are **identical to
+`serialize_int64( value, min, max )`** over the same bounds. A field may
+therefore be widened from 64 to 128 bits without changing the wire, provided
+the bounds do not change.
+
+The bounds are runtime values, exactly as for `serialize_int` and
+`serialize_int64`. The bit count comes from the runtime `bits_required128`,
+which is available on every platform — including compilers with no native
+`__int128`, where the emulated pair supplies every operation it needs.
+
+**Do not confuse this with `serialize_uint128`**, which is not ranged — it is
+two `serialize_uint64` calls and always costs a full 128 bits.
+
+Readers must check that the decoded offset is at most `max - min` in the
+unsigned domain and fail otherwise — reject, never clamp.
+
 ### fixed (Q format, ranged)
 
     serialize_fixed( stream, value, integer_bits, fraction_bits, min, max )

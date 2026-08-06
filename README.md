@@ -117,6 +117,7 @@ struct Player
     int64_t position_y;
     int64_t position_z;
     serialize::uint128_t entity_id;         // 128 bit globally unique id
+    serialize::int128_t sector_offset;      // ranged 128 bit integer
 
     template <typename Stream> bool Serialize( Stream & stream )
     {
@@ -124,10 +125,13 @@ struct Player
         serialize_fixed( stream, position_y, 48, 16, -8192, +8192 );
         serialize_fixed( stream, position_z, 48, 16, -8192, +8192 );
         serialize_uint128( stream, entity_id );
+        serialize_int128( stream, sector_offset, -(serialize::int128_t(1) << 70), +(serialize::int128_t(1) << 70) );
         return true;
     }
 };
 ```
+
+`serialize_uint128` is a raw 128 bit field and always costs 128 bits. `serialize_int128` is the ranged form: it costs only the bits its range needs, and where that range fits 64 bits the bytes are identical to `serialize_int64`. Both work on every platform, including compilers with no native `__int128`.
 
 See [example.cpp](example.cpp) for more.
 

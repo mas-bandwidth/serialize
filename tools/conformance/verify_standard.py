@@ -73,6 +73,23 @@ def fixed(r, fraction_bits, lo, hi):
     return v + raw_lo
 
 
+def ranged128(r, lo, hi):
+    """STANDARD.md, 'int128 (ranged)': offset encoding computed in the unsigned
+    128-bit domain, written in 32-bit groups from least significant upward with
+    the final group carrying the remainder."""
+    mask = (1 << 128) - 1
+    lo &= mask
+    hi &= mask
+    n = 0 if lo == hi else ((hi - lo) & mask).bit_length()
+    v = 0
+    for g in range(0, n, 32):
+        v |= r.bits(min(32, n - g)) << g
+    if v > ((hi - lo) & mask):
+        raise ValueError("int128 offset out of range")
+    out = (v + lo) & mask
+    return out - (1 << 128) if out >= (1 << 127) else out
+
+
 def main():
     data = hex_array("golden_wire_bytes")
     r = BitReader(data)
@@ -130,6 +147,14 @@ def main():
     hi = u.bits(32) | (u.bits(32) << 32)
     eq("uint128 (low half first, little endian bytes)",
        (hi << 64) | lo, 0x0123456789ABCDEF_FEDCBA9876543210)
+
+    # STANDARD.md, 'int128 (ranged)': offset encoding over the unsigned 128-bit
+    # domain in 32-bit groups. Bounds of +/- 2^70 need 72 bits, so this pin
+    # load-bears the THREE-group structure — 32, 32, then an 8-bit remainder.
+    s = BitReader(hex_array("golden_int128_bytes"))
+    eq("int128 ranged (3-group structure, +/- 2^70 bounds)",
+       ranged128(s, -(1 << 70), 1 << 70), -0x0123456789ABCDEF)
+    eq("int128 ranged consumed exactly 72 bits", s.i, 72)
 
     print(f"{n} checks against STANDARD.md, {len(fails)} failures")
     for f in fails: print("  FAIL " + f)
