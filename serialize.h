@@ -50,6 +50,19 @@
 #define serialize_assert assert
 #endif // #ifndef serialize_assert
 
+// static_assert is C++11, and consumers vendor this header into pre-C++11 builds, so compile
+// time invariants go through this macro: real static_assert (message included) from C++11 up
+// and on MSVC (which ships static_assert in every language mode it supports), and a negative
+// size array emulation before that — the message string is dropped, and the compile error
+// points at the macro use site. the attribute silences unused-local-typedef warnings.
+#if ( defined( __cplusplus ) && __cplusplus >= 201103L ) || defined( _MSC_VER )
+#define serialize_static_assert( condition, message ) static_assert( condition, message )
+#else // #if ( defined( __cplusplus ) && __cplusplus >= 201103L ) || defined( _MSC_VER )
+#define serialize_static_assert_join2( a, b ) a##b
+#define serialize_static_assert_join( a, b ) serialize_static_assert_join2( a, b )
+#define serialize_static_assert( condition, message ) typedef char serialize_static_assert_join( serialize_static_assert_line_, __LINE__ )[ ( condition ) ? 1 : -1 ] __attribute__(( unused ))
+#endif // #if ( defined( __cplusplus ) && __cplusplus >= 201103L ) || defined( _MSC_VER )
+
 #if defined(_MSC_VER) && !defined(_CRT_SECURE_NO_WARNINGS)
 #define _CRT_SECURE_NO_WARNINGS
 #endif
@@ -2503,7 +2516,7 @@ namespace serialize
     {
         // refuse narrower types at compile time: a uint64_t here would shift by 64 — undefined
         // behavior — and silently is not the 128 bit operation the caller asked for
-        static_assert( sizeof( UInt128 ) == 16, "serialize_uint128 requires a 128 bit type (did you mean serialize_uint64?)" );
+        serialize_static_assert( sizeof( UInt128 ) == 16, "serialize_uint128 requires a 128 bit type (did you mean serialize_uint64?)" );
 
         uint64_t low_half = 0;
         uint64_t high_half = 0;
@@ -2903,8 +2916,8 @@ namespace serialize
                 int64_t( ( uint64_t(1) << ( IntegerBits - 1 ) ) - 1 ) :
                 ( ( IntegerBits >= 64 ) ? INT64_MAX : int64_t( ( uint64_t(1) << ( IntegerBits < 64 ? IntegerBits : 0 ) ) - 1 ) );
 
-            static_assert( MinUnits >= min_representable_units, "serialize_fixed min bound in whole units does not fit the Q format" );
-            static_assert( MaxUnits <= max_representable_units, "serialize_fixed max bound in whole units does not fit the Q format" );
+            serialize_static_assert( MinUnits >= min_representable_units, "serialize_fixed min bound in whole units does not fit the Q format" );
+            serialize_static_assert( MaxUnits <= max_representable_units, "serialize_fixed max bound in whole units does not fit the Q format" );
 
             // shift the whole unit bounds into raw fixed point units in the unsigned domain, so negative bounds wrap two's complement instead of invoking undefined behavior.
             // everything below is a compile time constant: the bounds, the range and the bit count all fold, so the call site carries no runtime bit width computation at all.
@@ -2984,8 +2997,8 @@ namespace serialize
                 ( ( IntegerBits >= 64 ) ? INT64_MAX : int64_t( ( uint64_t(1) << ( ( IntegerBits < 64 ? IntegerBits : 1 ) - 1 ) ) - 1 ) ) :
                 ( ( IntegerBits >= 64 ) ? INT64_MAX : int64_t( ( uint64_t(1) << ( IntegerBits < 64 ? IntegerBits : 0 ) ) - 1 ) );
 
-            static_assert( MinUnits >= min_representable_units, "serialize_fixed min bound in whole units does not fit the Q format" );
-            static_assert( MaxUnits <= max_representable_units, "serialize_fixed max bound in whole units does not fit the Q format" );
+            serialize_static_assert( MinUnits >= min_representable_units, "serialize_fixed min bound in whole units does not fit the Q format" );
+            serialize_static_assert( MaxUnits <= max_representable_units, "serialize_fixed max bound in whole units does not fit the Q format" );
 
             // shift the whole unit bounds into raw fixed point units in the unsigned 128 bit domain, so negative bounds wrap two's complement instead of invoking undefined behavior.
             // the storage constructor sign extends the int64 bounds for signed storage. everything below folds: the bounds, the range, the bit count and the group structure.
@@ -3095,11 +3108,11 @@ namespace serialize
     template <int IntegerBits, int FractionalBits, int64_t MinUnits, int64_t MaxUnits, typename Stream, typename Storage>
     bool serialize_fixed_internal( Stream & stream, Storage & value )
     {
-        static_assert( FixedPointInteger<Storage>::is_integer == 1, "serialize_fixed storage must be an integer type" );
-        static_assert( IntegerBits >= 1, "serialize_fixed needs at least one integer bit. the sign bit counts for signed storage" );
-        static_assert( FractionalBits >= 0, "serialize_fixed fractional bits can't be negative" );
-        static_assert( IntegerBits + FractionalBits == 8 * (int) sizeof( Storage ), "serialize_fixed integer bits plus fractional bits must equal the number of bits in the storage type" );
-        static_assert( MinUnits < MaxUnits, "serialize_fixed min must be below max" );
+        serialize_static_assert( FixedPointInteger<Storage>::is_integer == 1, "serialize_fixed storage must be an integer type" );
+        serialize_static_assert( IntegerBits >= 1, "serialize_fixed needs at least one integer bit. the sign bit counts for signed storage" );
+        serialize_static_assert( FractionalBits >= 0, "serialize_fixed fractional bits can't be negative" );
+        serialize_static_assert( IntegerBits + FractionalBits == 8 * (int) sizeof( Storage ), "serialize_fixed integer bits plus fractional bits must equal the number of bits in the storage type" );
+        serialize_static_assert( MinUnits < MaxUnits, "serialize_fixed min must be below max" );
 
         return FixedPointSerializer< ( 8 * (int) sizeof( Storage ) > 64 ) >::template Serialize<IntegerBits, FractionalBits, MinUnits, MaxUnits>( stream, value );
     }
@@ -4544,7 +4557,7 @@ inline void test_serialize_fixed()
         serialize_check( stream.GetBitsProcessed() == 16 );         // 200 << 8 raw values needs 16 bits
     }
 
-    // compile time refusals. each of the following fails with a static_assert, which is the point.
+    // compile time refusals. each of the following fails with a serialize_static_assert, which is the point.
     // kept as comments because a compile failure can't run inside the suite: uncomment one to verify.
     //
     //     int32_t value = 0;
