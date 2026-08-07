@@ -159,6 +159,14 @@
 // their own function wrappers in their own tree. Everything else — constructors, the full
 // operator surface, the explicit conversions — is C++ only, inside #ifdef __cplusplus.
 //
+// The C++ in this block must stay usable by pre-C++11 consumers: a vendored header does not get
+// to choose the consumer's -std, and real consumers compile it at C++98/03 (clang accepts the
+// declaration-only C++11 extensions here — `= default`, the explicit conversion operators to the
+// 64 bit lanes — with a warning in those modes, but overload resolution before C++11 never
+// SELECTS an explicit conversion operator, so every conversion the library performs routes
+// through C++98 constructs: converting constructors). CI compiles and runs the tests at
+// -std=c++03 to hold this.
+//
 // Semantics match native __int128 exactly, with documented choices where native has none:
 // shift counts outside [0,127] yield zero (all sign bits for the signed arithmetic right
 // shift; native shifts by 128 or more are undefined behavior), and signed INT128_MIN over -1
@@ -181,6 +189,10 @@
 
 #if !defined( SERIALIZE_UINT128_DEFINED ) && ( !defined( __SIZEOF_INT128__ ) || SERIALIZE_ENABLE_TESTS )
 
+#ifdef __cplusplus
+struct serialize_int128_t;      // forward declaration for the bit preserving converting constructor below
+#endif
+
 typedef struct serialize_uint128_t
 {
     uint64_t lo;            ///< the low 64 bits. first, matching the little endian layout and the wire order
@@ -202,6 +214,14 @@ typedef struct serialize_uint128_t
     serialize_uint128_t( unsigned int value )       : lo( value ), hi( 0 ) {}
     serialize_uint128_t( unsigned long value )      : lo( value ), hi( 0 ) {}
     serialize_uint128_t( unsigned long long value ) : lo( value ), hi( 0 ) {}
+
+    // bit preserving conversion from the signed type, defined inline after serialize_int128_t below.
+    // this is a converting CONSTRUCTOR, not a conversion operator on serialize_int128_t, on purpose:
+    // explicit conversion operators are C++11, and consumers vendor this header into pre-C++11
+    // builds where a functional-style cast through one does not compile (overload resolution never
+    // considers explicit conversion functions before C++11). an explicit converting constructor is
+    // C++98 and behaves identically at every cast site.
+    explicit serialize_uint128_t( serialize_int128_t value );
 
     explicit operator uint64_t () const
     {
@@ -496,13 +516,10 @@ typedef struct serialize_int128_t
 
     explicit serialize_int128_t( serialize_uint128_t value ) : lo( value.lo ), hi( value.hi ) {}        // bit preserving
 
-    explicit operator serialize_uint128_t () const                                                // bit preserving
-    {
-        serialize_uint128_t result( 0 );
-        result.lo = lo;
-        result.hi = hi;
-        return result;
-    }
+    // the bit preserving conversion in the other direction is the explicit
+    // serialize_uint128_t( serialize_int128_t ) constructor, declared on the unsigned type and
+    // defined after this struct — a constructor rather than a C++11 explicit conversion operator
+    // so serialize_uint128_t( signed_value ) compiles in pre-C++11 consumers too
 
     explicit operator int64_t () const
     {
@@ -668,6 +685,14 @@ typedef struct serialize_int128_t
 #endif // #ifdef __cplusplus
 
 } serialize_int128_t;
+
+#ifdef __cplusplus
+
+// the bit preserving signed to unsigned conversion declared inside serialize_uint128_t above,
+// defined here where serialize_int128_t is complete
+inline serialize_uint128_t::serialize_uint128_t( serialize_int128_t value ) : lo( value.lo ), hi( value.hi ) {}
+
+#endif // #ifdef __cplusplus
 
 #define SERIALIZE_UINT128_DEFINED 1
 
@@ -2833,8 +2858,8 @@ namespace serialize
     // the emulated pair works as storage too. without native __int128 these ARE the serialize
     // typedefs; with it they are a distinct set of types (present when tests are enabled, or
     // when a sibling header defined the block first), so the specializations never collide
-    template <> struct FixedPointInteger<::serialize_int128_t>            { enum { is_integer = 1, is_signed = 1 }; };
-    template <> struct FixedPointInteger<::serialize_uint128_t>           { enum { is_integer = 1, is_signed = 0 }; };
+    template <> struct FixedPointInteger< ::serialize_int128_t >            { enum { is_integer = 1, is_signed = 1 }; };
+    template <> struct FixedPointInteger< ::serialize_uint128_t >           { enum { is_integer = 1, is_signed = 0 }; };
 #endif // #if defined(SERIALIZE_UINT128_DEFINED)
 
     /**
@@ -2852,8 +2877,8 @@ namespace serialize
     template <> struct FixedPointUnsigned<uint128_t>                { typedef uint128_t type; };
 #endif // #if defined(__SIZEOF_INT128__)
 #if defined(SERIALIZE_UINT128_DEFINED)
-    template <> struct FixedPointUnsigned<::serialize_int128_t>           { typedef ::serialize_uint128_t type; };
-    template <> struct FixedPointUnsigned<::serialize_uint128_t>          { typedef ::serialize_uint128_t type; };
+    template <> struct FixedPointUnsigned< ::serialize_int128_t >           { typedef ::serialize_uint128_t type; };
+    template <> struct FixedPointUnsigned< ::serialize_uint128_t >          { typedef ::serialize_uint128_t type; };
 #endif // #if defined(SERIALIZE_UINT128_DEFINED)
 
     /**
