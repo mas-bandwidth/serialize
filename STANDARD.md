@@ -71,6 +71,22 @@ information of their own:
 
 One bit: `1` for true, `0` for false.
 
+### uint128
+
+    serialize_uint128( stream, value )
+
+A 128-bit unsigned integer, always 128 bits on the wire: the **low 64-bit half
+first**, then the high half, each half written exactly as
+`serialize_bits( half, 64 )` — that is, four 32-bit groups from least
+significant upward. When the stream is byte aligned, the result is the 16
+bytes of the value in little-endian order.
+
+The operation is representation-independent. A native `unsigned __int128`, the
+library's emulated two-lane type (`lo` then `hi`, both `uint64_t`), and two
+explicit `serialize_uint64` calls (low half first) all produce **byte-identical
+wire**. An implementation with no 128-bit type reproduces the format exactly
+with two 64-bit operations.
+
 ### align
 
     serialize_align( stream )
@@ -118,6 +134,68 @@ bits are written first, followed by the remaining `bits - 32` high bits.
 **Do not confuse this with `serialize_uint64`**, which is not ranged — it is
 `serialize_bits( value, 64 )` and always costs a full 64 bits. The names are
 similar and the encodings are not.
+
+### int128 (ranged)
+
+    serialize_int128( stream, value, min, max )
+
+The 128-bit counterpart, and the only ranged 128-bit operation.
+`bits_required128( min, max )` bits are used, where `min` and `max` are
+converted to the unsigned 128-bit domain first, so a range wider than `2^127`
+is exact rather than overflowing. The offset `value - min` is computed in that
+same unsigned domain and written in 32-bit groups from least significant
+upward — the same splitting rule as `serialize_bits` and the wide fixed point
+path: `bits <= 32` is a single group, otherwise full 32-bit groups from the
+bottom with the final group carrying the remainder, up to four groups.
+
+Where the range fits 64 bits or fewer the bytes are **identical to
+`serialize_int64( value, min, max )`** over the same bounds. A field may
+therefore be widened from 64 to 128 bits without changing the wire, provided
+the bounds do not change.
+
+The bounds are runtime values, exactly as for `serialize_int` and
+`serialize_int64`. The bit count comes from the runtime `bits_required128`,
+which is available on every platform — including compilers with no native
+`__int128`, where the emulated pair supplies every operation it needs.
+
+**Do not confuse this with `serialize_uint128`**, which is not ranged — it is
+two `serialize_uint64` calls and always costs a full 128 bits.
+
+Readers must check that the decoded offset is at most `max - min` in the
+unsigned domain and fail otherwise — reject, never clamp.
+
+### fixed (Q format, ranged)
+
+    serialize_fixed( stream, value, integer_bits, fraction_bits, min, max )
+
+A fixed point value held in an integer storage type of exactly `integer_bits +
+fraction_bits` bits, with the sign bit counting toward `integer_bits` (Q48.16
+in an `int64_t`, Q112.16 in an `__int128`). The stored integer is the real
+value scaled by `2^fraction_bits`. `min` and `max` are bounds in **whole real
+units**, and all four parameters are compile-time constants of the call site —
+they are part of the format, exactly like a ranged integer's bounds.
+
+The encoding is an offset encoding over the **raw** (scaled) bounds:
+
+    raw_min = min << fraction_bits
+    raw_max = max << fraction_bits
+    bits    = bit length of ( raw_max - raw_min )    — bits_required, at whatever width the range needs
+
+`raw_value - raw_min` is written in `bits` bits, split into 32-bit groups from
+least significant upward exactly as `serialize_bits` splits wide values:
+`bits <= 32` is a single group, otherwise full 32-bit groups from the bottom
+with the final group carrying the remainder. For storage of 64 bits or fewer
+the bytes are **identical to `serialize_int64( raw_value, raw_min, raw_max )`**
+— fixed point adds no new wire structure, only the compile-time scaling
+convention — and with `fraction_bits = 0` the operation *is* a ranged integer.
+
+Readers must check that the decoded offset is at most `raw_max - raw_min` and
+fail otherwise — reject, never clamp.
+
+Because fixed point values are integers underneath, the round trip is
+**exact**: unlike `compressed_float` there is no quantization step, and the
+same raw value produces the same bytes and reads back bit-for-bit identical on
+every platform.
 
 ### int_relative
 
@@ -234,9 +312,9 @@ truncating**.
 ## Worked Example
 
 The library's golden test serializes a fixed message and asserts an exact
-72-byte output. The final field is a wide string in a `wchar_t[8]` buffer
+112-byte output. One field is a wide string in a `wchar_t[8]` buffer
 containing three characters — `0x043C`, `0x0438`, `0x0440` — and it produces
-this 13-byte tail:
+this 13-byte run:
 
     0xE3 0x21 0x00 0x00 0xC0 0x21 0x00 0x00 0x00 0x22 0x00 0x00 0x00
 
@@ -251,8 +329,24 @@ Decoding it against this document:
   **`0x043C`**.
 * Two further 32-bit groups follow, yielding `0x0438` and `0x0440`.
 
-Total: 3 + 3×32 = 99 bits = 13 bytes after flush. This matches, and it is the
-cheapest way to confirm an independent implementation is correct.
+Total: 3 + 3×32 = 99 bits = 13 bytes once the following align pads to the byte
+boundary. This matches, and it is the cheapest way to confirm an independent
+implementation is correct.
+
+The message then aligns and continues with four fixed point fields. The first
+is `serialize_fixed( value, 8, 8, -100, +100 )` — Q8.8, so `raw_min` is
+`-100 << 8 = -25600`, the raw range is `51200`, and the field costs 16 bits.
+The next two bytes of the golden vector are `0xC0 0x60`, which is the offset
+`0x60C0 = 24768`; adding `raw_min` gives a raw value of `-832`, which is
+`-3.25` in Q8.8 — exactly the value the golden message stores.
+
+After another align the message ends with two wide fixed point fields that
+make the multi-group split load-bearing: a Q112.16 field over ±2^57 whole
+units (75 bits — two full 32-bit groups from the bottom, then the 11-bit
+remainder on top), and a Q64.64 field over the full int64 unit range (128
+bits — four 32-bit groups). A decoder that assembles the groups in the wrong
+order, or puts the remainder anywhere but the most significant position,
+decodes the wrong values here.
 
 ## Read-only and write-only forms
 
@@ -275,7 +369,8 @@ differently. This document therefore specifies each operation once, under its
   the bit width and silently desynchronizes everything after it. Range changes
   are breaking changes.
 * **Alignment is part of the format.** `serialize_bytes` and `serialize_string`
-  align; `serialize_bits`, `serialize_int` and `serialize_wstring` do not.
+  align; `serialize_bits`, `serialize_int`, `serialize_fixed`,
+  `serialize_uint128` and `serialize_wstring` do not.
 * **Zero-bit fields are legal.** `min == max` writes nothing at all.
 
 ## Provenance
