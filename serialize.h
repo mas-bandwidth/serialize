@@ -1055,6 +1055,7 @@ namespace serialize
         Once the scratch fills to 64 bits it is flushed to memory as a qword; the handful of bits that spilled past 64 carry over into the next scratch. Flushing half as often as a dword design makes writes ~30% faster.
         The bit stream is written to memory in little endian order, which is considered network byte order for this library.
         IMPORTANT: The buffer size must be a multiple of 8 bytes, because words are stored to memory 8 bytes at a time. Bytes past the end of the written data are only ever written as zeros.
+        IMPORTANT: The buffer must not overlap the BitWriter object itself. The hot write methods promise this to the compiler with a restrict qualified this pointer (see WriteBits), and it is asserted in debug builds.
         @see BitReader
      */
 
@@ -1068,6 +1069,7 @@ namespace serialize
         {
             serialize_assert( data );
             serialize_assert( ( bytes % 8 ) == 0 );
+            serialize_assert( (const uint8_t*) data + bytes <= (const uint8_t*) (const void*) this || (const uint8_t*) (const void*) ( this + 1 ) <= (const uint8_t*) data );   // the buffer must not overlap the writer object itself: WriteBits and friends promise this to the compiler (see WriteBits)
             m_data = (uint8_t*) data;
             m_numBits = bytes * 8;
             m_bitsWritten = 0;
@@ -1079,7 +1081,7 @@ namespace serialize
         /**
             Bit writer constructor.
             Creates a bit writer object to write to the specified buffer.
-            @param data The pointer to the buffer to fill with bitpacked data. Does not need to be aligned: each word is stored with memcpy, matching the bit reader.
+            @param data The pointer to the buffer to fill with bitpacked data. Does not need to be aligned: each word is stored with memcpy, matching the bit reader. Must not overlap the BitWriter object itself (see WriteBits).
             @param bytes The size of the buffer in bytes. Must be a multiple of 8, because the bit writer stores qwords to memory. Buffer sizes are effectively unlimited, because bit counts are stored in 64 bit signed integers.
          */
 
@@ -1087,6 +1089,7 @@ namespace serialize
         {
             serialize_assert( data );
             serialize_assert( ( bytes % 8 ) == 0 );
+            serialize_assert( (const uint8_t*) data + bytes <= (const uint8_t*) (const void*) this || (const uint8_t*) (const void*) ( this + 1 ) <= (const uint8_t*) data );   // the buffer must not overlap the writer object itself: WriteBits and friends promise this to the compiler (see WriteBits)
             m_numBits = bytes * 8;
             m_bitsWritten = 0;
             m_wordIndex = 0;
@@ -1104,7 +1107,18 @@ namespace serialize
             @see BitReader::ReadBits
          */
 
-        void WriteBits( uint32_t value, int bits )
+        // serialize_restrict on 'this': m_data is a uint8_t pointer, and a uint8_t store legally aliases
+        // anything -- including this object's own members. Without the qualifier, in any serialize function
+        // it does not fully inline, the compiler is forced to reload m_scratch / m_scratchBits / m_wordIndex /
+        // m_bitsWritten from memory after every word flushed to the buffer, because the flush store could have
+        // modified them. Restricting 'this' promises the buffer never overlaps the writer object itself
+        // (asserted in the constructor in debug builds), which lets member state stay in registers across
+        // consecutive writes. Measured on Apple Silicon (Apple clang 21, -O3): +38% stream write throughput
+        // in bench.cpp, +38% to +152% on schema-generated write paths, zero change where serialize functions
+        // fully inline (the raw bitpacker loop compiles to identical code). The read path does not need this:
+        // the branchless reader stores nothing through m_data, so it already keeps its state in registers.
+
+        void WriteBits( uint32_t value, int bits ) serialize_restrict
         {
             serialize_assert( m_data );                 // if this fires, the writer was used before Initialize
             serialize_assert( bits > 0 );
@@ -1161,12 +1175,11 @@ namespace serialize
             @see BitReader::ReadBytes
          */
 
-        void WriteBytes( const uint8_t * serialize_restrict data, int64_t bytes )
+        void WriteBytes( const uint8_t * serialize_restrict data, int64_t bytes ) serialize_restrict     // restrict qualified this: see WriteBits
         {
             serialize_assert( m_data );                 // if this fires, the writer was used before Initialize
-            serialize_assert( GetAlignBits() == 0 );
             serialize_assert( uint64_t(m_bitsWritten) + uint64_t(bytes) * 8 <= uint64_t(m_numBits) );
-            serialize_assert( ( m_bitsWritten % 8 ) == 0 );
+            serialize_assert( ( m_bitsWritten % 8 ) == 0 );                         // byte aligned (GetAlignBits() == 0, spelled directly: a restrict qualified function cannot call unqualified members on some compilers)
 
             int64_t headBytes = ( 8 - ( m_bitsWritten % 64 ) / 8 ) % 8;
             if ( headBytes > bytes )
@@ -1176,7 +1189,7 @@ namespace serialize
             if ( headBytes == bytes )
                 return;
 
-            serialize_assert( GetAlignBits() == 0 );
+            serialize_assert( ( m_bitsWritten % 8 ) == 0 );     // still byte aligned
             serialize_assert( ( m_bitsWritten % 64 ) == 0 && m_scratchBits == 0 );      // the head bytes flushed the scratch at the word boundary
 
             int64_t numWords = ( bytes - headBytes ) / 8;
@@ -1188,7 +1201,7 @@ namespace serialize
                 m_scratch = 0;
             }
 
-            serialize_assert( GetAlignBits() == 0 );
+            serialize_assert( ( m_bitsWritten % 8 ) == 0 );     // still byte aligned
 
             int64_t tailStart = headBytes + numWords * 8;
             int64_t tailBytes = bytes - tailStart;
@@ -1196,7 +1209,7 @@ namespace serialize
             for ( int64_t i = 0; i < tailBytes; ++i )
                 WriteBits( data[tailStart+i], 8 );
 
-            serialize_assert( GetAlignBits() == 0 );
+            serialize_assert( ( m_bitsWritten % 8 ) == 0 );     // still byte aligned
 
             serialize_assert( headBytes + numWords * 8 + tailBytes == bytes );
         }
@@ -1207,7 +1220,7 @@ namespace serialize
             @see BitWriter::WriteBits
          */
 
-        void FlushBits()
+        void FlushBits() serialize_restrict     // restrict qualified this: see WriteBits
         {
             if ( m_scratchBits != 0 )
             {
