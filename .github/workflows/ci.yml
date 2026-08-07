@@ -108,6 +108,31 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure
 
+  # the strictest language mode a real consumer compiles the vendored header in. Every other job
+  # builds at the toolchain default (>= C++14), which is how a functional-style cast routed through
+  # a C++11-only explicit conversion operator shipped: yojimbo's macOS leg builds at Apple clang's
+  # default (gnu++98) and was the first thing to compile the header pre-C++11. clang specifically,
+  # because the guarded property is "compiles in C++98/03 with the declaration-only C++11
+  # extensions accepted as warnings" — the profile of the consumer that broke (gcc hard-errors on
+  # those extensions, so it cannot check this). SERIALIZE_ENABLE_TESTS forces the emulated 128 bit
+  # pair even on native-__int128 hosts, exactly as yojimbo's test build does; the second compile
+  # drops native __int128 so the emulated pair is the real storage type on the wire.
+  cxx03-consumer:
+    name: pre-C++11 consumer (clang -std=c++03)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and run tests at -std=c++03 (emulated pair alongside native)
+        run: |
+          clang++ -std=c++03 -DSERIALIZE_ENABLE_TESTS=1 -DSERIALIZE_DEBUG -Wall -Wextra -ffast-math -fno-rtti test.cpp -o test_cxx03
+          ./test_cxx03
+
+      - name: Build and run tests at -std=c++03 (emulated pair as the serialize types)
+        run: |
+          clang++ -std=c++03 -DSERIALIZE_ENABLE_TESTS=1 -DSERIALIZE_DEBUG -U__SIZEOF_INT128__ -Wall -Wextra -ffast-math -fno-rtti test.cpp -o test_cxx03_no_int128
+          ./test_cxx03_no_int128
+
   conformance:
     name: STANDARD.md conformance
     runs-on: ubuntu-24.04
