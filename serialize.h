@@ -3422,6 +3422,18 @@ namespace serialize
             serialize::serialize_int_relative_internal( stream, previous, current_value );  \
         } while (0)
 
+    // The compile time parameter surface below uses C++14 relaxed constexpr, and consumers vendor
+    // this header into pre-C++11 builds (the cxx03-consumer CI leg compiles it at -std=c++03).
+    // The surface is additive and aimed at generated code, so language modes older than C++14
+    // simply do not get it: everything else in the header stays available. MSVC reports
+    // __cplusplus as 199711L unless /Zc:__cplusplus is set, so it is detected by version instead
+    // (VS2017, _MSC_VER 1910, carries full C++14 constexpr in every language mode it supports).
+#if ( defined( __cplusplus ) && __cplusplus >= 201402L ) || ( defined( _MSC_VER ) && _MSC_VER >= 1910 )
+#define SERIALIZE_HAS_COMPILE_TIME_SURFACE 1
+#endif
+
+#if defined( SERIALIZE_HAS_COMPILE_TIME_SURFACE )
+
     // ------------------------------------------------------------------------------------------
     //
     //      Compile time parameter surface (experimental, for generated code)
@@ -3772,6 +3784,8 @@ namespace serialize
                 value = uint32_bool_value ? true : false;                                   \
             }                                                                               \
         } while (0)
+
+#endif // #if defined( SERIALIZE_HAS_COMPILE_TIME_SURFACE )
 }
 
 inline void serialize_copy_string( char * dest, const char * source, size_t dest_size )
@@ -6091,6 +6105,8 @@ inline void test_int128_differential()
 
 #endif // #if defined(__SIZEOF_INT128__)
 
+#if defined( SERIALIZE_HAS_COMPILE_TIME_SURFACE )
+
 // Compile time surface tests. Every compile time form is held to the coverage of its runtime twin
 // (round trip, boundary values, read side rejection, measure agreement), and to the wire identity
 // property: given identical inputs, the compile time form must produce byte identical wire data to
@@ -6728,6 +6744,8 @@ inline void test_compile_time_packet()
     check_compile_time_packet( packet );
 }
 
+#endif // #if defined( SERIALIZE_HAS_COMPILE_TIME_SURFACE )
+
 // Golden wire format test. The exact bytes produced by the serializer are pinned down here and must never change.
 // If this test fails, the wire format has changed and previously written data no longer decodes: a breaking change.
 // The values below are chosen so every platform quantizes identically (see the compressed float: 5.0 in [0,10]
@@ -7036,6 +7054,7 @@ inline void serialize_test()
         SERIALIZE_RUN_TEST( test_uint128_differential );
         SERIALIZE_RUN_TEST( test_int128_differential );
 #endif // #if defined(__SIZEOF_INT128__)
+#if defined( SERIALIZE_HAS_COMPILE_TIME_SURFACE )
         SERIALIZE_RUN_TEST( test_compile_time_bits_required );
         SERIALIZE_RUN_TEST( test_compile_time_int );
         SERIALIZE_RUN_TEST( test_compile_time_int64 );
@@ -7044,6 +7063,7 @@ inline void serialize_test()
         SERIALIZE_RUN_TEST( test_compile_time_int64_validation );
         SERIALIZE_RUN_TEST( test_compile_time_bits_validation );
         SERIALIZE_RUN_TEST( test_compile_time_packet );
+#endif // #if defined( SERIALIZE_HAS_COMPILE_TIME_SURFACE )
         SERIALIZE_RUN_TEST( test_golden_wire_format );
         SERIALIZE_RUN_TEST( test_unaligned_writer );
         SERIALIZE_RUN_TEST( test_large_buffer );
