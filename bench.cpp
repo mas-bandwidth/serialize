@@ -28,6 +28,10 @@
     Measures throughput of the raw bitpacker (BitWriter/BitReader) with mixed bit widths,
     and of the stream + serialize macro path with a representative packet.
 
+    Also measures matched pairs of the runtime macros against the compile time parameter
+    surface (serialize_*_compile_time), to answer whether moving min/max/bits into template
+    arguments buys anything the optimizer wasn't already doing.
+
     Each benchmark runs several trials and reports the best, to shave off scheduler noise.
     Only release build numbers are meaningful.
 */
@@ -289,6 +293,273 @@ void bench_stream()
 
 // ------------------------------------------------------------------------------------------
 
+// Matched pairs: the same packet serialized through the runtime macros and through the compile
+// time parameter surface. Same data, same serially dependent LCG variation pattern, same escape
+// barriers, same trial structure, so any difference is the forms themselves, not the harness.
+// Each shape derives its two packet forms from one fields struct, so a single vary function
+// drives both sides of a pair with identical values.
+
+template <typename Fields, typename Packet> void bench_packet_shape( const char * label, uint64_t (*vary)( Fields &, uint64_t ) )
+{
+    uint8_t buffer[256];
+    memset( buffer, 0, sizeof( buffer ) );
+
+    Packet packet = Packet();
+
+    // pre-write variant packets for the read benchmark, using the same LCG sequence as the write loop
+    uint8_t variant_buffers[NumVariants][256];
+    int bytes_per_packet = 0;
+    {
+        uint64_t rng = 1;
+        for ( int k = 0; k < NumVariants; k++ )
+        {
+            memset( variant_buffers[k], 0, sizeof( variant_buffers[k] ) );
+            rng = vary( packet, rng );
+            serialize::WriteStream stream( variant_buffers[k], (int) sizeof( variant_buffers[k] ) );
+            if ( !packet.Serialize( stream ) )
+                exit( 1 );
+            stream.Flush();
+            bytes_per_packet = stream.GetBytesProcessed();
+        }
+    }
+
+    double best_write = 1e30;
+    double best_read = 1e30;
+
+    for ( int trial = 0; trial < NumTrials; trial++ )
+    {
+        uint64_t rng = 1;
+
+        double start = time_now();
+        for ( int i = 0; i < StreamNumPackets; i++ )
+        {
+            rng = vary( packet, rng );
+            serialize::WriteStream stream( buffer, (int) sizeof( buffer ) );
+            if ( !packet.Serialize( stream ) )
+                exit( 1 );
+            stream.Flush();
+            bench_escape( buffer );
+            g_sink = g_sink + (uint64_t) stream.GetBytesProcessed();
+        }
+        double time = time_now() - start;
+        if ( time < best_write )
+            best_write = time;
+
+        start = time_now();
+        for ( int i = 0; i < StreamNumPackets; i++ )
+        {
+            serialize::ReadStream stream( variant_buffers[i & ( NumVariants - 1 )], bytes_per_packet );
+            Packet read_packet;
+            if ( !read_packet.Serialize( stream ) )
+                exit( 1 );
+            bench_escape( &read_packet );               // every decoded field is observed, so the full decode must happen
+            g_sink = g_sink + (uint64_t) *(const uint8_t*) &read_packet;
+        }
+        time = time_now() - start;
+        if ( time < best_read )
+            best_read = time;
+    }
+
+    const double packets = double( StreamNumPackets ) / 1000000.0;
+
+    printf( "%s  write: %6.1f M packets/s   read: %6.1f M packets/s\n", label, packets / best_write, packets / best_read );
+}
+
+// pair 1: a realistic packet of ~10 bounded ints, runtime serialize_int vs serialize_int_compile_time
+
+struct BenchIntFields
+{
+    int32_t f0, f1, f2, f3, f4, f5, f6, f7, f8, f9;
+};
+
+inline uint64_t bench_vary_int_fields( BenchIntFields & f, uint64_t rng )
+{
+    rng = rng * 6364136223846793005ULL + 1442695040888963407ULL;
+    f.f0 = int32_t( ( rng >> 8 ) & 63 ) - 32;                       // within [-100,+100]
+    f.f1 = int32_t( uint32_t( rng >> 16 ) & 65535 );                // [0,65535]
+    f.f2 = int32_t( ( rng >> 24 ) & 0xFFFFF ) - 500000;             // within [-1000000,+1000000]
+    f.f3 = int32_t( uint32_t( rng >> 2 ) & 3 );                     // [0,3]
+    f.f4 = int32_t( ( rng >> 11 ) & 15 ) - 8;                       // within [-15,+15]
+    f.f5 = int32_t( uint32_t( rng >> 22 ) & 511 );                  // within [0,1000]
+    f.f6 = int32_t( ( rng >> 33 ) & 2047 ) - 1024;                  // within [-2048,+2047]
+    f.f7 = int32_t( uint32_t( rng >> 40 ) & 255 );                  // [0,255]
+    f.f8 = int32_t( ( rng >> 30 ) & 0xFFFFF ) - 500000;             // within [-600000,+600000]
+    f.f9 = int32_t( uint32_t( rng >> 57 ) & 63 );                   // within [0,100]
+    return rng;
+}
+
+struct BenchIntPacketRuntime : public BenchIntFields
+{
+    template <typename Stream> bool Serialize( Stream & stream )
+    {
+        serialize_int( stream, f0, -100, +100 );
+        serialize_int( stream, f1, 0, 65535 );
+        serialize_int( stream, f2, -1000000, +1000000 );
+        serialize_int( stream, f3, 0, 3 );
+        serialize_int( stream, f4, -15, +15 );
+        serialize_int( stream, f5, 0, 1000 );
+        serialize_int( stream, f6, -2048, +2047 );
+        serialize_int( stream, f7, 0, 255 );
+        serialize_int( stream, f8, -600000, +600000 );
+        serialize_int( stream, f9, 0, 100 );
+        return true;
+    }
+};
+
+struct BenchIntPacketCompileTime : public BenchIntFields
+{
+    template <typename Stream> bool Serialize( Stream & stream )
+    {
+        serialize_int_compile_time( stream, f0, -100, +100 );
+        serialize_int_compile_time( stream, f1, 0, 65535 );
+        serialize_int_compile_time( stream, f2, -1000000, +1000000 );
+        serialize_int_compile_time( stream, f3, 0, 3 );
+        serialize_int_compile_time( stream, f4, -15, +15 );
+        serialize_int_compile_time( stream, f5, 0, 1000 );
+        serialize_int_compile_time( stream, f6, -2048, +2047 );
+        serialize_int_compile_time( stream, f7, 0, 255 );
+        serialize_int_compile_time( stream, f8, -600000, +600000 );
+        serialize_int_compile_time( stream, f9, 0, 100 );
+        return true;
+    }
+};
+
+// pair 2: mixed bit widths including one wider than 32 bits, runtime serialize_bits vs serialize_bits_compile_time
+
+struct BenchBitsFields
+{
+    uint32_t b7, b13, b23, b3, b32, b11, b19;
+    uint64_t b48;
+};
+
+inline uint64_t bench_vary_bits_fields( BenchBitsFields & f, uint64_t rng )
+{
+    rng = rng * 6364136223846793005ULL + 1442695040888963407ULL;
+    f.b7 = uint32_t( rng ) & 127;
+    f.b13 = uint32_t( rng >> 3 ) & 8191;
+    f.b23 = uint32_t( rng >> 5 ) & 8388607;
+    f.b3 = uint32_t( rng >> 29 ) & 7;
+    f.b32 = uint32_t( rng >> 16 );
+    f.b11 = uint32_t( rng >> 37 ) & 2047;
+    f.b19 = uint32_t( rng >> 44 ) & 524287;
+    f.b48 = rng & 0xFFFFFFFFFFFFULL;
+    return rng;
+}
+
+struct BenchBitsPacketRuntime : public BenchBitsFields
+{
+    template <typename Stream> bool Serialize( Stream & stream )
+    {
+        serialize_bits( stream, b7, 7 );
+        serialize_bits( stream, b13, 13 );
+        serialize_bits( stream, b23, 23 );
+        serialize_bits( stream, b3, 3 );
+        serialize_bits( stream, b32, 32 );
+        serialize_bits( stream, b11, 11 );
+        serialize_bits( stream, b19, 19 );
+        serialize_bits( stream, b48, 48 );
+        return true;
+    }
+};
+
+struct BenchBitsPacketCompileTime : public BenchBitsFields
+{
+    template <typename Stream> bool Serialize( Stream & stream )
+    {
+        serialize_bits_compile_time( stream, b7, 7 );
+        serialize_bits_compile_time( stream, b13, 13 );
+        serialize_bits_compile_time( stream, b23, 23 );
+        serialize_bits_compile_time( stream, b3, 3 );
+        serialize_bits_compile_time( stream, b32, 32 );
+        serialize_bits_compile_time( stream, b11, 11 );
+        serialize_bits_compile_time( stream, b19, 19 );
+        serialize_bits64_compile_time( stream, b48, 48 );
+        return true;
+    }
+};
+
+// pair 3: a "generated packet" shape mixing bounded ints, bits and bools, the way schema generated code looks
+
+struct BenchGenFields
+{
+    int32_t sequence;       // [0,65535]
+    uint32_t ack_bits;      // 32 bits
+    uint32_t entity_id;     // 12 bits
+    int32_t pos_x, pos_y, pos_z;    // [-16384,+16383]
+    uint32_t yaw;           // 9 bits
+    bool moving;
+    bool firing;
+    uint64_t timestamp;     // 48 bits
+    int32_t weapon;         // [0,15]
+};
+
+inline uint64_t bench_vary_gen_fields( BenchGenFields & f, uint64_t rng )
+{
+    rng = rng * 6364136223846793005ULL + 1442695040888963407ULL;
+    f.sequence = int32_t( uint32_t( rng >> 8 ) & 65535 );
+    f.ack_bits = uint32_t( rng >> 16 );
+    f.entity_id = uint32_t( rng ) & 4095;
+    f.pos_x = int32_t( ( rng >> 20 ) & 32767 ) - 16384;
+    f.pos_y = int32_t( ( rng >> 25 ) & 32767 ) - 16384;
+    f.pos_z = int32_t( ( rng >> 30 ) & 32767 ) - 16384;
+    f.yaw = uint32_t( rng >> 3 ) & 511;
+    f.moving = ( rng & 1 ) != 0;
+    f.firing = ( rng & 2 ) != 0;
+    f.timestamp = rng & 0xFFFFFFFFFFFFULL;
+    f.weapon = int32_t( uint32_t( rng >> 60 ) & 15 );
+    return rng;
+}
+
+struct BenchGenPacketRuntime : public BenchGenFields
+{
+    template <typename Stream> bool Serialize( Stream & stream )
+    {
+        serialize_int( stream, sequence, 0, 65535 );
+        serialize_bits( stream, ack_bits, 32 );
+        serialize_bits( stream, entity_id, 12 );
+        serialize_int( stream, pos_x, -16384, +16383 );
+        serialize_int( stream, pos_y, -16384, +16383 );
+        serialize_int( stream, pos_z, -16384, +16383 );
+        serialize_bits( stream, yaw, 9 );
+        serialize_bool( stream, moving );
+        serialize_bool( stream, firing );
+        serialize_bits( stream, timestamp, 48 );
+        serialize_int( stream, weapon, 0, 15 );
+        return true;
+    }
+};
+
+struct BenchGenPacketCompileTime : public BenchGenFields
+{
+    template <typename Stream> bool Serialize( Stream & stream )
+    {
+        serialize_int_compile_time( stream, sequence, 0, 65535 );
+        serialize_bits_compile_time( stream, ack_bits, 32 );
+        serialize_bits_compile_time( stream, entity_id, 12 );
+        serialize_int_compile_time( stream, pos_x, -16384, +16383 );
+        serialize_int_compile_time( stream, pos_y, -16384, +16383 );
+        serialize_int_compile_time( stream, pos_z, -16384, +16383 );
+        serialize_bits_compile_time( stream, yaw, 9 );
+        serialize_bool_compile_time( stream, moving );
+        serialize_bool_compile_time( stream, firing );
+        serialize_bits64_compile_time( stream, timestamp, 48 );
+        serialize_int_compile_time( stream, weapon, 0, 15 );
+        return true;
+    }
+};
+
+void bench_compile_time_pairs()
+{
+    bench_packet_shape<BenchIntFields, BenchIntPacketRuntime>          ( "int packet   (runtime):     ", bench_vary_int_fields );
+    bench_packet_shape<BenchIntFields, BenchIntPacketCompileTime>      ( "int packet   (compile time):", bench_vary_int_fields );
+    bench_packet_shape<BenchBitsFields, BenchBitsPacketRuntime>        ( "bits packet  (runtime):     ", bench_vary_bits_fields );
+    bench_packet_shape<BenchBitsFields, BenchBitsPacketCompileTime>    ( "bits packet  (compile time):", bench_vary_bits_fields );
+    bench_packet_shape<BenchGenFields, BenchGenPacketRuntime>          ( "mixed packet (runtime):     ", bench_vary_gen_fields );
+    bench_packet_shape<BenchGenFields, BenchGenPacketCompileTime>      ( "mixed packet (compile time):", bench_vary_gen_fields );
+}
+
+// ------------------------------------------------------------------------------------------
+
 int main()
 {
     printf( "\n[serialize benchmark]\n\n" );
@@ -302,6 +573,10 @@ int main()
     bench_bitpacker( buffer );
 
     bench_stream();
+
+    printf( "\n" );
+
+    bench_compile_time_pairs();
 
     free( buffer );
 
