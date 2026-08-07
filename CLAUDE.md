@@ -23,6 +23,14 @@ DECISIONS THAT READ AS BUGS (they are not — do not "fix" them)
   reader possible. Do not remove them or add tail handling to avoid them.
 - `serialize_int_relative` requires strictly increasing values.
 - `wstring` is 32 bits per character on the wire, for portability across 2/4-byte platforms.
+- **The `__restrict`-qualified `this` on BitWriter::WriteBits/WriteBytes/FlushBits is a
+  measured optimization (writes up to +152% in generated code), not decoration** — and the
+  spelling matters: LLVM DROPS restrict on data members (a member `__restrict` is a silent
+  no-op, byte-identical objects), only restrict-qualified member functions work. The
+  contract (buffer must not overlap the writer object) is documented and debug-asserted;
+  sanitizers cannot catch restrict violations. Upstream clang forbids a `__restrict` member
+  function calling non-restrict members — spell asserts directly instead of calling
+  helpers there. Do not remove the qualifiers, and do not trust member-restrict placements.
 
 THE WRITE/READ RULE — this library is the clearest statement of it, IN ITS OWN DOCS
 Glenn, 2026-07-26: "intention is on write, user is responsible to not crash or do undefined
@@ -83,6 +91,35 @@ MeasureStream never under-measures). A golden wire-format test
 (`test_golden_wire_format` in serialize.h) pins the exact bytes the
 serializer produces; if it fails, the wire format changed — a breaking
 change for previously written data.
+
+## The 2026-08 performance program — what was measured and what binds
+
+The fixed-point/128-bit + optimization wave (PRs #25–#30) left paid-for facts that future
+performance work here must not relearn:
+
+- **The inline threshold is the terrain.** The raw bitpacker fully inlines and SROAs its
+  state into registers — micro-level restrict/aliasing work buys nothing there (measured,
+  twice: 2026-07-21 and again in codegen 2026-08-07). But packet-sized `Serialize<Stream>`
+  bodies OUTLINE at -O3, and at those boundaries `uint8_t*` (char aliasing) forces member
+  state through memory — that is where restrict-qualified `this` paid +37.8% stream write
+  and up to +152% in schema-generated writes. A stored measured-negative is dated evidence
+  about a SHAPE: re-measure when inlining boundaries move.
+- **The compile-time (const-params) forms** (#25) are wire-identical to the runtime forms
+  (proven both directions) but calling them DIRECTLY from generated code was measured
+  SLOWER (−33%) than generation-time constant folding — shared template instantiations
+  outline; repeated bounds are the norm. They remain the human-facing surface; a
+  force-inline pass on them is the flagged follow-up if direct calls are ever wanted.
+- **The C++03 consumer floor is real and CI-enforced** (the cxx03 legs): a vendored
+  serialize.h must compile in consumers' loosest modes — the emulated-128 conversions and
+  any `constexpr` use need guards. yojimbo's debug make leg builds pre-C++11; its vendor
+  trial caught the first violation (the trial is the consumer-side compat instrument —
+  keep using it before releases).
+- **WriteBytes packs head/tail bytes as whole values** (#27); its isolated chat-write win
+  did NOT survive composition with generated code (unattributed residual on record) —
+  isolated wins here must re-prove themselves in schema's four-language bench before
+  being claimed.
+- **The codec never divides** — the emulated-128 `operator/`/`%` exist for tests only;
+  div-by-zero is documented UB with the differential exclusion commented permanent.
 
 ## Honest assessment
 
