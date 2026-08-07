@@ -12,6 +12,8 @@ It has the following features:
 * Serialize any integer value from [1,64] bits writing only that number of bits to the buffer
 * Serialize signed integer values with [min,max] writing only the required bits to the buffer
 * Serialize floats, doubles, compressed floats, strings, byte arrays, and integers relative to another integer
+* Serialize fixed point values with a compile time Q format and [min,max] bounds in whole units, writing only the required bits — round trips are exact, unlike compressed floats. Wide formats like Q112.16 work on every platform
+* Serialize 128 bit unsigned integers on every platform: native __int128 where the compiler has it, an emulated signed/unsigned pair where it doesn't, byte-identical on the wire
 * Alignment support so you can align your bitstream to a byte boundary whenever you want
 * Optional template-based serialization so you can write one function that handles both read and write
 
@@ -105,6 +107,31 @@ struct RigidBody
     }
 };
 ```
+
+Fixed point values serialize exactly. The Q format and the bounds are compile time constants, and only the bits the range requires go on the wire:
+
+```c++
+struct Player
+{
+    int64_t position_x;                     // Q48.16 fixed point, in ±8192 whole units
+    int64_t position_y;
+    int64_t position_z;
+    serialize::uint128_t entity_id;         // 128 bit globally unique id
+    serialize::int128_t sector_offset;      // ranged 128 bit integer
+
+    template <typename Stream> bool Serialize( Stream & stream )
+    {
+        serialize_fixed( stream, position_x, 48, 16, -8192, +8192 );
+        serialize_fixed( stream, position_y, 48, 16, -8192, +8192 );
+        serialize_fixed( stream, position_z, 48, 16, -8192, +8192 );
+        serialize_uint128( stream, entity_id );
+        serialize_int128( stream, sector_offset, -(serialize::int128_t(1) << 70), +(serialize::int128_t(1) << 70) );
+        return true;
+    }
+};
+```
+
+`serialize_uint128` is a raw 128 bit field and always costs 128 bits. `serialize_int128` is the ranged form: it costs only the bits its range needs, and where that range fits 64 bits the bytes are identical to `serialize_int64`. Both work on every platform, including compilers with no native `__int128`.
 
 See [example.cpp](example.cpp) for more.
 

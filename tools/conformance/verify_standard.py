@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Check serialize/STANDARD.md against the implementation.
 
-Decodes the library's own golden wire-format vector using ONLY what
+Decodes the library's own golden wire-format vectors using ONLY what
 STANDARD.md states — the bit packing, the ranged-integer widths, the alignment
-rules, the relative-integer ladder — and asserts every field of the golden
-message. Nothing here consults serialize.h's implementation; the golden array
-and the expected values are read out of the header as data.
+rules, the relative-integer ladder, the fixed-point offset encoding, the
+uint128 half order — and asserts every field of the golden message plus the
+additive uint128 pin. Nothing here consults serialize.h's implementation; the
+golden arrays and the expected values are read out of the header as data.
 
 usage: python3 tools/conformance/verify_standard.py
 exit:  0 = the document matches the implementation, 1 = it does not
@@ -52,15 +53,45 @@ def relative(r, prev):
     return prev + r.bits(32)
 
 
-def golden_bytes():
+def hex_array(name):
     src = open(HDR).read()
-    m = re.search(r"golden_wire_bytes\[\]\s*=\s*\{(.*?)\};", src, re.S)
-    if not m: raise SystemExit("golden_wire_bytes not found in serialize.h")
+    m = re.search(name + r"\[\]\s*=\s*\{(.*?)\};", src, re.S)
+    if not m: raise SystemExit(name + " not found in serialize.h")
     return bytes(int(x, 16) for x in re.findall(r"0x([0-9A-Fa-f]{2})", m.group(1)))
 
 
+def fixed(r, fraction_bits, lo, hi):
+    """STANDARD.md, 'fixed': offset encoding over the raw (scaled) bounds,
+    written in 32-bit groups from least significant upward."""
+    raw_lo, raw_hi = lo << fraction_bits, hi << fraction_bits
+    n = bits_required(raw_lo, raw_hi)
+    v = 0
+    for g in range(0, n, 32):
+        v |= r.bits(min(32, n - g)) << g
+    if v > raw_hi - raw_lo:
+        raise ValueError("fixed offset out of range")
+    return v + raw_lo
+
+
+def ranged128(r, lo, hi):
+    """STANDARD.md, 'int128 (ranged)': offset encoding computed in the unsigned
+    128-bit domain, written in 32-bit groups from least significant upward with
+    the final group carrying the remainder."""
+    mask = (1 << 128) - 1
+    lo &= mask
+    hi &= mask
+    n = 0 if lo == hi else ((hi - lo) & mask).bit_length()
+    v = 0
+    for g in range(0, n, 32):
+        v |= r.bits(min(32, n - g)) << g
+    if v > ((hi - lo) & mask):
+        raise ValueError("int128 offset out of range")
+    out = (v + lo) & mask
+    return out - (1 << 128) if out >= (1 << 127) else out
+
+
 def main():
-    data = golden_bytes()
+    data = hex_array("golden_wire_bytes")
     r = BitReader(data)
     fails, n = [], 0
 
@@ -97,7 +128,33 @@ def main():
     ln = sint(r, 0, 7)
     eq("wstring (32 bits per char, NO alignment)",
        [r.bits(32) for _ in range(ln)], [0x043C, 0x0438, 0x0440])
+    r.align()
+    eq("fixed q8.8 (-3.25 in ±100 units)", fixed(r, 8, -100, 100), -(3 * 256 + 64))
+    eq("fixed q16.16 (1234.5 in ±2000 units)", fixed(r, 16, -2000, 2000), 1234 * 65536 + 32768)
+    eq("fixed q48.16 (in ±100000 units)", fixed(r, 16, -100000, 100000), -(54321 * 65536 + 12345))
+    eq("fixed q16.16 unsigned (every fraction bit set)", fixed(r, 16, 0, 30000), 29999 * 65536 + 65535)
+    r.align()
+    eq("fixed q112.16 wide (75 bits: the 3-group structure)",
+       fixed(r, 16, -(2**57), 2**57), -(98765432109 * 65536 + 4321))
+    eq("fixed q64.64 wide (128 bits: the 4-group structure)",
+       fixed(r, 64, -(2**63), 2**63 - 1), (0x0123456789ABCDEF << 64) + 0x0FEDCBA987654321)
     eq("consumed exactly the golden bytes", math.ceil(r.i / 8), len(data))
+
+    # STANDARD.md, 'uint128': 128 raw bits, low 64-bit half first, each half as
+    # serialize_bits( half, 64 ). Verified against the library's second, additive pin.
+    u = BitReader(hex_array("golden_uint128_bytes"))
+    lo = u.bits(32) | (u.bits(32) << 32)
+    hi = u.bits(32) | (u.bits(32) << 32)
+    eq("uint128 (low half first, little endian bytes)",
+       (hi << 64) | lo, 0x0123456789ABCDEF_FEDCBA9876543210)
+
+    # STANDARD.md, 'int128 (ranged)': offset encoding over the unsigned 128-bit
+    # domain in 32-bit groups. Bounds of +/- 2^70 need 72 bits, so this pin
+    # load-bears the THREE-group structure — 32, 32, then an 8-bit remainder.
+    s = BitReader(hex_array("golden_int128_bytes"))
+    eq("int128 ranged (3-group structure, +/- 2^70 bounds)",
+       ranged128(s, -(1 << 70), 1 << 70), -0x0123456789ABCDEF)
+    eq("int128 ranged consumed exactly 72 bits", s.i, 72)
 
     print(f"{n} checks against STANDARD.md, {len(fails)} failures")
     for f in fails: print("  FAIL " + f)
