@@ -35,9 +35,9 @@
 /** @file */
 
 #define SERIALIZE_VERSION_MAJOR 1
-#define SERIALIZE_VERSION_MINOR 5
+#define SERIALIZE_VERSION_MINOR 6
 #define SERIALIZE_VERSION_PATCH 0
-#define SERIALIZE_VERSION "1.5.0"
+#define SERIALIZE_VERSION "1.6.0"
 
 #if defined(_MSC_VER)
 #define serialize_restrict __restrict
