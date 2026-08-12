@@ -262,3 +262,78 @@ reproducers as artifacts on failure.
   stream numbers than MSVC (~92M vs ~33M packets/s) — that residual gap is
   legitimate codegen (static field offsets merge adjacent writes), not
   elimination.
+
+## Future work: rANS entropy coding (researched 2026-08-13, NOT implemented)
+
+Glenn asked to look into rANS for serialize and record it for whenever we implement.
+**Nothing here is built. This is a decision record so the next pass starts from evidence.**
+
+### What it is, and why it is interesting here
+
+**ANS (Asymmetric Numeral Systems), Jarosław Duda, 2013–2014.** `rANS` is the range variant.
+Glenn's framing is correct: **it is mathematically equivalent to a range coder** — same
+compression ratio as arithmetic/range coding to within a rounding error — **but much faster on
+modern hardware.**
+
+The speed comes from two places, and the second is the one that matters:
+
+1. Decode is a single multiply plus a table lookup, with no division in the fast path.
+2. **It interleaves.** A range coder has a serial renormalisation dependency: symbol N+1's
+   decode waits on symbol N. rANS lets you run several independent coder states over one
+   output buffer, which removes the serial chain and lets the decoder saturate the pipeline —
+   and that is what makes SIMD worth anything here. Giesen measured an SSE4.1 decoder on an
+   8-way interleaved stream at **~6.0 clocks/symbol (~540 MB/s)**, with a 16-way AVX2 variant
+   faster still.
+
+**THE CONSTRAINT TO DESIGN AROUND: rANS is LIFO.** The encoder emits in the reverse of decode
+order. For a streaming bitpacked serializer whose whole shape is a single forward pass, that is
+a real structural cost, not a detail — it means buffering a message (or a bounded block) before
+the entropy stage. Decide that before writing any coder.
+
+**And it needs a probability model.** serialize today is bitpacking: it spends exactly the bits
+a range implies. rANS only pays off where the *values* are skewed within their range, so the
+win depends entirely on a model of the data. Static per-field tables compiled from a schema are
+the natural fit here and the cheapest thing to try first — which is why this note also lives in
+[schema](https://github.com/mas-bandwidth/schema).
+
+### Sources worth reading first
+
+- **Fabian Giesen's `ryg_rans`** — https://github.com/rygorous/ryg_rans (public domain / CC0),
+  plus *"rANS in practice"* (2015). **Read his 2026-08-03 post *"ryg_rans is not a library"*
+  before copying anything**: he states plainly that it is reference code demonstrating the
+  idea, and that the SIMD versions in particular are illustrations, not production code.
+- **Charles Bloom** — Oodle LZNA and his entropy-coding posts; adaptive and semi-static models
+  combined with interleaved rANS. He and Giesen developed much of this in parallel.
+
+### PATENTS — the part that decides whether we may use it at all
+
+Glenn's instruction: *"if it is patented then we must not."* The honest answer is **"mostly
+clear, with one real hazard,"** and it needs a lawyer's read before we ship, not mine.
+
+- **Duda never wanted it patented** and worked actively to keep ANS in the public domain.
+- **Google's ANS application was rejected by the USPTO in 2018** after Duda filed third-party
+  prior art, and Google abandoned the claim in the US and Europe.
+- **Microsoft was granted `US11234023B2` in January 2022** — *"Features of range asymmetric
+  number system encoding and decoding."* It does **not** claim rANS itself (Duda's 2013–2014
+  publications are prior art). It claims **specific refinements**: a two-phase organisation of
+  RANS decoding aimed at hardware, and adaptations for particular symbol distributions.
+- **Microsoft has publicly stated** that anyone using it in an **open source codec that does
+  not charge a license fee** has their permission.
+
+**THE HAZARD IS THAT LAST CONDITION, AND IT POINTS STRAIGHT AT US.** serialize is BSD-3 today,
+so the stated permission would cover it as it stands. But the declared direction for these
+libraries is a move to **MBSL** (see netcode.cs: *"AGPL-3.0 for now; intended to move to MBSL
+when ready"*), and a source license that charges a fee is exactly the case Microsoft's
+permission is worded to exclude. **A grant we would lose precisely when the business succeeds
+is not a grant to build a wire format on.** It is also a public statement rather than a filed
+covenant or a patent pledge, which is a weaker instrument than it sounds.
+
+### If we do it, the shape that avoids the hazard
+
+1. Implement **baseline rANS as Duda published it** — the prior art, unencumbered.
+2. **Do not implement the claimed refinements** in `US11234023B2` (the two-phase decode
+   organisation, the distribution-adaptation features). Read the claims, not the abstract.
+3. **Get a patent lawyer's opinion before release**, given the MBSL direction. This is the step
+   that actually answers Glenn's question, and nothing above substitutes for it.
+4. Keep it **optional and versioned in the wire format** — an entropy stage that cannot be
+   turned off is a licensing problem welded to the protocol.
