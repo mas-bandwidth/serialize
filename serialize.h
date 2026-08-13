@@ -1565,10 +1565,14 @@ namespace serialize
 
         bool SerializeInteger( int32_t value, int32_t min, int32_t max )
         {
-            serialize_assert( min < max );
+            serialize_assert( min <= max );
             serialize_assert( value >= min );
             serialize_assert( value <= max );
             const int bits = bits_required( min, max );
+            if ( bits == 0 )
+            {
+                return true;                // degenerate range: the value IS the range, nothing to send
+            }
             // subtract in the unsigned domain: value - min overflows signed arithmetic when the range is wider than 2^31
             uint32_t unsigned_value = uint32_t(value) - uint32_t(min);
             m_writer.WriteBits( unsigned_value, bits );
@@ -1585,7 +1589,7 @@ namespace serialize
 
         bool SerializeInteger64( int64_t value, int64_t min, int64_t max )
         {
-            serialize_assert( min < max );
+            serialize_assert( min <= max );
             serialize_assert( value >= min );
             serialize_assert( value <= max );
             const int bits = bits_required64( uint64_t(min), uint64_t(max) );
@@ -1614,7 +1618,7 @@ namespace serialize
 
         bool SerializeInteger128( int128_t value, int128_t min, int128_t max )
         {
-            serialize_assert( min < max );
+            serialize_assert( min <= max );
             serialize_assert( value >= min );
             serialize_assert( value <= max );
             const int bits = bits_required128( uint128_t(min), uint128_t(max) );
@@ -1793,8 +1797,13 @@ namespace serialize
 
         bool SerializeInteger( int32_t & value, int32_t min, int32_t max )
         {
-            serialize_assert( min < max );
+            serialize_assert( min <= max );
             const int bits = bits_required( min, max );
+            if ( bits == 0 )
+            {
+                value = min;                // degenerate range: the value IS the range
+                return true;
+            }
             if ( m_reader.WouldReadPastEnd( bits ) )
                 return false;
             uint32_t unsigned_value = m_reader.ReadBits( bits );
@@ -1815,7 +1824,7 @@ namespace serialize
 
         bool SerializeInteger64( int64_t & value, int64_t min, int64_t max )
         {
-            serialize_assert( min < max );
+            serialize_assert( min <= max );
             const int bits = bits_required64( uint64_t(min), uint64_t(max) );
             if ( m_reader.WouldReadPastEnd( bits ) )
                 return false;
@@ -1848,7 +1857,7 @@ namespace serialize
 
         bool SerializeInteger128( int128_t & value, int128_t min, int128_t max )
         {
-            serialize_assert( min < max );
+            serialize_assert( min <= max );
             const int bits = bits_required128( uint128_t(min), uint128_t(max) );
             if ( m_reader.WouldReadPastEnd( bits ) )
                 return false;
@@ -2007,7 +2016,7 @@ namespace serialize
         bool SerializeInteger( int32_t value, int32_t min, int32_t max )
         {
             (void) value;
-            serialize_assert( min < max );
+            serialize_assert( min <= max );
             serialize_assert( value >= min );
             serialize_assert( value <= max );
             const int bits = bits_required( min, max );
@@ -2026,7 +2035,7 @@ namespace serialize
         bool SerializeInteger64( int64_t value, int64_t min, int64_t max )
         {
             (void) value;
-            serialize_assert( min < max );
+            serialize_assert( min <= max );
             serialize_assert( value >= min );
             serialize_assert( value <= max );
             const int bits = bits_required64( uint64_t(min), uint64_t(max) );
@@ -2045,7 +2054,7 @@ namespace serialize
         bool SerializeInteger128( int128_t value, int128_t min, int128_t max )
         {
             (void) value;
-            serialize_assert( min < max );
+            serialize_assert( min <= max );
             serialize_assert( value >= min );
             serialize_assert( value <= max );
             const int bits = bits_required128( uint128_t(min), uint128_t(max) );
@@ -2147,7 +2156,7 @@ namespace serialize
     #define serialize_int( stream, value, min, max )                    \
         do                                                              \
         {                                                               \
-            serialize_assert( (min) < (max) );                          \
+            serialize_assert( (min) <= (max) );                          \
             int32_t int32_value = 0;                                    \
             if ( Stream::IsWriting )                                    \
             {                                                           \
@@ -3190,7 +3199,7 @@ namespace serialize
     #define read_int( stream, value, min, max )                                             \
         do                                                                                  \
         {                                                                                   \
-            serialize_assert( (min) < (max) );                                              \
+            serialize_assert( (min) <= (max) );                                              \
             int32_t int32_value = 0;                                                        \
             if ( !stream.SerializeInteger( int32_value, min, max ) )                        \
             {                                                                               \
@@ -4425,6 +4434,43 @@ inline void test_serialize_integer_validation()
     serialize::ReadStream readStream( buffer, 4 );
     int32_t value = 0;
     serialize_check( readStream.SerializeInteger( value, 0, 5 ) == false );
+}
+
+inline void test_serialize_degenerate_range()
+{
+    // STANDARD.md: a degenerate range where min == max costs ZERO BITS -- the
+    // value is known from the range alone and nothing is written. This is not
+    // a curiosity: schema emits it for empty enums and empty types.
+    //
+    // The library used to assert( min < max ), so a debug build aborted on
+    // exactly the case the format defines and the release build handled
+    // correctly. This test is here so debug and release cannot drift apart
+    // again.
+    uint8_t buffer[16] = { 0 };
+
+    serialize::WriteStream writeStream( buffer, 16 );
+    int32_t degenerate = 5;
+    int32_t after = 3;
+    serialize_check( writeStream.SerializeInteger( degenerate, 5, 5 ) );
+    serialize_check( writeStream.GetBitsProcessed() == 0 );      // nothing written
+    serialize_check( writeStream.SerializeInteger( after, 0, 7 ) );
+    serialize_check( writeStream.GetBitsProcessed() == 3 );      // the NEXT field starts at bit 0
+    writeStream.Flush();
+
+    serialize::ReadStream readStream( buffer, writeStream.GetBytesProcessed() );
+    int32_t read_degenerate = 0;
+    int32_t read_after = 0;
+    serialize_check( readStream.SerializeInteger( read_degenerate, 5, 5 ) );
+    serialize_check( read_degenerate == 5 );                     // recovered from the range
+    serialize_check( readStream.GetBitsProcessed() == 0 );
+    serialize_check( readStream.SerializeInteger( read_after, 0, 7 ) );
+    serialize_check( read_after == 3 );
+
+    // and the measure stream must agree that it costs nothing
+    serialize::MeasureStream measureStream;
+    int32_t measured = 5;
+    serialize_check( measureStream.SerializeInteger( measured, 5, 5 ) );
+    serialize_check( measureStream.GetBitsProcessed() == 0 );
 }
 
 inline void test_serialize_integer_full_range()
@@ -7047,6 +7093,7 @@ inline void serialize_test()
         SERIALIZE_RUN_TEST( test_serialize );
         SERIALIZE_RUN_TEST( test_read_write );
         SERIALIZE_RUN_TEST( test_serialize_integer_validation );
+        SERIALIZE_RUN_TEST( test_serialize_degenerate_range );
         SERIALIZE_RUN_TEST( test_serialize_integer_full_range );
         SERIALIZE_RUN_TEST( test_serialize_int64_full_range );
         SERIALIZE_RUN_TEST( test_serialize_int64_validation );
