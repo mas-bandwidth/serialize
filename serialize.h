@@ -3330,7 +3330,7 @@ namespace serialize
     #define write_int( stream, value, min, max )                                            \
         do                                                                                  \
         {                                                                                   \
-            serialize_assert( (int32_t) ( min ) < (int32_t) ( max ) );                      \
+            serialize_assert( (int32_t) ( min ) <= (int32_t) ( max ) );                     \
             serialize_assert( (int32_t) ( value ) >= (int32_t) ( min ) );                   \
             serialize_assert( (int32_t) ( value ) <= (int32_t) ( max ) );                   \
             int32_t int32_value = (int32_t) ( value );                                      \
