@@ -212,9 +212,17 @@ each answering "does it fit in this tier?":
 | `0 0 1` | `serialize_int( d, 7, 23 )` — 5 bits | 7 – 23 |
 | `0 0 0 1` | `serialize_int( d, 24, 280 )` — 9 bits | 24 – 280 |
 | `0 0 0 0 1` | `serialize_int( d, 281, 4377 )` — 13 bits | 281 – 4377 |
-| `0 0 0 0 0` | 32 raw bits | anything |
+| `0 0 0 0 0 1` | `serialize_int( d, 4378, 69914 )` — 17 bits | 4378 – 69914 |
+| `0 0 0 0 0 0` | `current` as 32 raw bits | anything |
 
 A difference of 1 — the common case for sequence numbers — costs a single bit.
+
+**The final tier transmits `current`, not the difference.** Every tier above it
+encodes the difference, so this reads as an inconsistency and is not: at full
+width the subtraction buys nothing, and sending the absolute value lets the
+reader check `current > previous` directly. A reader must perform that check
+and fail if it does not hold, since the absolute form carries no ordering
+guarantee of its own.
 
 ## Floating Point
 
