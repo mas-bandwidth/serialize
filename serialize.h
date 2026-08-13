@@ -3196,11 +3196,11 @@ namespace serialize
             {                                                                               \
                 return false;                                                               \
             }                                                                               \
-            value = int32_value;                                                            \
-            if ( (value) < (min) || (value) > (max) )                                       \
+            if ( int32_value < int32_t(min) || int32_value > int32_t(max) )                 \
             {                                                                               \
                 return false;                                                               \
             }                                                                               \
+            value = int32_value;                                                            \
         } while (0)
 
     #define read_int64( stream, value, min, max )                                           \
@@ -3212,11 +3212,11 @@ namespace serialize
             {                                                                               \
                 return false;                                                               \
             }                                                                               \
-            value = int64_value;                                                            \
-            if ( (value) < (min) || (value) > (max) )                                       \
+            if ( int64_value < int64_t(min) || int64_value > int64_t(max) )                 \
             {                                                                               \
                 return false;                                                               \
             }                                                                               \
+            value = int64_value;                                                            \
         } while (0)
 
     #define read_int128( stream, value, min, max )                                          \
