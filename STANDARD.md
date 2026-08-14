@@ -256,6 +256,26 @@ The writer clamps `(value - min) / delta` to `[0,1]`, multiplies by
 `bits` bits. The reader divides by `max_integer_value`, multiplies by `delta`,
 and adds `min`.
 
+**This arithmetic is `float32`, and the two roundings are part of the format.**
+The product `normalized * max_integer_value` rounds to `float32` BEFORE `0.5`
+is added, and that sum rounds to `float32` before the floor. Two roundings, not
+one. Specifically, an implementation must not:
+
+- widen any step to `double` (or any wider type) before the floor, and
+- contract the multiply and the add into a fused multiply-add, which rounds
+  once instead of twice. Languages that permit contraction must suppress it
+  here — in C and C++ by storing the product through a `float` local (or
+  `-ffp-contract=off`), in Go by an explicit `float32()` conversion around the
+  product. Rust does not fuse unless `mul_add` is called explicitly.
+
+This is not pedantry; it changes the bytes. Over `[0, 10]` at resolution
+`0.01`, the required arithmetic quantizes `0.005` to `1`, `0.025` to `3`,
+`0.105` to `11` and `9.995` to `1000`; widening to `double` yields `0`, `2`,
+`10` and `999`. A value landing exactly on a quantum — `2.5` here — agrees
+under every variant, so a conformance vector built only from such values will
+pass while the wire is wrong. Vectors must include values that land between
+quanta.
+
 Readers must reject an integer greater than `max_integer_value`.
 
 This is lossy by construction: a round trip returns the nearest representable
