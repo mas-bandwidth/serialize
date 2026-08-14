@@ -2479,7 +2479,19 @@ namespace serialize
                 return false;
             }
             const float normalizedValue = integerValue / float(maxIntegerValue);
-            value = normalizedValue * delta + min;
+            // The reader rounds twice for the same reason the writer above does:
+            // the product must round to float32 BEFORE min is added, and storing
+            // it through this local is what forces that. Written as one
+            // expression, a compiler permitted to contract (clang's default
+            // -ffp-contract=on is enough — no -ffast-math required) fuses the
+            // multiply and add into a single FMA on arm64 and rounds ONCE. That
+            // decodes a float one ulp away from every conformant runtime whenever
+            // min is non-zero, so a value read on arm64 and re-encoded produces
+            // different wire. The conformance vector with min = -100 pins the
+            // decoded bit pattern exactly and goes red if this is ever folded
+            // back into one expression.
+            const float scaledValue = normalizedValue * delta;
+            value = scaledValue + min;
         }
 
         return true;
@@ -7078,6 +7090,77 @@ inline void test_golden_wire_format()
     }
 }
 
+// Conformance vector for compressed_float over a range with a NON-ZERO min. Additive: the
+// golden wire test above is untouched and its bytes are pinned forever.
+//
+// The golden's compressed_float is 5.0 over [0,10]: min is 0, so the reader's final add
+// contributes nothing and a reader whose multiply and add are fused into one FMA decodes
+// the identical float — that vector is structurally blind to reader contraction. This one
+// pins the decoded BIT PATTERNS, not just the wire bytes, over [-100,100] at resolution
+// 0.01 (max_integer_value = 20000, 15 bits per value), where the add is load-bearing:
+//
+//   written value   quantized   pinned decode   what a wrong reading produces
+//   0.0             10000       0x00000000      nothing — on-quantum sanity row, agrees everywhere
+//   -99.875         13          0xC2C7BD71      a writer widened to double quantizes 12, not 13:
+//                                               the scaled product is exactly 12.5, a boundary
+//                                               value landing between quanta, and double resolves
+//                                               it to 12.499999... — different wire bytes
+//   -33.34          6666        0xC2055C2A      a reader contracted to an FMA decodes 0xC2055C29
+//
+// The last row is why this test exists: at plain -O2 on arm64 (clang's default
+// -ffp-contract=on), the pre-fix single-expression reader decoded 0xC2055C29 — one ulp off
+// every conformant runtime, so an arm64 re-encode produced different wire — and no vector
+// in the family could see it. Under -ffast-math (the gate binaries' former flags) the 0.0
+// row also breaks: reciprocal approximation of the division decodes 0xB6298800.
+
+template <typename Stream> bool CompressedFloatNonZeroMinSerialize( Stream & stream, float & a, float & b, float & c )
+{
+    serialize_compressed_float( stream, a, -100.0f, 100.0f, 0.01f );
+    serialize_compressed_float( stream, b, -100.0f, 100.0f, 0.01f );
+    serialize_compressed_float( stream, c, -100.0f, 100.0f, 0.01f );
+    serialize_align( stream );
+    return true;
+}
+
+inline void test_compressed_float_conformance_nonzero_min()
+{
+    static const uint8_t pinned_bytes[6] = { 0x10, 0xA7, 0x06, 0x80, 0x82, 0x06 };
+
+    // write side: the strict two-rounding quantization must produce exactly these bytes
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        serialize::WriteStream stream( buffer, (int) sizeof( buffer ) );
+        float a = 0.0f;
+        float b = -99.875f;
+        float c = -33.34f;
+        serialize_check( CompressedFloatNonZeroMinSerialize( stream, a, b, c ) == true );
+        stream.Flush();
+        serialize_check( stream.GetBytesProcessed() == (int) sizeof( pinned_bytes ) );
+        serialize_check( memcmp( buffer, pinned_bytes, sizeof( pinned_bytes ) ) == 0 );
+    }
+
+    // read side: the decoded floats are pinned bit-exactly. tolerance comparison would
+    // defeat the purpose — the divergence this detects is a single ulp.
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        memcpy( buffer, pinned_bytes, sizeof( pinned_bytes ) );
+        serialize::ReadStream stream( buffer, (int) sizeof( pinned_bytes ) );
+        float a = -1.0f;
+        float b = -1.0f;
+        float c = -1.0f;
+        serialize_check( CompressedFloatNonZeroMinSerialize( stream, a, b, c ) == true );
+        uint32_t bits_a, bits_b, bits_c;
+        memcpy( &bits_a, &a, 4 );
+        memcpy( &bits_b, &b, 4 );
+        memcpy( &bits_c, &c, 4 );
+        serialize_check( bits_a == 0x00000000u );
+        serialize_check( bits_b == 0xC2C7BD71u );
+        serialize_check( bits_c == 0xC2055C2Au );
+    }
+}
+
 inline void test_unaligned_writer()
 {
     // the bit writer stores each dword with memcpy, so the write buffer does not need 4 byte alignment.
@@ -7228,6 +7311,7 @@ inline void serialize_test()
         SERIALIZE_RUN_TEST( test_compile_time_packet );
 #endif // #if defined( SERIALIZE_HAS_COMPILE_TIME_SURFACE )
         SERIALIZE_RUN_TEST( test_golden_wire_format );
+        SERIALIZE_RUN_TEST( test_compressed_float_conformance_nonzero_min );
         SERIALIZE_RUN_TEST( test_unaligned_writer );
         SERIALIZE_RUN_TEST( test_large_buffer );
     }
