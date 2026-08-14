@@ -49,3 +49,54 @@ jobs:
               fi
               ;;
           esac
+
+  # Version-site agreement alone cannot see the other failure mode: main drifting past the
+  # newest release with wire-affecting changes aboard and nothing announcing that a release
+  # is owed. That happened — four merged PRs including a wire change, and every run above
+  # stayed green because the version numbers still agreed with each other. This job is the
+  # missing signal. It runs on push to main only: on a PR it would demand a version bump
+  # inside every wire-touching PR, which is not the process — the release train is main's.
+  unreleased-wire-changes:
+    name: unreleased wire changes
+    if: github.event_name != 'pull_request' && startsWith(github.ref, 'refs/heads/')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # tags and full history: the whole job is a comparison against the newest tag
+
+      - name: Compare main against the newest release tag
+        run: |
+          newest_tag=$(git tag --list 'v*' --sort=-v:refname | head -n1)
+          if [ -z "$newest_tag" ]; then
+            echo "No v* tags exist — nothing to compare against."
+            exit 0
+          fi
+          total=$(git rev-list --count "$newest_tag"..HEAD)
+          echo "Newest tag: $newest_tag ($total commit(s) behind HEAD)"
+          if [ "$total" -eq 0 ]; then
+            echo "main is exactly at $newest_tag."
+            exit 0
+          fi
+          wire_log=$(git log --oneline "$newest_tag"..HEAD -- serialize.h STANDARD.md)
+          if [ -z "$wire_log" ]; then
+            echo "main is $total commit(s) past $newest_tag, none touching wire-affecting paths (serialize.h, STANDARD.md). Fine."
+            exit 0
+          fi
+          count=$(printf '%s\n' "$wire_log" | wc -l | tr -d ' ')
+          {
+            echo "## Unreleased wire-affecting changes"
+            echo ""
+            echo "main is **$total** commit(s) past **$newest_tag**, and **$count** touch wire-affecting paths (serialize.h, STANDARD.md):"
+            echo ""
+            echo '```'
+            printf '%s\n' "$wire_log"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          version=$(sed -nE 's/^project\(serialize VERSION ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' CMakeLists.txt)
+          tag_version="${newest_tag#v}"
+          if [ "$version" = "$tag_version" ]; then
+            echo "::error::main carries $count wire-affecting commit(s) past $newest_tag and the version is still $version — nothing announces that a release is owed. Bump the version and tag a release (or revert the wire change). The commit list is in the job summary."
+            exit 1
+          fi
+          echo "::warning::main carries $count wire-affecting commit(s) past $newest_tag. The version is already bumped to $version — tag v$version when the release is ready. The commit list is in the job summary."
