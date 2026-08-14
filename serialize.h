@@ -45,6 +45,44 @@
 #define serialize_restrict __restrict__
 #endif // #if defined(_MSC_VER)
 
+/*
+    SERIALIZE_ALWAYS_INLINE — how the per-field write spine is spelled.
+
+    A serialize function is a chain of fallible calls — if ( !stream.SerializeX( ... ) )
+    return false; — and LLVM's static branch heuristics treat each success/failure split as
+    roughly even odds, so block frequency decays geometrically down the chain. A few fields in,
+    every remaining callsite is judged cold and held to the cold-callsite inline threshold (45,
+    where a hot callsite in the same function gets 250+), which the write helpers do not fit:
+    measured on Apple silicon (Apple clang 21, schema bench, -O2 and -O3), WriteStream::
+    SerializeBits and SerializeInteger were refused at cost 60-105 against threshold 45,
+    stranding 2-6 calls per packet in every write path, and the write rows trailed the C and
+    Rust ports 14-23% while the branchless reads led every language. With the demand in place
+    the write spine inlines end to end and the same write rows lead instead
+    (+57-92%, both optimization levels).
+
+    The read spine does not make the demand because the measurement says it does not need it:
+    every read row was already `full` in the emitted code — the branchless reader's per-field
+    operations fit the inliner's budget even at the cold threshold. This is the split
+    serialize.c records on its read spine, mirrored: demand inlining exactly where measurement
+    says the hint is not enough.
+
+    The sibling ports' other lever — pinning the error edges cold (serialize.rs's #[cold]
+    constructor) — was tried here as __builtin_expect on the macros' error branches, measured,
+    and REJECTED: it left every cold-callsite refusal in place, and the cold blocks it created
+    invited Apple clang's machine outliner to shred the write bodies into bl-called fragments
+    (bits write -25%, packet read -21% at -O2, measured). Do not re-add it without measuring.
+
+    MSVC spells the demand __forceinline; compilers with neither spelling fall back to the
+    plain inline hint, and lose only the optimization.
+*/
+#if defined( _MSC_VER )
+#define SERIALIZE_ALWAYS_INLINE __forceinline
+#elif defined( __GNUC__ ) || defined( __clang__ )
+#define SERIALIZE_ALWAYS_INLINE inline __attribute__(( always_inline ))
+#else // #if defined( _MSC_VER )
+#define SERIALIZE_ALWAYS_INLINE inline
+#endif // #if defined( _MSC_VER )
+
 #ifndef serialize_assert
 #include <assert.h>
 #define serialize_assert assert
@@ -1118,7 +1156,7 @@ namespace serialize
         // fully inline (the raw bitpacker loop compiles to identical code). The read path does not need this:
         // the branchless reader stores nothing through m_data, so it already keeps its state in registers.
 
-        void WriteBits( uint32_t value, int bits ) serialize_restrict
+        SERIALIZE_ALWAYS_INLINE void WriteBits( uint32_t value, int bits ) serialize_restrict
         {
             serialize_assert( m_data );                 // if this fires, the writer was used before Initialize
             serialize_assert( bits > 0 );
@@ -1154,7 +1192,7 @@ namespace serialize
             @see BitReader::ReadAlign
          */
 
-        void WriteAlign()
+        SERIALIZE_ALWAYS_INLINE void WriteAlign()
         {
             const int remainderBits = m_bitsWritten % 8;
 
@@ -1563,7 +1601,7 @@ namespace serialize
             @returns Always returns true. All checking is performed by debug asserts only on write.
          */
 
-        bool SerializeInteger( int32_t value, int32_t min, int32_t max )
+        SERIALIZE_ALWAYS_INLINE bool SerializeInteger( int32_t value, int32_t min, int32_t max )
         {
             serialize_assert( min <= max );
             serialize_assert( value >= min );
@@ -1587,7 +1625,7 @@ namespace serialize
             @returns Always returns true. All checking is performed by debug asserts only on write.
          */
 
-        bool SerializeInteger64( int64_t value, int64_t min, int64_t max )
+        SERIALIZE_ALWAYS_INLINE bool SerializeInteger64( int64_t value, int64_t min, int64_t max )
         {
             serialize_assert( min <= max );
             serialize_assert( value >= min );
@@ -1620,7 +1658,7 @@ namespace serialize
             @returns Always returns true. All checking is performed by debug asserts only on write.
          */
 
-        bool SerializeInteger128( int128_t value, int128_t min, int128_t max )
+        SERIALIZE_ALWAYS_INLINE bool SerializeInteger128( int128_t value, int128_t min, int128_t max )
         {
             serialize_assert( min <= max );
             serialize_assert( value >= min );
@@ -1665,7 +1703,7 @@ namespace serialize
             @returns Always returns true. All checking is performed by debug asserts on write.
          */
 
-        bool SerializeBits( uint32_t value, int bits )
+        SERIALIZE_ALWAYS_INLINE bool SerializeBits( uint32_t value, int bits )
         {
             serialize_assert( bits > 0 );
             serialize_assert( bits <= 32 );
@@ -1680,7 +1718,7 @@ namespace serialize
             @returns Always returns true. All checking is performed by debug asserts on write.
          */
 
-        bool SerializeBytes( const uint8_t * data, int64_t bytes )
+        SERIALIZE_ALWAYS_INLINE bool SerializeBytes( const uint8_t * data, int64_t bytes )
         {
             serialize_assert( data );
             serialize_assert( bytes >= 0 );
@@ -1694,7 +1732,7 @@ namespace serialize
             @returns Always returns true. All checking is performed by debug asserts on write.
          */
 
-        bool SerializeAlign()
+        SERIALIZE_ALWAYS_INLINE bool SerializeAlign()
         {
             m_writer.WriteAlign();
             return true;
@@ -2345,7 +2383,7 @@ namespace serialize
             }                                                           \
         } while (0)
 
-    template <typename Stream> bool serialize_float_internal( Stream & stream, float & value )
+    template <typename Stream> SERIALIZE_ALWAYS_INLINE bool serialize_float_internal( Stream & stream, float & value )
     {
         uint32_t int_value = 0;
         if ( Stream::IsWriting )
@@ -2465,7 +2503,7 @@ namespace serialize
         }                                                                                           \
     } while (0)
 
-    template <typename Stream> bool serialize_double_internal( Stream & stream, double & value )
+    template <typename Stream> SERIALIZE_ALWAYS_INLINE bool serialize_double_internal( Stream & stream, double & value )
     {
         union DoubleInt
         {
@@ -2503,7 +2541,7 @@ namespace serialize
             }                                                                       \
         } while (0)
 
-    template <typename Stream> bool serialize_bytes_internal( Stream & stream, uint8_t * data, int64_t bytes )
+    template <typename Stream> SERIALIZE_ALWAYS_INLINE bool serialize_bytes_internal( Stream & stream, uint8_t * data, int64_t bytes )
     {
         return stream.SerializeBytes( data, bytes );
     }
