@@ -1593,6 +1593,10 @@ namespace serialize
             serialize_assert( value >= min );
             serialize_assert( value <= max );
             const int bits = bits_required64( uint64_t(min), uint64_t(max) );
+            if ( bits == 0 )
+            {
+                return true;                // degenerate range: the value IS the range, nothing to send
+            }
             // subtract in the unsigned domain: value - min overflows signed arithmetic when the range is wider than 2^63
             const uint64_t unsigned_value = uint64_t(value) - uint64_t(min);
             if ( bits <= 32 )
@@ -1826,6 +1830,11 @@ namespace serialize
         {
             serialize_assert( min <= max );
             const int bits = bits_required64( uint64_t(min), uint64_t(max) );
+            if ( bits == 0 )
+            {
+                value = min;                // degenerate range: the value IS the range
+                return true;
+            }
             if ( m_reader.WouldReadPastEnd( bits ) )
                 return false;
             uint64_t unsigned_value;
@@ -2194,7 +2203,7 @@ namespace serialize
     #define serialize_int64( stream, value, min, max )                  \
         do                                                              \
         {                                                               \
-            serialize_assert( int64_t(min) < int64_t(max) );            \
+            serialize_assert( int64_t(min) <= int64_t(max) );            \
             int64_t int64_value = 0;                                    \
             if ( Stream::IsWriting )                                    \
             {                                                           \
@@ -3227,7 +3236,7 @@ namespace serialize
     #define read_int64( stream, value, min, max )                                           \
         do                                                                                  \
         {                                                                                   \
-            serialize_assert( int64_t(min) < int64_t(max) );                                \
+            serialize_assert( int64_t(min) <= int64_t(max) );                                \
             int64_t int64_value = 0;                                                        \
             if ( !stream.SerializeInteger64( int64_value, min, max ) )                      \
             {                                                                               \
@@ -3352,7 +3361,7 @@ namespace serialize
     #define write_int64( stream, value, min, max )                                          \
         do                                                                                  \
         {                                                                                   \
-            serialize_assert( int64_t( min ) < int64_t( max ) );                            \
+            serialize_assert( int64_t( min ) <= int64_t( max ) );                            \
             serialize_assert( int64_t( value ) >= int64_t( min ) );                         \
             serialize_assert( int64_t( value ) <= int64_t( max ) );                         \
             int64_t int64_value = (int64_t) ( value );                                      \
@@ -4482,6 +4491,49 @@ inline void test_serialize_degenerate_range()
     serialize::MeasureStream measureStream;
     int32_t measured = 5;
     serialize_check( measureStream.SerializeInteger( measured, 5, 5 ) );
+    serialize_check( measureStream.GetBitsProcessed() == 0 );
+}
+
+inline void test_serialize_degenerate_range_64()
+{
+    // The 64 bit twin of the test above, and it did NOT hold when written.
+    //
+    // 1.6.x relaxed the degenerate range in nine places and missed the 64 bit
+    // path entirely: SerializeInteger64 had no bits == 0 early return, so it
+    // fell through to WriteBits( value, 0 ) -- which asserts bits > 0 -- while
+    // serialize_int64, read_int64 and write_int64 all asserted min < max above
+    // it, stricter than the very method they call (SerializeInteger64 already
+    // asserted min <= max). So C++ aborted on a degenerate 64 bit range that
+    // C, C#, Go and Rust all accept, and the divergence was invisible because
+    // no vector in the family used one.
+    //
+    // The bounds below are deliberately wider than 2^32 so the field would
+    // take the two-dword path if it took any path at all.
+    uint8_t buffer[16] = { 0 };
+
+    const int64_t point = int64_t(1) << 40;
+
+    serialize::WriteStream writeStream( buffer, 16 );
+    int64_t degenerate = point;
+    int32_t after = 3;
+    serialize_check( writeStream.SerializeInteger64( degenerate, point, point ) );
+    serialize_check( writeStream.GetBitsProcessed() == 0 );      // nothing written
+    serialize_check( writeStream.SerializeInteger( after, 0, 7 ) );
+    serialize_check( writeStream.GetBitsProcessed() == 3 );      // the NEXT field starts at bit 0
+    writeStream.Flush();
+
+    serialize::ReadStream readStream( buffer, writeStream.GetBytesProcessed() );
+    int64_t read_degenerate = 0;
+    int32_t read_after = 0;
+    serialize_check( readStream.SerializeInteger64( read_degenerate, point, point ) );
+    serialize_check( read_degenerate == point );                 // recovered from the range
+    serialize_check( readStream.GetBitsProcessed() == 0 );
+    serialize_check( readStream.SerializeInteger( read_after, 0, 7 ) );
+    serialize_check( read_after == 3 );
+
+    serialize::MeasureStream measureStream;
+    int64_t measured = point;
+    serialize_check( measureStream.SerializeInteger64( measured, point, point ) );
     serialize_check( measureStream.GetBitsProcessed() == 0 );
 }
 
@@ -7106,6 +7158,7 @@ inline void serialize_test()
         SERIALIZE_RUN_TEST( test_read_write );
         SERIALIZE_RUN_TEST( test_serialize_integer_validation );
         SERIALIZE_RUN_TEST( test_serialize_degenerate_range );
+        SERIALIZE_RUN_TEST( test_serialize_degenerate_range_64 );
         SERIALIZE_RUN_TEST( test_serialize_integer_full_range );
         SERIALIZE_RUN_TEST( test_serialize_int64_full_range );
         SERIALIZE_RUN_TEST( test_serialize_int64_validation );
