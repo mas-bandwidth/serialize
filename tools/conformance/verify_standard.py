@@ -44,13 +44,36 @@ def sint(r, lo, hi):
     return (r.bits(n) if n else 0) + lo
 
 def relative(r, prev):
-    """STANDARD.md, 'int_relative': the five-tier flag ladder."""
+    """STANDARD.md, 'int_relative': the SIX-tier flag ladder, then absolute.
+
+    Two corrections, 2026-08-14, and this function had both halves of the same
+    historical bug the prose was fixed for months ago:
+
+      * the [4378, 69914] tier was missing entirely, so every stream using it
+        decoded as the absolute form and every stream past it shifted;
+      * the final tier transmits `current` ABSOLUTELY, not a difference, so
+        `prev + r.bits(32)` was wrong by exactly `prev`.
+
+    This tool exists to decode the golden stream using ONLY the document, so
+    that the document is checked against something other than the library it
+    was written from. It reported "29 checks, 0 failures" throughout, while
+    being wrong on ten of the twelve tier-boundary streams. A checker that
+    cannot fail is not a checker.
+    """
     if r.bits(1): return prev + 1
     if r.bits(1): return prev + sint(r, 2, 6)
     if r.bits(1): return prev + sint(r, 7, 23)
     if r.bits(1): return prev + sint(r, 24, 280)
     if r.bits(1): return prev + sint(r, 281, 4377)
-    return prev + r.bits(32)
+    if r.bits(1): return prev + sint(r, 4378, 69914)
+    current = r.bits(32)
+    # the absolute form carries no ordering guarantee of its own, so the
+    # reader must check it -- STANDARD.md says so in as many words
+    if current <= prev:
+        raise ValueError(
+            "int_relative: absolute tier decoded current=%d which is not "
+            "greater than previous=%d" % (current, prev))
+    return current
 
 
 def hex_array(name):
@@ -156,12 +179,52 @@ def main():
        ranged128(s, -(1 << 70), 1 << 70), -0x0123456789ABCDEF)
     eq("int128 ranged consumed exactly 72 bits", s.i, 72)
 
+    # ---- int_relative tier boundaries -------------------------------------
+    #
+    # These exist because this tool reported "29 checks, 0 failures" for months
+    # while `relative` was missing the [4378, 69914] tier AND adding `prev` to
+    # the absolute form. The golden stream never reaches those tiers, so no
+    # amount of running it could have caught either. A vector that cannot fail
+    # is not evidence -- so here are the streams that CAN.
+    #
+    # Every tier is exercised at BOTH ends, since an off-by-one in a bound
+    # shows only at the boundary. Each stream was produced by encoding the
+    # stated difference from previous=100 and is decoded here by the document's
+    # ladder alone.
+    # The streams below were EMITTED BY AN IMPLEMENTATION and are decoded here
+    # by the document's ladder alone. That direction matters: an encoder written
+    # in this file would share whatever misreading the decoder has and the two
+    # would agree with each other forever. Written by serialize.c from
+    # previous = 100, one stream per tier boundary.
+    for diff, stream_hex, expected in [
+        (1,     "01",           101),      # tier 1, exactly 1 -- one bit
+        (2,     "02",           102),      # tier 2 low
+        (6,     "12",           106),      # tier 2 high
+        (7,     "04",           107),      # tier 3 low
+        (23,    "84",           123),      # tier 3 high
+        (24,    "0800",         124),      # tier 4 low
+        (280,   "0810",         380),      # tier 4 high
+        (281,   "100000",       381),      # tier 5 low
+        (4377,  "100002",       4477),     # tier 5 high
+        (4378,  "200000",       4478),     # tier 6 low  -- the tier this tool lacked
+        (69914, "200040",       70014),    # tier 6 high -- decoded as 131173 before
+        (69915, "c05f440000",   70015),    # absolute    -- decoded as 140130 before
+    ]:
+        try:
+            got = relative(BitReader(bytes.fromhex(stream_hex)), 100)
+        except (ValueError, IndexError) as e:
+            # IndexError matters as much as a wrong answer: a ladder missing a
+            # tier runs off the end of a short stream rather than mis-decoding
+            # it, and that must read as a FAILURE here, not a traceback.
+            got = "%s: %s" % (type(e).__name__, e)
+        eq("int_relative difference %d (tier boundary)" % diff, got, expected)
+
     print(f"{n} checks against STANDARD.md, {len(fails)} failures")
     for f in fails: print("  FAIL " + f)
     if fails:
-        print("\nSTANDARD.md and the implementation disagree. One of them is wrong.")
+        print("\nSTANDARD.md and an implementation disagree. THE IMPLEMENTATION IS THE BUG.")
         return 1
-    print("\nSTANDARD.md matches the implementation.")
+    print("\nEvery pinned vector decodes from STANDARD.md alone.")
     return 0
 
 

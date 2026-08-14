@@ -383,10 +383,31 @@ differently. This document therefore specifies each operation once, under its
 
 ## Provenance
 
-Written 2026-07-21 by Rowan, by reading the reference implementation and
-verifying every claim against the library's golden test vector. It documents
-the format as it stands; where this document and the implementation disagree,
-the implementation is authoritative and this document is a bug.
+Written 2026-07-21 by Rowan, by reading the then-existing implementation and
+verifying every claim against its golden test vector.
 
-The reference implementation is `serialize.h`. The verifying test vector is
-`golden_wire_bytes` in that file.
+**This document is the format. Where this document and any implementation
+disagree, the implementation is a bug.** There is no reference implementation:
+`serialize.h` is one implementation among five — C, C++, C#, Go and Rust — and
+holds no special authority. It was the first, which is a fact about history and
+not about standing.
+
+Until 2026-08-14 this section said the opposite, and the cost of that sentence
+was measurable. Under it, five implementations quietly disagreed about
+`compressed_float`'s precision and each was, by this document's own terms,
+correct: C quantized in `double`, C++ and Go contracted the multiply and add
+into a single fused multiply-add on arm64, C# and Rust rounded twice in
+`float32`. Four different byte streams from one paragraph, and no divergence
+was formally a defect, because whatever an implementation did was by definition
+the format.
+
+Every normative statement here is testable, by a pinned vector or by an
+explicit refusal test. An implementation conforms when it reproduces every
+vector byte for byte and refuses everything this document says must be refused.
+
+**Conformance vectors must discriminate.** A value taken from the middle of a
+range, or one that lands where every plausible reading agrees, proves nothing —
+the `compressed_float` divergence above survived years of green test suites
+because every pinned value in every implementation landed exactly on a quantum,
+where `float32`, `double` and a fused multiply-add all produce the same answer.
+A vector that cannot fail is not evidence.
