@@ -2405,7 +2405,19 @@ namespace serialize
             {
                 normalizedValue = 1.0f;
             }
-            integerValue = (uint32_t) floor( normalizedValue * maxIntegerValue + 0.5f );
+            // STANDARD.md pins this to float32 with TWO roundings: the product
+            // rounds before 0.5 is added. Storing it through this local is what
+            // forces that, and it is not optional. Written as one expression,
+            // a compiler permitted to contract (clang's default is
+            // -ffp-contract=on) emits a single FMA and rounds ONCE -- and that
+            // changes the wire. On arm64 at -O2 this quantized 0.005 over
+            // [0, 10] at resolution 0.01 to 0 where every conformant runtime
+            // writes 1; on x86-64 the same source did not contract and wrote 1,
+            // so the goldens (generated on x86) and CI stayed green while
+            // Apple Silicon emitted different bytes. Do not fold this back into
+            // one expression.
+            const float scaled = normalizedValue * maxIntegerValue;
+            integerValue = (uint32_t) floor( scaled + 0.5f );
         }
 
         if ( !stream.SerializeBits( integerValue, bits ) )
