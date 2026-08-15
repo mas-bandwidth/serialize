@@ -25,3 +25,17 @@ same way to verify the uint128 half order.
 The final check — that decoding consumed exactly the golden byte count — is the
 one that catches alignment errors. Fields can decode correctly while the bit
 cursor drifts.
+
+## Trailing bits: the writer obligation and the diagnostic
+
+STANDARD.md (adopted 2026-08-15) makes the writer's zeroed trailing bits an
+obligation, keeps readers indifferent to their contents, and licenses a
+diagnostic that may treat non-zero trailing bits as evidence a stream was not
+produced by a conforming writer. The checker enforces the writer side against
+pinned real emissions — `golden_wire_bytes` (the C++ writer) and the
+`int_relative` tier-boundary streams (serialize.c) — and proves the
+distinction both ways on a doctored stream: the document's reader accepts it
+and decodes identical values, and the diagnostic flags it. The check
+exercises 2 of the 5 writers; Go, C# and Rust emissions are not pinned in
+this repo yet. The diagnostic lives here by rule: it never moves into a read
+path.

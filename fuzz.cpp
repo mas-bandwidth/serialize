@@ -414,9 +414,15 @@ template <typename Stream> bool FuzzRoundTrip( Stream & stream, const uint8_t * 
 
             case 7:
             {
-                // arbitrary bit patterns again: out of range, nan and inf values must clamp into
-                // [min,max] on write, and finite in range values must round trip within the resolution
-                const uint32_t expected_bits = pool.NextUint32();
+                // arbitrary FINITE bit patterns: out of range values must clamp into [min,max] on
+                // write, and finite in range values must round trip within the resolution. non-finite
+                // values are non-conforming on write (STANDARD.md, adopted 2026-08-15) and assert out
+                // in debug, so the writer is fed only finite input: clearing the exponent of a
+                // non-finite pattern yields a subnormal, keeping the sign and mantissa entropy.
+                // hostile non-finite coverage belongs to the read path, which stage one exercises.
+                const uint32_t raw_bits = pool.NextUint32();
+                const bool raw_finite = ( raw_bits & 0x7FFFFFFF ) < 0x7F800000;
+                const uint32_t expected_bits = raw_finite ? raw_bits : ( raw_bits & 0x807FFFFF );
                 float expected = 0.0f;
                 memcpy( &expected, &expected_bits, 4 );
                 float value = Stream::IsWriting ? expected : 0.0f;
