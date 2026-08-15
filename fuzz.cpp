@@ -480,7 +480,10 @@ template <typename Stream> bool FuzzRoundTrip( Stream & stream, const uint8_t * 
                 const int length = pool.NextByte() % ( sizeof( expected ) - 1 );
                 for ( int j = 0; j < length; j++ )
                 {
-                    const uint8_t c = pool.NextByte();
+                    // masked to ASCII: the string payload is well-formed UTF-8 by the
+                    // writer's contract, debug-asserted, and asserts are live in this
+                    // harness. Arbitrary bytes still reach the READ path via FuzzRead.
+                    const uint8_t c = pool.NextByte() & 0x7F;
                     expected[j] = ( c != 0 ) ? (char) c : ' ';
                 }
                 expected[length] = '\0';
@@ -502,7 +505,16 @@ template <typename Stream> bool FuzzRoundTrip( Stream & stream, const uint8_t * 
                 wchar_t expected[8];
                 const int length = pool.NextByte() % ( sizeof( expected ) / sizeof( wchar_t ) - 1 );
                 for ( int j = 0; j < length; j++ )
-                    expected[j] = (wchar_t) ( pool.NextUint32() % 0xFFFF + 1 );                 // [1,0xFFFF]: valid for 2 and 4 byte wchar_t
+                {
+                    uint32_t unit = pool.NextUint32() % 0xFFFF + 1;                             // [1,0xFFFF]: valid for 2 and 4 byte wchar_t
+                    if ( unit >= 0xD800 && unit <= 0xDFFF )
+                    {
+                        unit -= 0x0800;     // out of the surrogate block: the payload is well-formed
+                                            // UTF-16 by the writer's contract, debug-asserted, and
+                                            // asserts are live in this harness
+                    }
+                    expected[j] = (wchar_t) unit;
+                }
                 expected[length] = L'\0';
                 wchar_t value[8];
                 if ( Stream::IsWriting )
