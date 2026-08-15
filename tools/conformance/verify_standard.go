@@ -93,6 +93,10 @@ func bitsRequired(lo, hi int64) int {
 }
 
 // sint decodes a ranged integer: the offset from lo, in bitsRequired bits.
+// STANDARD.md: "Readers must check that the decoded value lies within
+// [min,max] and fail otherwise" — in offset form, reject an offset greater
+// than the span. The span computes in uint64 because the full int32 range
+// overflows int64 arithmetic's comfort zone in exactly the way that matters.
 func sint(r *BitReader, lo, hi int64) (int64, error) {
 	n := bitsRequired(lo, hi)
 	if n == 0 {
@@ -102,7 +106,70 @@ func sint(r *BitReader, lo, hi int64) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
+	if v > uint64(hi-lo) {
+		return 0, fmt.Errorf("ranged int offset %d exceeds span %d over [%d,%d] — reject, never clamp", v, uint64(hi-lo), lo, hi)
+	}
 	return int64(v) + lo, nil
+}
+
+// ---- compressed_float ------------------------------------------------------
+//
+// STANDARD.md, "compressed_float": the arithmetic is float32 and the two
+// roundings are part of the format — the writer's product rounds to float32
+// BEFORE 0.5 is added, the reader's product rounds BEFORE min is added. Go
+// permits contracting a float multiply and add into a single FMA unless an
+// explicit conversion forces the intermediate rounding — the same permission
+// that produced the arm64 divergence this battery exists to catch — so every
+// product below passes through an explicit float32(). Do not fold them away.
+
+// compressedFloatParams derives max_integer_value and the wire bit width from
+// the range, per the document: values = delta / res clamped to
+// [1, 4294967040], max_integer_value = ceil(values).
+func compressedFloatParams(min, max, res float32) (uint64, int) {
+	delta := max - min
+	values := float32(delta / res)
+	if !(values >= 1) {
+		values = 1
+	} else if values > 4294967040 {
+		values = 4294967040
+	}
+	maxIntegerValue := uint64(math.Ceil(float64(values)))
+	return maxIntegerValue, bitsRequired(0, int64(maxIntegerValue))
+}
+
+// quantizeCompressedFloat is the writer arithmetic: clamp the normalized value
+// to [0,1], multiply by max_integer_value, ROUND THE PRODUCT to float32, add
+// 0.5, floor. One rounding instead of two writes a different integer for
+// values that land between quanta.
+func quantizeCompressedFloat(value, min, max, res float32) uint64 {
+	maxIntegerValue, _ := compressedFloatParams(min, max, res)
+	delta := max - min
+	normalized := float32((value - min) / delta)
+	if !(normalized >= 0) {
+		normalized = 0
+	} else if !(normalized <= 1) {
+		normalized = 1
+	}
+	scaled := float32(normalized * float32(maxIntegerValue)) // FIRST rounding: no FMA may cross this line
+	return uint64(math.Floor(float64(scaled + 0.5)))         // SECOND rounding, then the floor
+}
+
+// decodeCompressedFloat is the reader arithmetic, refusal included:
+// STANDARD.md, "Readers must reject an integer greater than
+// max_integer_value."
+func decodeCompressedFloat(r *BitReader, min, max, res float32) (float32, error) {
+	maxIntegerValue, n := compressedFloatParams(min, max, res)
+	v, err := r.bits(n)
+	if err != nil {
+		return 0, err
+	}
+	if v > maxIntegerValue {
+		return 0, fmt.Errorf("compressed_float integer %d exceeds max_integer_value %d", v, maxIntegerValue)
+	}
+	normalized := float32(float32(v) / float32(maxIntegerValue))
+	delta := max - min
+	scaled := float32(normalized * delta) // rounds BEFORE min is added; fused, the decode is one ulp off whenever min is non-zero
+	return scaled + min, nil
 }
 
 // relative decodes STANDARD.md's int_relative: a SIX-tier flag ladder, then an
@@ -226,7 +293,7 @@ func hexArray(header, name string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	re, err := regexp.Compile(regexp.QuoteMeta(name) + `\[\]\s*=\s*\{([^}]*)\}`)
+	re, err := regexp.Compile(regexp.QuoteMeta(name) + `\[\d*\]\s*=\s*\{([^}]*)\}`)
 	if err != nil {
 		return nil, err
 	}
@@ -354,8 +421,13 @@ func main() {
 	c.eq("int_full (full int32 range)", v, -123456789)
 	c.eq("bool flag", rd(1), 1)
 	c.eqTol("float", float64(math.Float32frombits(uint32(rd(32)))), 3.1415926, 1e-6)
-	mx := math.Ceil(10.0 / 0.01)
-	c.eqTol("compressed_float", float64(rd(bitsRequired(0, int64(mx))))/mx*10.0, 5.0, 1e-4)
+	// 5.0 over [0,10] lands exactly on a quantum: 0.5 × 1000 = 500 under
+	// float32, double and a fused multiply-add alike, so this field is the
+	// on-quantum ANCHOR — it keeps the golden stream position honest and can
+	// never discriminate. The vectors that can fail are further down.
+	if f, err := decodeCompressedFloat(r, 0, 10, 0.01); !c.err("compressed_float", err) {
+		c.eq("compressed_float (on-quantum anchor)", f, float32(5.0))
+	}
 	lo64, hi64 := rd(32), rd(32)
 	c.eqTol("double", math.Float64frombits(lo64|(hi64<<32)), 1.0/3.0, 1e-12)
 	c.eq("uint8", rs(0, 255), 0x7F)
@@ -386,7 +458,7 @@ func main() {
 	for i := int64(0); i < ln; i++ {
 		ws = append(ws, rd(32))
 	}
-	c.eq("wstring (32 bits per char, NO alignment)", fmt.Sprint(ws), fmt.Sprint([]uint64{0x043C, 0x0438, 0x0440}))
+	c.eq("wstring (32 bits per UTF-16 code unit, NO alignment)", fmt.Sprint(ws), fmt.Sprint([]uint64{0x043C, 0x0438, 0x0440}))
 
 	c.err("align before fixed", r.align())
 	if f, err := fixed(r, 8, big.NewInt(-100), big.NewInt(100)); !c.err("fixed q8.8", err) {
@@ -497,6 +569,207 @@ func main() {
 		// the check bites.
 		c.eq(name+" trailing bits are zero (writer obligation)", trailingBits(raw, br.i), uint8(0))
 	}
+
+	// ---- compressed_float: the discriminating battery ---------------------
+	//
+	// The golden's compressed_float is 5.0 over [0,10] at res 0.01 — the one
+	// value the arm64 divergence could not move. STANDARD.md now says it
+	// outright: "Vectors must include values that land between quanta." This
+	// battery is imported from the family's discriminating vectors:
+	// serialize.c's test/diff3_c.c shape (off-quantum values across several
+	// ranges, both boundaries, an on-quantum anchor), serialize.go's
+	// brute-forced pair (0.005 and -42.573, compat gate), and the C++
+	// library's pinned non-zero-min decode (test_compressed_float_
+	// conformance_nonzero_min, serialize#58).
+
+	// Writer quantization: the document's required two-rounding float32
+	// arithmetic against what widening or contraction produces. 0.005 catches
+	// contraction — an FMA rounds once and writes 0 where the format requires
+	// 1; 0.025 / 0.105 / 9.995 catch widening to double (which writes 2, 10
+	// and 999); 2.5 is the on-quantum anchor every arithmetic agrees on.
+	// The [-100,100] rows run the same arithmetic over a non-zero min,
+	// exercising the (value - min) step a zero min turns into a no-op.
+	for _, tc := range []struct {
+		value, min, max, res float32
+		integer              uint64
+		note                 string
+	}{
+		{0.005, 0, 10, 0.01, 1, "half a quantum above min: an FMA writes 0"},
+		{0.025, 0, 10, 0.01, 3, "double arithmetic writes 2"},
+		{0.105, 0, 10, 0.01, 11, "double arithmetic writes 10"},
+		{9.995, 0, 10, 0.01, 1000, "double arithmetic writes 999"},
+		{2.5, 0, 10, 0.01, 250, "on-quantum anchor"},
+		{-42.573, -100, 100, 0.01, 5743, "off-quantum over a non-zero min"},
+		{0.0, -100, 100, 0.01, 10000, "on-quantum sanity row"},
+		{-99.875, -100, 100, 0.01, 13, "a double-widened writer quantizes 12"},
+		{-33.34, -100, 100, 0.01, 6666, "the arm64 pre-fix value"},
+	} {
+		got := quantizeCompressedFloat(tc.value, tc.min, tc.max, tc.res)
+		c.eq(fmt.Sprintf("compressed_float writer: %v over [%v,%v] at %v (%s)",
+			tc.value, tc.min, tc.max, tc.res, tc.note), got, tc.integer)
+	}
+
+	// Reader decode with the min non-zero, pinned to exact float32 BITS: the
+	// divergence a fused reader produces is one ulp, which no tolerance
+	// comparison can see. The stream is the library's additive pin for the
+	// non-zero-min case (pinned_bytes, serialize#58), lifted as data like
+	// every other vector here: three values over [-100,100] at res 0.01,
+	// 15 bits each, then an align.
+	if pb, err := hexArray(header, "pinned_bytes"); !c.err("pinned_bytes", err) {
+		p := NewBitReader(pb)
+		for i, want := range []uint32{0x00000000, 0xC2C7BD71, 0xC2055C2A} {
+			if f, err := decodeCompressedFloat(p, -100, 100, 0.01); !c.err("compressed_float non-zero-min decode", err) {
+				c.eq(fmt.Sprintf("compressed_float decode %d of pinned_bytes (bit-exact)", i),
+					fmt.Sprintf("%08X", math.Float32bits(f)), fmt.Sprintf("%08X", want))
+			}
+		}
+		if !c.err("pinned_bytes align", p.align()) {
+			c.eq("pinned_bytes consumed exactly", p.i/8, len(pb))
+		}
+	}
+
+	// Two more reader pins, streams spelled inline, expectations as hex float
+	// literals so the demanded result is bit-identical — the same pins
+	// serialize.go carries: decode(1) over [0,10] is float32(1/1000) * 10 + 0
+	// and decode(5743) over [-100,100] is float32(5743/20000) * 200 - 100,
+	// two roundings each. A fused reader misses the second by one ulp
+	// wherever min is non-zero; serialize.go additionally pins integer 384,
+	// whose fused decode is 0xC2C051EB against the format's 0xC2C051EC.
+	for _, tc := range []struct {
+		stream        string
+		min, max, res float32
+		want          float32
+		name          string
+	}{
+		{"0100", 0, 10, 0.01, 0x1.47ae16p-07, "decode(1) over [0,10]"},
+		{"6f16", -100, 100, 0.01, -0x1.548f5cp+05, "decode(5743) over [-100,100]"},
+		{"8001", -100, 100, 0.01, -0x1.80a3d8p+06, "decode(384) over [-100,100]"},
+	} {
+		raw := make([]byte, len(tc.stream)/2)
+		for i := range raw {
+			b, _ := strconv.ParseUint(tc.stream[i*2:i*2+2], 16, 8)
+			raw[i] = byte(b)
+		}
+		if f, err := decodeCompressedFloat(NewBitReader(raw), tc.min, tc.max, tc.res); !c.err(tc.name, err) {
+			c.eq(fmt.Sprintf("compressed_float %s (bit-exact)", tc.name),
+				fmt.Sprintf("%08X", math.Float32bits(f)), fmt.Sprintf("%08X", math.Float32bits(tc.want)))
+		}
+	}
+
+	// ---- refusal paths ----------------------------------------------------
+	//
+	// STANDARD.md: "An implementation conforms when it reproduces every
+	// vector byte for byte AND refuses everything this document says must be
+	// refused." Until now this tool exercised only the first half (issue
+	// #55). Each stream below is one a conforming reader MUST refuse, decoded
+	// by the document's own rules — a decode that SUCCEEDS is the failure.
+	//
+	// Two refusal classes are deliberately absent, because each turns on a
+	// ruling PR #60 leaves open, and a vector here would pre-decide it:
+	//   - trailing bits after the final operation: the draft says they cannot
+	//     invalidate (no operation reads them); the alternative ruling would
+	//     require readers to check them zero, and only then would a refusal
+	//     vector exist. Awaiting PR #60.
+	//   - reads past the end of the caller's buffer: the draft rules the two
+	//     caller memory contracts (over-allocate vs priced window) both
+	//     conforming, so there is no single behavior to pin. Awaiting PR #60.
+
+	refuse := func(name string, err error) {
+		c.n++
+		if err == nil {
+			c.fails = append(c.fails, fmt.Sprintf("%s: decode succeeded, the document requires refusal", name))
+		}
+	}
+
+	// ranged int: [0,10] is 4 bits, so offsets 11..15 are expressible and
+	// must be refused — reject, never clamp. 10 is the accept boundary.
+	if v, err := sint(NewBitReader([]byte{0x0A}), 0, 10); !c.err("ranged int accept boundary", err) {
+		c.eq("ranged int accepts its max (offset == span)", v, int64(10))
+	}
+	_, err = sint(NewBitReader([]byte{0x0F}), 0, 10)
+	refuse("ranged int offset 15 over [0,10]", err)
+	_, err = sint(NewBitReader([]byte{0xFF}), -100, 100)
+	refuse("ranged int offset 255 over [-100,100]", err)
+
+	// align: padding bits must be zero, and readers must fail the read if
+	// they are not. Three bits of value, then five padding bits of ones.
+	rp := NewBitReader([]byte{0xFD})
+	if _, err := rp.bits(3); err == nil {
+		refuse("align with non-zero padding", rp.align())
+	}
+
+	// int_relative: the absolute form carries no ordering guarantee of its
+	// own, so the reader must check current > previous and fail otherwise.
+	// Both streams are the absolute form against previous = 100: one equal,
+	// one less.
+	for _, tc := range []struct {
+		stream string
+		note   string
+	}{
+		{"0019000000", "absolute current == previous"},
+		{"800c000000", "absolute current < previous"},
+	} {
+		raw := make([]byte, len(tc.stream)/2)
+		for i := range raw {
+			b, _ := strconv.ParseUint(tc.stream[i*2:i*2+2], 16, 8)
+			raw[i] = byte(b)
+		}
+		_, err := relative(NewBitReader(raw), 100)
+		refuse(fmt.Sprintf("int_relative %s", tc.note), err)
+	}
+
+	// int128 ranged: the decoded offset must be at most max - min in the
+	// unsigned domain — reject, never clamp. Bounds of +/- 2^70 span 2^71,
+	// 72 bits: offset 2^71 is the accept boundary (decoding to +2^70), and
+	// offset 2^71 + 1 must be refused.
+	if v, err := ranged128(NewBitReader([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0x80}), new(big.Int).Neg(pow2(70)), pow2(70)); !c.err("int128 accept boundary", err) {
+		c.eq("int128 ranged accepts offset == span (decodes +2^70)", v, pow2(70))
+	}
+	_, err = ranged128(NewBitReader([]byte{0x01, 0, 0, 0, 0, 0, 0, 0, 0x80}), new(big.Int).Neg(pow2(70)), pow2(70))
+	refuse("int128 ranged offset span+1", err)
+
+	// fixed: the decoded offset must be at most raw_max - raw_min — reject,
+	// never clamp. Q8.8 over [-100,100]: the raw span is 51200 in 16 bits,
+	// so 51200 is the accept boundary (decoding to raw +25600) and 65535
+	// must be refused.
+	if f, err := fixed(NewBitReader([]byte{0x00, 0xC8}), 8, big.NewInt(-100), big.NewInt(100)); !c.err("fixed accept boundary", err) {
+		c.eq("fixed q8.8 accepts offset == raw span (decodes +100.0)", f, big.NewInt(25600))
+	}
+	_, err = fixed(NewBitReader([]byte{0xFF, 0xFF}), 8, big.NewInt(-100), big.NewInt(100))
+	refuse("fixed q8.8 offset 65535 over raw span 51200", err)
+
+	// compressed_float: readers must reject an integer greater than
+	// max_integer_value. Over [0,10] at res 0.01 that is 1000 in 10 bits:
+	// 1000 is the accept boundary (decoding to exactly 10.0), 1001 must be
+	// refused.
+	if f, err := decodeCompressedFloat(NewBitReader([]byte{0xE8, 0x03}), 0, 10, 0.01); !c.err("compressed_float accept boundary", err) {
+		c.eq("compressed_float accepts integer == max_integer_value", f, float32(10.0))
+	}
+	_, err = decodeCompressedFloat(NewBitReader([]byte{0xE9, 0x03}), 0, 10, 0.01)
+	refuse("compressed_float integer 1001 over max_integer_value 1000", err)
+
+	// ---- degenerate ranges: zero bits on every storage width --------------
+	//
+	// STANDARD.md (adopted 2026-08-15): min == max is legal, costs zero bits,
+	// and the reader recovers the value from the range alone — raw min, on
+	// every storage width. Decoded from an EMPTY stream, which is the point:
+	// any read at all is an error here, so a pass PROVES zero bits. The
+	// Q64.64 row is the width where implementations diverged (fraction_bits
+	// of zeros on the wide path only).
+	empty := NewBitReader(nil)
+	if v, err := sint(empty, 42, 42); !c.err("degenerate int", err) {
+		c.eq("degenerate int (min == max): value from the range alone", v, int64(42))
+	}
+	if f, err := fixed(empty, 16, big.NewInt(7), big.NewInt(7)); !c.err("degenerate fixed q48.16", err) {
+		c.eq("degenerate fixed q48.16: min << fraction_bits", f, big.NewInt(7*65536))
+	}
+	if f, err := fixed(empty, 16, big.NewInt(-9), big.NewInt(-9)); !c.err("degenerate fixed negative bounds", err) {
+		c.eq("degenerate fixed q112.16 negative bounds: raw min is negative", f, big.NewInt(-9*65536))
+	}
+	if f, err := fixed(empty, 64, big.NewInt(0), big.NewInt(0)); !c.err("degenerate fixed q64.64", err) {
+		c.eq("degenerate fixed q64.64: zero bits, not fraction_bits of zeros", f, big.NewInt(0))
+	}
+	c.eq("degenerate decodes consumed zero bits", empty.i, 0)
 
 	// ---- trailing bits: the distinction, proven both ways ------------------
 	//

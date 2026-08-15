@@ -1,14 +1,19 @@
 # Conformance: STANDARD.md vs the implementation
 
 `STANDARD.md` specifies serialize's wire format. This decodes the library's own
-golden vector using **only what that document says** — the LSB-first bit
+golden vectors using **only what that document says** — the LSB-first bit
 packing, the ranged-integer widths, the alignment rules, the relative-integer
-ladder — and asserts every field.
+ladder, the two-rounding `compressed_float` arithmetic — and asserts every
+field. It also checks the other half of conformance, which the document states
+in as many words: an implementation conforms when it reproduces every vector
+byte for byte **and refuses everything the document says must be refused**.
 
-    python3 tools/conformance/verify_standard.py
+    cd tools/conformance && go run .
 
-No compiler needed: `golden_wire_bytes` and the expected values are read out of
-`serialize.h` as data. Exit 0 means the document and the code agree.
+Standard-library Go only, no compiler for the C++ needed: `golden_wire_bytes`,
+`golden_uint128_bytes`, `golden_int128_bytes`, `pinned_bytes` and the expected
+values are read out of `serialize.h` as data. Exit 0 means the document and the
+code agree.
 
 ## Why the golden vector is the right oracle
 
@@ -25,6 +30,30 @@ same way to verify the uint128 half order.
 The final check — that decoding consumed exactly the golden byte count — is the
 one that catches alignment errors. Fields can decode correctly while the bit
 cursor drifts.
+
+## Why the golden vector is not enough
+
+The golden's compressed float is 5.0 over [0,10]: it normalizes to exactly 0.5
+and lands exactly on a quantum, where `float32`, `double` and a fused
+multiply-add all produce the same integer. The arm64 divergence shipped with
+every suite green precisely because every pinned value in the family had that
+property. So the checker additionally carries the discriminating battery:
+
+- **Writer quantization vectors** that land *between* quanta — where one
+  rounding (an FMA) and two roundings disagree about the written integer, and
+  where widening to `double` writes a different integer again.
+- **Reader decode vectors pinned to exact float32 bit patterns** over a
+  non-zero `min`, because a fused reader decode is one ulp off and no
+  tolerance comparison can see one ulp. The stream for the main trio is the
+  library's own additive pin (`pinned_bytes`).
+- **Refusal vectors**: streams a conforming reader must reject — a ranged int
+  or int128 or fixed offset past its span, non-zero alignment padding, a
+  non-increasing `int_relative` absolute form, a `compressed_float` integer
+  above `max_integer_value` — decoded by the document's rules, where a decode
+  that *succeeds* is the failure. Each accept-boundary twin pins the largest
+  legal value, so the refusal is exactly one past it.
+- **Degenerate-range vectors** decoded from an empty stream, proving
+  `min == max` costs zero bits on every storage width.
 
 ## Trailing bits: the writer obligation and the diagnostic
 
