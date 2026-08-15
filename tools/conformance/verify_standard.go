@@ -245,6 +245,24 @@ func hexArray(header, name string) ([]byte, error) {
 	return out, nil
 }
 
+// trailingBits reports the contents of the unused bits of the final byte of a
+// stream whose final operation ended at bit position bitIndex — zero for a
+// stream written by a conforming writer.
+//
+// STANDARD.md, "Trailing bits" (adopted 2026-08-15): writers must emit zero
+// there, readers must not reject a stream for their contents, and a
+// conformance or diagnostic check MAY treat non-zero as evidence the stream
+// was not produced by a conforming writer — "was this really written by
+// serialize?". This function is that diagnostic. It lives in this tool BY
+// RULE: no decode function in this file consults it, and it must never move
+// into a read path.
+func trailingBits(b []byte, bitIndex int) uint8 {
+	if len(b) == 0 || bitIndex%8 == 0 || (bitIndex+7)/8 != len(b) {
+		return 0 // ends aligned, or not in the final byte: nothing trails
+	}
+	return b[len(b)-1] >> uint(bitIndex%8)
+}
+
 type checker struct {
 	n     int
 	fails []string
@@ -394,6 +412,15 @@ func main() {
 	}
 	c.eq("consumed exactly the golden bytes", (r.i+7)/8, len(data))
 
+	// Writer obligation (STANDARD.md, "Trailing bits", adopted 2026-08-15):
+	// writers must emit zero in the unused bits of the final byte. The golden
+	// stream ends 3 bits into its final byte and is the C++ writer's actual
+	// emitted output, pinned — so this checks the obligation against a real
+	// emission, not against this file's own arithmetic. (The uint128/int128
+	// pins end byte-aligned, so the obligation is vacuous there and is not
+	// checked: a check that cannot fail is not a check.)
+	c.eq("golden_wire_bytes trailing bits are zero (writer obligation)", trailingBits(data, r.i), uint8(0))
+
 	// STANDARD.md, 'uint128': 128 raw bits, low 64-bit half first, each half as
 	// serialize_bits( half, 64 ). Verified against the library's additive pin.
 	if ub, err := hexArray(header, "golden_uint128_bytes"); !c.err("golden_uint128_bytes", err) {
@@ -454,7 +481,8 @@ func main() {
 			raw[i] = byte(b)
 		}
 		name := fmt.Sprintf("int_relative difference %d (tier boundary)", tc.diff)
-		got, err := relative(NewBitReader(raw), 100)
+		br := NewBitReader(raw)
+		got, err := relative(br, 100)
 		if err != nil {
 			// A decode error matters as much as a wrong answer: a ladder
 			// missing a tier runs off the end of a short stream rather than
@@ -464,7 +492,31 @@ func main() {
 			continue
 		}
 		c.eq(name, got, tc.expected)
+		// These streams were EMITTED BY serialize.c, so its writer owes the
+		// trailing-bits obligation too — and most of them end mid-byte, so
+		// the check bites.
+		c.eq(name+" trailing bits are zero (writer obligation)", trailingBits(raw, br.i), uint8(0))
 	}
+
+	// ---- trailing bits: the distinction, proven both ways ------------------
+	//
+	// STANDARD.md (adopted 2026-08-15): writers must write zero; readers must
+	// not reject for non-zero; a diagnostic MAY flag non-zero as provenance
+	// evidence. Take the one-bit int_relative stream serialize.c emitted as
+	// 0x01 and set every trailing bit: 0x81. No conforming writer produces
+	// this stream, but its one meaningful bit is untouched, so:
+	//   (a) the reader is indifferent — the decode succeeds and yields
+	//       exactly what the clean stream yields; a decode that errors here
+	//       is a reader rejecting for trailing-bit contents, which the
+	//       document forbids;
+	//   (b) the diagnostic flags it — trailingBits reports non-zero, the
+	//       "was this really written by serialize?" signal.
+	doctored := []byte{0x81}
+	db := NewBitReader(doctored)
+	if got, err := relative(db, 100); !c.err("doctored trailing bits: reader accepts", err) {
+		c.eq("doctored trailing bits: reader decodes identically", got, int64(101))
+	}
+	c.eq("doctored trailing bits: diagnostic flags the stream", trailingBits(doctored, db.i) != 0, true)
 
 	fmt.Printf("%d checks against STANDARD.md, %d failures\n", c.n, len(c.fails))
 	for _, f := range c.fails {

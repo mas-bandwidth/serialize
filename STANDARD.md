@@ -319,7 +319,32 @@ under every variant, so a conformance vector built only from such values will
 pass while the wire is wrong. Vectors must include values that land between
 quanta.
 
+**The reader's arithmetic is pinned the same way.** The decode — divide by
+`max_integer_value`, multiply by `delta`, add `min` — is `float32` with every
+step rounding: the quotient rounds, the product rounds BEFORE `min` is added,
+and the sum rounds. An implementation must not widen any step to `double`, and
+must not contract the multiply and the add into a fused multiply-add — fused,
+the decode rounds once instead of twice, and whenever `min` is non-zero the
+decoded value can land one ulp away from the conformant result. That never
+changes the bytes being read, but it changes the value obtained from them: a
+value decoded on a fusing platform and re-encoded produces different wire,
+which breaks round-tripping between conforming implementations. The same
+suppression techniques the writer paragraph lists apply here, and conformance
+vectors over a non-zero-`min` range must pin decoded values **bit-exactly** —
+a tolerance comparison cannot see a one-ulp divergence.
+
 Readers must reject an integer greater than `max_integer_value`.
+
+**Non-finite inputs are non-conforming.** *(Adopted 2026-08-15; the ruling
+verbatim: "it's non-conforming. also, attempting to send NaN or INF or
+anything else through compressed float is non-conforming and should assert
+out on write too.")* A declaration whose `delta = max - min` — or whose
+`values = delta / res` — is not finite in `float32` is non-conforming, and
+this document defines no wire meaning for it. Writing a non-finite value
+(NaN, `+Inf`, `-Inf`) through `compressed_float` is non-conforming.
+Conforming writers assert in debug builds, per the family's writer-trusted
+model. The read path is untouched: the poison is in the declaration or the
+input value, never on the wire, so there is nothing for a reader to refuse.
 
 This is lossy by construction: a round trip returns the nearest representable
 quantum, not the original value.
@@ -449,6 +474,63 @@ write, rather than sharing one templated function.
 exist for convenience and to avoid a branch, not to encode anything
 differently. This document therefore specifies each operation once, under its
 `serialize_` name.
+
+## Reader Obligations
+
+The operations above state what the bytes mean. This section states what a
+reader must **do**. These streams arrive from the network; for a parser of
+untrusted input, whatever this document leaves unspecified is the attack
+surface.
+
+**Reading past the end must fail.** An operation that would consume more bits
+than remain in the stream fails the read. It must not produce a partial value,
+zero-fill the missing bits, or wrap. A failed read is terminal for the stream:
+nothing after the failing operation has a defined position, so nothing after
+it is interpretable.
+
+**Past-end memory is an implementation contract, not a format concern.** The
+stream is exactly its stated length, and no operation's meaning ever depends
+on memory beyond it. An implementation may still *load* — never interpret —
+bytes past the end as an artifact of how it reads: the C++ implementation
+loads 64-bit windows at byte granularity and therefore requires its caller to
+allocate at least 8 bytes beyond the data; the C implementation prices its
+window to stay inside the buffer and imposes no such requirement. Both are
+conforming. Conformance requires that loaded-but-uninterpreted bytes can never
+influence a decoded value or an accept/reject decision, and that an
+implementation state which allocation contract its caller is under — a caller
+holding the wrong contract is reading out of bounds, and that is a property of
+the implementation's documentation, not of the wire.
+
+**Trailing bits: writers must write zero; readers must not look; tools may
+judge.** *(Adopted 2026-08-15; the ruling verbatim: "Yes, I am OK with
+writers must write zero, readers must ignore non-zero. And it's good for a
+check, we want to check-- was this really written by serialize? and this is
+another way to encode this in.")* After the final operation of a message, up
+to 7 bits may remain in the final byte. Three rules, one per party:
+
+* Writers **must emit zero** in the unused bits of the final byte. Every
+  implementation already does this by construction — the flushed scratch
+  beyond the bit index is zero — and the behavior is now an obligation
+  rather than an observation. It makes the encoding canonical: among
+  conforming writers, one logical stream is exactly one byte sequence.
+* Readers **must not reject** a stream for the contents of those bits. No
+  read operation examines them. The zero-check obligation applies exactly
+  where an operation actually reads padding: `serialize_align`, and the
+  alignment step inside `serialize_bytes` and `serialize_string`.
+* Non-zero trailing bits are a **provenance signal, not a protocol error**:
+  a conformance or diagnostic check may treat them as evidence that the
+  stream was not produced by a conforming writer — another way to ask "was
+  this really written by serialize?". Such a check lives in tooling and
+  validators, never on the read path, and its verdict never changes what a
+  reader accepts.
+
+**Refusal rules are part of the format.** The per-operation obligations stated
+above — decoded values within `[min,max]`, decoded offsets within range,
+alignment padding zero, `wstring` code points representable in the local wide
+character — are refusal rules, not advice. An implementation that skips one
+accepts streams a conforming implementation refuses, and two implementations
+that disagree about refusal disagree about the format. Every refusal rule is
+testable by a vector that a conforming reader must reject.
 
 ## Compatibility Notes
 
