@@ -427,13 +427,28 @@ implementation state which allocation contract its caller is under — a caller
 holding the wrong contract is reading out of bounds, and that is a property of
 the implementation's documentation, not of the wire.
 
-**Trailing bits do not invalidate.** After the final operation of a message,
-up to 7 bits may remain in the final byte. Writers emit zeros there by
-construction (the flushed scratch beyond the bit index is zero). A reader
-performs no operation that examines those bits, and must not reject a stream
-for their contents. The zero-check obligation applies exactly where an
-operation actually reads padding: `serialize_align`, and the alignment step
-inside `serialize_bytes` and `serialize_string`.
+**Trailing bits: writers must write zero; readers must not look; tools may
+judge.** *(Adopted 2026-08-15; the ruling verbatim: "Yes, I am OK with
+writers must write zero, readers must ignore non-zero. And it's good for a
+check, we want to check-- was this really written by serialize? and this is
+another way to encode this in.")* After the final operation of a message, up
+to 7 bits may remain in the final byte. Three rules, one per party:
+
+* Writers **must emit zero** in the unused bits of the final byte. Every
+  implementation already does this by construction — the flushed scratch
+  beyond the bit index is zero — and the behavior is now an obligation
+  rather than an observation. It makes the encoding canonical: among
+  conforming writers, one logical stream is exactly one byte sequence.
+* Readers **must not reject** a stream for the contents of those bits. No
+  read operation examines them. The zero-check obligation applies exactly
+  where an operation actually reads padding: `serialize_align`, and the
+  alignment step inside `serialize_bytes` and `serialize_string`.
+* Non-zero trailing bits are a **provenance signal, not a protocol error**:
+  a conformance or diagnostic check may treat them as evidence that the
+  stream was not produced by a conforming writer — another way to ask "was
+  this really written by serialize?". Such a check lives in tooling and
+  validators, never on the read path, and its verdict never changes what a
+  reader accepts.
 
 **Refusal rules are part of the format.** The per-operation obligations stated
 above — decoded values within `[min,max]`, decoded offsets within range,

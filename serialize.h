@@ -7078,6 +7078,133 @@ inline void test_golden_wire_format()
     }
 }
 
+inline void test_trailing_bits()
+{
+    // STANDARD.md, "Trailing bits" (adopted 2026-08-15): writers must emit zero in the unused
+    // bits of the final byte; readers must not reject a stream for their contents. The third
+    // rule — non-zero trailing bits as a provenance signal — belongs to tooling (see
+    // tools/conformance), never to this read path, which is exactly what the reader half of
+    // this test proves.
+
+    // writer obligation: emit a message that ends 3 bits into its final byte, into a buffer
+    // pre-filled with 0xFF so the zeros must come from the writer, not from the caller.
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0xFF, sizeof( buffer ) );
+
+        serialize::WriteStream writeStream( buffer, (int) sizeof( buffer ) );
+        uint32_t head = 0xDEADBEEF;
+        serialize_check( writeStream.SerializeBits( head, 32 ) == true );
+        uint32_t tail = 5;
+        serialize_check( writeStream.SerializeBits( tail, 3 ) == true );
+        writeStream.Flush();
+
+        const int bytesWritten = (int) writeStream.GetBytesProcessed();
+        const int bitsInFinalByte = (int) ( writeStream.GetBitsProcessed() % 8 );
+        serialize_check( bitsInFinalByte == 3 );                                        // the stream really does end unaligned
+        const uint8_t trailingMask = (uint8_t) ( 0xFF << bitsInFinalByte );
+        serialize_check( ( buffer[bytesWritten-1] & trailingMask ) == 0 );              // writers must write zero
+
+        // reader indifference, small stream: set every trailing bit and read back. the
+        // doctored stream must be accepted and must decode the same values.
+        buffer[bytesWritten-1] |= trailingMask;
+        serialize::ReadStream readStream( buffer, bytesWritten );
+        uint32_t readHead = 0;
+        serialize_check( readStream.SerializeBits( readHead, 32 ) == true );
+        serialize_check( readHead == 0xDEADBEEF );
+        uint32_t readTail = 0;
+        serialize_check( readStream.SerializeBits( readTail, 3 ) == true );
+        serialize_check( readTail == 5 );
+    }
+
+    // reader indifference, full message: doctor the trailing bits of the golden stream.
+    // a conforming reader accepts the doctored stream and decodes byte-identical results.
+    {
+        uint8_t buffer[256];
+        memset( buffer, 0, sizeof( buffer ) );
+        memcpy( buffer, golden_wire_bytes, sizeof( golden_wire_bytes ) );
+
+        serialize::ReadStream cleanStream( buffer, (int) sizeof( golden_wire_bytes ) );
+        GoldenWireData cleanData;
+        memset( (void*) &cleanData, 0, sizeof( GoldenWireData ) );
+        serialize_check( GoldenWireSerialize( cleanStream, cleanData ) == true );
+
+        const int bitsInFinalByte = (int) ( cleanStream.GetBitsProcessed() % 8 );
+        serialize_check( bitsInFinalByte != 0 );                                        // golden ends unaligned, so this test can discriminate
+        const uint8_t trailingMask = (uint8_t) ( 0xFF << bitsInFinalByte );
+        serialize_check( ( golden_wire_bytes[sizeof( golden_wire_bytes ) - 1] & trailingMask ) == 0 );  // the pinned emission met the writer obligation
+
+        buffer[sizeof( golden_wire_bytes ) - 1] |= trailingMask;                        // set every trailing bit
+
+        serialize::ReadStream doctoredStream( buffer, (int) sizeof( golden_wire_bytes ) );
+        GoldenWireData doctoredData;
+        memset( (void*) &doctoredData, 0, sizeof( GoldenWireData ) );
+        serialize_check( GoldenWireSerialize( doctoredStream, doctoredData ) == true );                 // readers must not reject
+        serialize_check( memcmp( &doctoredData, &cleanData, sizeof( GoldenWireData ) ) == 0 );          // and must decode identically
+        serialize_check( doctoredStream.GetBitsProcessed() == cleanStream.GetBitsProcessed() );
+    }
+}
+
+inline void test_past_end_poison()
+{
+    // STANDARD.md, "Past-end memory is an implementation contract, not a format concern"
+    // (ruled 2026-08-15: the draft stands). The C++ reader loads 64-bit windows at byte
+    // granularity and requires its caller to allocate at least 8 bytes past the data; bytes
+    // past the end are loaded but never interpreted. This proves the "never interpreted"
+    // half: poison planted beyond the stream end must not change a single decoded byte, and
+    // must not change refusal behavior.
+
+    // accept path: identical decode with a zeroed tail and a poisoned tail
+    {
+        uint8_t cleanBuffer[256];
+        uint8_t poisonBuffer[256];
+        memset( cleanBuffer, 0, sizeof( cleanBuffer ) );
+        memset( poisonBuffer, 0xFF, sizeof( poisonBuffer ) );           // poison everywhere, including the loaded-but-never-interpreted window
+        memcpy( cleanBuffer, golden_wire_bytes, sizeof( golden_wire_bytes ) );
+        memcpy( poisonBuffer, golden_wire_bytes, sizeof( golden_wire_bytes ) );
+
+        serialize::ReadStream cleanStream( cleanBuffer, (int) sizeof( golden_wire_bytes ) );
+        GoldenWireData cleanData;
+        memset( (void*) &cleanData, 0, sizeof( GoldenWireData ) );
+        serialize_check( GoldenWireSerialize( cleanStream, cleanData ) == true );
+
+        serialize::ReadStream poisonStream( poisonBuffer, (int) sizeof( golden_wire_bytes ) );
+        GoldenWireData poisonData;
+        memset( (void*) &poisonData, 0, sizeof( GoldenWireData ) );
+        serialize_check( GoldenWireSerialize( poisonStream, poisonData ) == true );
+
+        serialize_check( memcmp( &poisonData, &cleanData, sizeof( GoldenWireData ) ) == 0 );    // byte-identical decode
+        serialize_check( poisonStream.GetBitsProcessed() == cleanStream.GetBitsProcessed() );
+    }
+
+    // refusal path: truncate the stream one byte short so the decode must fail. the bytes at
+    // and past the truncated end are exactly where the reader's 64-bit window loads from, and
+    // the refusal must be identical whether they are zero or poison.
+    {
+        const int truncatedBytes = (int) sizeof( golden_wire_bytes ) - 1;
+
+        uint8_t cleanBuffer[256];
+        uint8_t poisonBuffer[256];
+        memset( cleanBuffer, 0, sizeof( cleanBuffer ) );
+        memset( poisonBuffer, 0xFF, sizeof( poisonBuffer ) );
+        memcpy( cleanBuffer, golden_wire_bytes, truncatedBytes );
+        memcpy( poisonBuffer, golden_wire_bytes, truncatedBytes );
+
+        serialize::ReadStream cleanStream( cleanBuffer, truncatedBytes );
+        GoldenWireData cleanData;
+        memset( (void*) &cleanData, 0, sizeof( GoldenWireData ) );
+        serialize_check( GoldenWireSerialize( cleanStream, cleanData ) == false );
+
+        serialize::ReadStream poisonStream( poisonBuffer, truncatedBytes );
+        GoldenWireData poisonData;
+        memset( (void*) &poisonData, 0, sizeof( GoldenWireData ) );
+        serialize_check( GoldenWireSerialize( poisonStream, poisonData ) == false );
+
+        serialize_check( poisonStream.GetBitsProcessed() == cleanStream.GetBitsProcessed() );   // refused at the same point
+        serialize_check( memcmp( &poisonData, &cleanData, sizeof( GoldenWireData ) ) == 0 );    // with identical partial state
+    }
+}
+
 inline void test_unaligned_writer()
 {
     // the bit writer stores each dword with memcpy, so the write buffer does not need 4 byte alignment.
@@ -7228,6 +7355,8 @@ inline void serialize_test()
         SERIALIZE_RUN_TEST( test_compile_time_packet );
 #endif // #if defined( SERIALIZE_HAS_COMPILE_TIME_SURFACE )
         SERIALIZE_RUN_TEST( test_golden_wire_format );
+        SERIALIZE_RUN_TEST( test_trailing_bits );
+        SERIALIZE_RUN_TEST( test_past_end_poison );
         SERIALIZE_RUN_TEST( test_unaligned_writer );
         SERIALIZE_RUN_TEST( test_large_buffer );
     }
