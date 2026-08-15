@@ -2664,6 +2664,76 @@ namespace serialize
             }                                                                       \
         } while (0)
 
+    /*
+        UTF-8 well-formedness. Used by the READ path's refusal rule (STANDARD.md,
+        "Readers must refuse malformed string payloads", adopted 2026-08-15) — which
+        binds in every build mode, because the read side faces untrusted data — and
+        shaped to match the writer's debug-only contract validator byte for byte, so
+        the two branches carrying them merge to one function. Rejects overlong
+        encodings, surrogate code points, values above U+10FFFF, truncated sequences
+        and stray continuation bytes. NUL bytes are VALID UTF-8: the interior-NUL
+        refusal is a separate rule with its own reason.
+    */
+
+    inline bool serialize_string_is_valid_utf8( const char * string, int length )
+    {
+        int i = 0;
+        while ( i < length )
+        {
+            const uint32_t lead = (uint8_t) string[i];
+            if ( lead < 0x80 )
+            {
+                i += 1;
+            }
+            else if ( ( lead & 0xE0 ) == 0xC0 )
+            {
+                if ( lead < 0xC2 )                                                              // overlong
+                    return false;
+                if ( i + 1 >= length )
+                    return false;
+                if ( ( (uint8_t) string[i+1] & 0xC0 ) != 0x80 )
+                    return false;
+                i += 2;
+            }
+            else if ( ( lead & 0xF0 ) == 0xE0 )
+            {
+                if ( i + 2 >= length )
+                    return false;
+                const uint32_t byte1 = (uint8_t) string[i+1];
+                const uint32_t byte2 = (uint8_t) string[i+2];
+                if ( ( byte1 & 0xC0 ) != 0x80 || ( byte2 & 0xC0 ) != 0x80 )
+                    return false;
+                if ( lead == 0xE0 && byte1 < 0xA0 )                                             // overlong
+                    return false;
+                if ( lead == 0xED && byte1 >= 0xA0 )                                            // surrogate code point
+                    return false;
+                i += 3;
+            }
+            else if ( ( lead & 0xF8 ) == 0xF0 )
+            {
+                if ( lead > 0xF4 )                                                              // above U+10FFFF
+                    return false;
+                if ( i + 3 >= length )
+                    return false;
+                const uint32_t byte1 = (uint8_t) string[i+1];
+                const uint32_t byte2 = (uint8_t) string[i+2];
+                const uint32_t byte3 = (uint8_t) string[i+3];
+                if ( ( byte1 & 0xC0 ) != 0x80 || ( byte2 & 0xC0 ) != 0x80 || ( byte3 & 0xC0 ) != 0x80 )
+                    return false;
+                if ( lead == 0xF0 && byte1 < 0x90 )                                             // overlong
+                    return false;
+                if ( lead == 0xF4 && byte1 >= 0x90 )                                            // above U+10FFFF
+                    return false;
+                i += 4;
+            }
+            else
+            {
+                return false;                                                                   // continuation or invalid lead byte
+            }
+        }
+        return true;
+    }
+
     template <typename Stream> bool serialize_string_internal( Stream & stream, char * string, int buffer_size )
     {
         int length = 0;
@@ -2676,6 +2746,24 @@ namespace serialize
         serialize_bytes( stream, (uint8_t*)string, length );
         if ( Stream::IsReading )
         {
+            // STANDARD.md, "Readers must refuse malformed string payloads" (adopted
+            // 2026-08-15). Interior NUL first: a conforming writer derives the length
+            // from strlen, so a zero byte among the transmitted bytes only arrives
+            // doctored — and it gives the payload TWO lengths, the wire length and the
+            // strlen every consumer downstream computes, with everything between them
+            // riding invisibly past whichever side uses the other. NUL is valid UTF-8,
+            // so the validator below cannot catch it.
+            for ( int i = 0; i < length; i++ )
+            {
+                if ( string[i] == '\0' )
+                {
+                    return false;
+                }
+            }
+            if ( !serialize_string_is_valid_utf8( string, length ) )
+            {
+                return false;
+            }
             string[length] = '\0';
         }
         return true;
@@ -2684,6 +2772,13 @@ namespace serialize
     // Wire format is 32 bits per character, so streams are compatible between platforms with 2 and 4 byte wchar_t.
     // Code points above 0xFFFF are not translated between UTF-16 and UTF-32 platforms: reading a value that doesn't
     // fit in the local wchar_t fails rather than truncating.
+    //
+    // On read, malformed payloads are REFUSED in every build mode (STANDARD.md, "Readers must
+    // refuse malformed wstring payloads", adopted 2026-08-15): an unpaired surrogate fails the
+    // read — a high surrogate without its low, a low with no high before it, or a dangling high
+    // as the final group — and so does an interior NUL group, because a conforming writer
+    // derives the length from wcslen, so a zero group only arrives doctored and gives the
+    // payload two lengths. Well-formed surrogate PAIRS pass: they are how astral text travels.
 
     template <typename Stream> bool serialize_wstring_internal( Stream & stream, wchar_t * string, int buffer_size )
     {
@@ -2695,6 +2790,7 @@ namespace serialize
             serialize_assert( length < buffer_size );
         }
         serialize_int( stream, length, 0, buffer_size - 1 );
+        bool expecting_low_surrogate = false;
         for ( int i = 0; i < length; i++ )
         {
             uint32_t character = 0;
@@ -2709,11 +2805,35 @@ namespace serialize
                 {
                     return false;
                 }
+                if ( character == 0 )
+                {
+                    return false;                   // interior NUL: the two-lengths smuggling primitive
+                }
+                if ( expecting_low_surrogate )
+                {
+                    if ( character < 0xDC00 || character > 0xDFFF )
+                    {
+                        return false;               // high surrogate without its low
+                    }
+                    expecting_low_surrogate = false;
+                }
+                else if ( character >= 0xDC00 && character <= 0xDFFF )
+                {
+                    return false;                   // low surrogate with no high before it
+                }
+                else if ( character >= 0xD800 && character <= 0xDBFF )
+                {
+                    expecting_low_surrogate = true;
+                }
                 string[i] = (wchar_t) character;
             }
         }
         if ( Stream::IsReading )
         {
+            if ( expecting_low_surrogate )
+            {
+                return false;                       // the final group is a dangling high surrogate
+            }
             string[length] = L'\0';
         }
         return true;
@@ -2724,6 +2844,7 @@ namespace serialize
         Serialize a string to the stream (read/write/measure).
         This is a helper macro to make writing unified serialize functions easier.
         Serialize macros returns false on error so we don't need to use exceptions for error handling on read. This is an important safety measure because packet data comes from the network and may be malicious.
+        On read, malformed payloads are refused (STANDARD.md, adopted 2026-08-15): invalid UTF-8 fails the read, and so does an interior NUL byte among the transmitted bytes.
         IMPORTANT: This macro must be called inside a templated serialize function with template \<typename Stream\>. The serialize method must have a bool return value.
         @param stream The stream object. May be a read, write or measure stream.
         @param string The string to serialize write/measure. Pointer to buffer to be filled on read.
@@ -2744,6 +2865,7 @@ namespace serialize
         This is a helper macro to make writing unified serialize functions easier.
         Serialize macros returns false on error so we don't need to use exceptions for error handling on read. This is an important safety measure because packet data comes from the network and may be malicious.
         The wire format is 32 bits per character, so streams are compatible between platforms with 2 and 4 byte wchar_t. Reading a character that doesn't fit in the local wchar_t fails rather than truncating.
+        On read, malformed payloads are refused (STANDARD.md, adopted 2026-08-15): an unpaired surrogate fails the read, and so does an interior NUL group among the transmitted groups.
         IMPORTANT: This macro must be called inside a templated serialize function with template \<typename Stream\>. The serialize method must have a bool return value.
         @param stream The stream object. May be a read, write or measure stream.
         @param string The wide string to serialize write/measure. Pointer to buffer to be filled on read.
@@ -4845,6 +4967,191 @@ inline void test_wstring_validation()
             serialize_check( result == false );
             serialize_check( read_back[0] != (wchar_t) ( above_bmp & 0xFFFF ) );
         }
+    }
+}
+
+inline void test_string_read_validation()
+{
+    // STANDARD.md, "Readers must refuse malformed string payloads" (adopted 2026-08-15).
+    // Every refused stream below is DOCTORED with raw bit operations — no conforming
+    // writer can produce it — and the refusal binds in every build mode. Proven
+    // red-then-green: against the pre-ruling reader, every doctored stream here was
+    // ACCEPTED (harness run recorded with the ruling batch); with the refusals in
+    // place they are REFUSED, and the valid-content controls are unchanged.
+
+    const int BufferSize = 16;
+
+    // invalid UTF-8: 0xFF can never appear anywhere in well-formed UTF-8
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        serialize::WriteStream writeStream( buffer, sizeof( buffer ) );
+        int32_t length = 3;
+        serialize_check( writeStream.SerializeInteger( length, 0, BufferSize - 1 ) );
+        const uint8_t payload[3] = { 0xFF, 0xFE, 0xFF };
+        serialize_check( writeStream.SerializeBytes( payload, 3 ) );
+        writeStream.Flush();
+
+        char read_back[BufferSize];
+        serialize::ReadStream readStream( buffer, writeStream.GetBytesProcessed() );
+        serialize_check( serialize::serialize_string_internal( readStream, read_back, BufferSize ) == false );
+    }
+
+    // truncated UTF-8: a 3 byte lead as the final transmitted byte
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        serialize::WriteStream writeStream( buffer, sizeof( buffer ) );
+        int32_t length = 2;
+        serialize_check( writeStream.SerializeInteger( length, 0, BufferSize - 1 ) );
+        const uint8_t payload[2] = { 'a', 0xE2 };
+        serialize_check( writeStream.SerializeBytes( payload, 2 ) );
+        writeStream.Flush();
+
+        char read_back[BufferSize];
+        serialize::ReadStream readStream( buffer, writeStream.GetBytesProcessed() );
+        serialize_check( serialize::serialize_string_internal( readStream, read_back, BufferSize ) == false );
+    }
+
+    // interior NUL: wire length 3, strlen 1 — the TWO-LENGTHS smuggling primitive. A
+    // conforming writer derives the length from strlen, so this stream is impossible
+    // from conformance; accepted, it hands the application a payload whose wire length
+    // and C length disagree, and everything between them travels invisibly.
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        serialize::WriteStream writeStream( buffer, sizeof( buffer ) );
+        int32_t length = 3;
+        serialize_check( writeStream.SerializeInteger( length, 0, BufferSize - 1 ) );
+        const uint8_t payload[3] = { 'a', 0x00, 'b' };
+        serialize_check( writeStream.SerializeBytes( payload, 3 ) );
+        writeStream.Flush();
+
+        char read_back[BufferSize];
+        serialize::ReadStream readStream( buffer, writeStream.GetBytesProcessed() );
+        serialize_check( serialize::serialize_string_internal( readStream, read_back, BufferSize ) == false );
+    }
+
+    // control: valid multi-byte UTF-8 — 2, 3 and 4 byte sequences, built from explicit
+    // bytes so the source file encoding can never change the test — still round trips.
+    // The refusal costs no valid stream.
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        char text[BufferSize];
+        const uint8_t utf8[11] = { 'h', 0xC3, 0xA9, 0xE2, 0x82, 0xAC, 0xF0, 0x9F, 0x98, 0x80, 0 };  // h, e-acute, euro sign, U+1F600
+        memcpy( text, utf8, sizeof( utf8 ) );
+
+        serialize::WriteStream writeStream( buffer, sizeof( buffer ) );
+        serialize_check( serialize::serialize_string_internal( writeStream, text, BufferSize ) );
+        writeStream.Flush();
+
+        char read_back[BufferSize];
+        serialize::ReadStream readStream( buffer, writeStream.GetBytesProcessed() );
+        serialize_check( serialize::serialize_string_internal( readStream, read_back, BufferSize ) );
+        serialize_check( strcmp( read_back, text ) == 0 );
+    }
+}
+
+inline void test_wstring_read_validation()
+{
+    // STANDARD.md, "Readers must refuse malformed wstring payloads" (adopted 2026-08-15).
+    // Same shape as the narrow test above: doctored streams refused in every build mode,
+    // proven red-then-green, valid content unchanged.
+
+    const int BufferSize = 8;
+
+    // high surrogate followed by a non-surrogate: unpaired, refused
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        serialize::WriteStream writeStream( buffer, sizeof( buffer ) );
+        int32_t length = 2;
+        serialize_check( writeStream.SerializeInteger( length, 0, BufferSize - 1 ) );
+        uint32_t group0 = 0xD800;
+        uint32_t group1 = 0x0041;
+        serialize_check( writeStream.SerializeBits( group0, 32 ) );
+        serialize_check( writeStream.SerializeBits( group1, 32 ) );
+        writeStream.Flush();
+
+        wchar_t read_back[BufferSize];
+        serialize::ReadStream readStream( buffer, writeStream.GetBytesProcessed() );
+        serialize_check( serialize::serialize_wstring_internal( readStream, read_back, BufferSize ) == false );
+    }
+
+    // low surrogate with no high before it: refused
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        serialize::WriteStream writeStream( buffer, sizeof( buffer ) );
+        int32_t length = 1;
+        serialize_check( writeStream.SerializeInteger( length, 0, BufferSize - 1 ) );
+        uint32_t group0 = 0xDC00;
+        serialize_check( writeStream.SerializeBits( group0, 32 ) );
+        writeStream.Flush();
+
+        wchar_t read_back[BufferSize];
+        serialize::ReadStream readStream( buffer, writeStream.GetBytesProcessed() );
+        serialize_check( serialize::serialize_wstring_internal( readStream, read_back, BufferSize ) == false );
+    }
+
+    // high surrogate as the final transmitted group: dangling, refused
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        serialize::WriteStream writeStream( buffer, sizeof( buffer ) );
+        int32_t length = 1;
+        serialize_check( writeStream.SerializeInteger( length, 0, BufferSize - 1 ) );
+        uint32_t group0 = 0xD83D;
+        serialize_check( writeStream.SerializeBits( group0, 32 ) );
+        writeStream.Flush();
+
+        wchar_t read_back[BufferSize];
+        serialize::ReadStream readStream( buffer, writeStream.GetBytesProcessed() );
+        serialize_check( serialize::serialize_wstring_internal( readStream, read_back, BufferSize ) == false );
+    }
+
+    // interior NUL group: wire length 3, wcslen 1 — the same two-lengths primitive as
+    // the narrow string, refused
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        serialize::WriteStream writeStream( buffer, sizeof( buffer ) );
+        int32_t length = 3;
+        serialize_check( writeStream.SerializeInteger( length, 0, BufferSize - 1 ) );
+        uint32_t group0 = 0x0041;
+        uint32_t group1 = 0x0000;
+        uint32_t group2 = 0x0042;
+        serialize_check( writeStream.SerializeBits( group0, 32 ) );
+        serialize_check( writeStream.SerializeBits( group1, 32 ) );
+        serialize_check( writeStream.SerializeBits( group2, 32 ) );
+        writeStream.Flush();
+
+        wchar_t read_back[BufferSize];
+        serialize::ReadStream readStream( buffer, writeStream.GetBytesProcessed() );
+        serialize_check( serialize::serialize_wstring_internal( readStream, read_back, BufferSize ) == false );
+    }
+
+    // control: a well-formed surrogate PAIR is valid UTF-16 — it is how astral text
+    // travels — and must be ACCEPTED. Against main's reader the pair is stored as its
+    // two units on every platform; recombination on 4 byte wchar_t is the surrogate
+    // boundary branch's work and composes on top of this check.
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        serialize::WriteStream writeStream( buffer, sizeof( buffer ) );
+        int32_t length = 2;
+        serialize_check( writeStream.SerializeInteger( length, 0, BufferSize - 1 ) );
+        uint32_t group0 = 0xD83D;
+        uint32_t group1 = 0xDE00;
+        serialize_check( writeStream.SerializeBits( group0, 32 ) );
+        serialize_check( writeStream.SerializeBits( group1, 32 ) );
+        writeStream.Flush();
+
+        wchar_t read_back[BufferSize];
+        memset( read_back, 0, sizeof( read_back ) );
+        serialize::ReadStream readStream( buffer, writeStream.GetBytesProcessed() );
+        serialize_check( serialize::serialize_wstring_internal( readStream, read_back, BufferSize ) == true );
     }
 }
 
@@ -7456,6 +7763,8 @@ inline void serialize_test()
         SERIALIZE_RUN_TEST( test_serialize_int64_validation );
         SERIALIZE_RUN_TEST( test_serialize_bytes_validation );
         SERIALIZE_RUN_TEST( test_wstring_validation );
+        SERIALIZE_RUN_TEST( test_string_read_validation );
+        SERIALIZE_RUN_TEST( test_wstring_read_validation );
         SERIALIZE_RUN_TEST( test_int_relative_validation );
         SERIALIZE_RUN_TEST( test_compressed_float_validation );
         SERIALIZE_RUN_TEST( test_serialize_fixed );
