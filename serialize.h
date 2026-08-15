@@ -7639,6 +7639,332 @@ inline void test_compressed_float_conformance_nonzero_min()
     }
 }
 
+// Conformance vector for float/double BIT TRANSPARENCY (STANDARD.md, "Floating Point",
+// ratified 2026-08-15 from the #56 re-audit). Additive: golden_wire_bytes is untouched.
+//
+// The golden's float is 3.1415926f and its double 1.0/3.0 — ordinary values that any
+// sanitizing implementation reproduces — and the document-side checker compares them by
+// TOLERANCE, which is structurally unable to see a canonicalized NaN payload, a quieted
+// signaling bit, or a sign-of-zero flip. These patterns are the ones a sanitizer breaks,
+// constructed by bit-cast (never by literal) and compared by bits (never by value: NaN
+// compares unequal to itself and -0.0 == 0.0, so value comparison proves nothing here).
+
+static const uint8_t golden_float_bytes[] =
+{
+    0x01, 0x00, 0xC0, 0x7F,                             // f32 0x7FC00001: quiet NaN, payload 1
+    0x01, 0x00, 0x80, 0x7F,                             // f32 0x7F800001: SIGNALING NaN
+    0x00, 0x00, 0x80, 0xFF,                             // f32 0xFF800000: -Inf
+    0x00, 0x00, 0x00, 0x80,                             // f32 0x80000000: -0.0
+    0x01, 0x00, 0x00, 0x00,                             // f32 0x00000001: smallest denormal
+    0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF4, 0x7F,     // f64 0x7FF4000000000001: signaling NaN, payload 1
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80      // f64 0x8000000000000000: -0.0
+};
+
+static const uint32_t golden_float_patterns[5] = { 0x7FC00001u, 0x7F800001u, 0xFF800000u, 0x80000000u, 0x00000001u };
+static const uint64_t golden_double_patterns[2] = { 0x7FF4000000000001ULL, 0x8000000000000000ULL };
+
+template <typename Stream> bool GoldenFloatSerialize( Stream & stream, float * float_values, double * double_values )
+{
+    for ( int i = 0; i < 5; i++ )
+    {
+        serialize_float( stream, float_values[i] );
+    }
+    for ( int i = 0; i < 2; i++ )
+    {
+        serialize_double( stream, double_values[i] );
+    }
+    return true;
+}
+
+inline void test_golden_float_bit_transparency()
+{
+    // write side: the bit patterns above, bit-cast into float/double and serialized, must
+    // produce exactly the pinned little-endian bytes — no quieting, no canonicalization
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        serialize::WriteStream stream( buffer, (int) sizeof( buffer ) );
+        float float_values[5];
+        double double_values[2];
+        for ( int i = 0; i < 5; i++ )
+            memcpy( &float_values[i], &golden_float_patterns[i], 4 );
+        for ( int i = 0; i < 2; i++ )
+            memcpy( &double_values[i], &golden_double_patterns[i], 8 );
+        serialize_check( GoldenFloatSerialize( stream, float_values, double_values ) == true );
+        stream.Flush();
+        serialize_check( stream.GetBytesProcessed() == (int) sizeof( golden_float_bytes ) );
+        serialize_check( memcmp( buffer, golden_float_bytes, sizeof( golden_float_bytes ) ) == 0 );
+    }
+
+    // read side: the recovered BIT PATTERNS must equal the transmitted ones exactly.
+    // a tolerance-based harness passes a sanitizing reader forever — which is the point
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        memcpy( buffer, golden_float_bytes, sizeof( golden_float_bytes ) );
+        serialize::ReadStream stream( buffer, (int) sizeof( golden_float_bytes ) );
+        float float_values[5];
+        double double_values[2];
+        memset( float_values, 0, sizeof( float_values ) );
+        memset( double_values, 0, sizeof( double_values ) );
+        serialize_check( GoldenFloatSerialize( stream, float_values, double_values ) == true );
+        for ( int i = 0; i < 5; i++ )
+        {
+            uint32_t bits = 0;
+            memcpy( &bits, &float_values[i], 4 );
+            serialize_check( bits == golden_float_patterns[i] );
+        }
+        for ( int i = 0; i < 2; i++ )
+        {
+            uint64_t bits = 0;
+            memcpy( &bits, &double_values[i], 8 );
+            serialize_check( bits == golden_double_patterns[i] );
+        }
+    }
+}
+
+// Conformance vectors for the zero-count and unaligned bytes paths (STANDARD.md, "bytes —
+// count may be zero", ratified 2026-08-15 from the #56 re-audit). Additive pins. Each one
+// discriminates: the wrong-but-plausible implementation produces DIFFERENT bytes, spelled
+// out per vector, so a port carrying the divergence fails the pin instead of agreeing with
+// itself forever — round-trip self-tests cannot catch a skipped align, because both halves
+// skip the same one.
+
+template <typename Stream> bool ZeroLengthBytesSerialize( Stream & stream, uint32_t & head, uint8_t * data, uint32_t & tail )
+{
+    serialize_bits( stream, head, 3 );
+    serialize_bytes( stream, data, 0 );
+    serialize_bits( stream, tail, 8 );
+    return true;
+}
+
+inline void test_golden_zero_length_bytes()
+{
+    // { bits(5,3); bytes(count=0); bits(0xA5,8) }. The zero-length bytes still ALIGNS:
+    // the pad lands in bits [3,8) and 0xA5 occupies byte 1. A port that early-returns on
+    // count == 0 writes { 0x2D, 0x05 } — every later field shifted by five bits.
+    static const uint8_t pinned_bytes[2] = { 0x05, 0xA5 };
+
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        serialize::WriteStream stream( buffer, (int) sizeof( buffer ) );
+        uint32_t head = 5;
+        uint32_t tail = 0xA5;
+        uint8_t data[1] = { 0 };
+        serialize_check( ZeroLengthBytesSerialize( stream, head, data, tail ) == true );
+        stream.Flush();
+        serialize_check( stream.GetBytesProcessed() == (int) sizeof( pinned_bytes ) );
+        serialize_check( memcmp( buffer, pinned_bytes, sizeof( pinned_bytes ) ) == 0 );
+    }
+
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        memcpy( buffer, pinned_bytes, sizeof( pinned_bytes ) );
+        serialize::ReadStream stream( buffer, (int) sizeof( pinned_bytes ) );
+        uint32_t head = 0;
+        uint32_t tail = 0;
+        uint8_t data[1] = { 0 };
+        serialize_check( ZeroLengthBytesSerialize( stream, head, data, tail ) == true );
+        serialize_check( head == 5 );
+        serialize_check( tail == 0xA5 );
+        serialize_check( stream.GetBytesProcessed() == (int) sizeof( pinned_bytes ) );
+    }
+}
+
+template <typename Stream> bool ZeroLengthStringSerialize( Stream & stream, uint32_t & head, char * string, uint32_t & tail )
+{
+    serialize_bits( stream, head, 3 );
+    serialize_string( stream, string, 8 );
+    serialize_bits( stream, tail, 8 );
+    return true;
+}
+
+inline void test_golden_zero_length_string()
+{
+    // { bits(5,3); string("", buffer_size 8); bits(0xA5,8) }. The empty string is a 3-bit
+    // length of 0, then the zero-length payload's align pads bits [6,8). A port whose
+    // STRING path skips the empty-payload align writes { 0x45, 0x29 } — the exact hazard
+    // the C port's comment names, and a separate code path from bytes in three ports.
+    static const uint8_t pinned_bytes[2] = { 0x05, 0xA5 };
+
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        serialize::WriteStream stream( buffer, (int) sizeof( buffer ) );
+        uint32_t head = 5;
+        uint32_t tail = 0xA5;
+        char string[8] = { 0 };
+        serialize_check( ZeroLengthStringSerialize( stream, head, string, tail ) == true );
+        stream.Flush();
+        serialize_check( stream.GetBytesProcessed() == (int) sizeof( pinned_bytes ) );
+        serialize_check( memcmp( buffer, pinned_bytes, sizeof( pinned_bytes ) ) == 0 );
+    }
+
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        memcpy( buffer, pinned_bytes, sizeof( pinned_bytes ) );
+        serialize::ReadStream stream( buffer, (int) sizeof( pinned_bytes ) );
+        uint32_t head = 0;
+        uint32_t tail = 0;
+        char string[8];
+        memset( string, 0xFF, sizeof( string ) );
+        serialize_check( ZeroLengthStringSerialize( stream, head, string, tail ) == true );
+        serialize_check( head == 5 );
+        serialize_check( string[0] == '\0' );
+        serialize_check( tail == 0xA5 );
+        serialize_check( stream.GetBytesProcessed() == (int) sizeof( pinned_bytes ) );
+    }
+}
+
+template <typename Stream> bool UnalignedBytesSerialize( Stream & stream, uint32_t & head, uint8_t * data, uint32_t & tail )
+{
+    serialize_bits( stream, head, 1 );
+    serialize_bytes( stream, data, 2 );
+    serialize_bits( stream, tail, 4 );
+    return true;
+}
+
+inline void test_golden_unaligned_bytes()
+{
+    // { bits(1,1); bytes({0xEF,0xBE}, 2); bits(0x0F,4) }. Exercises serialize_bytes' OWN
+    // align from bit index 1 — the case the golden vector structurally shadows, because an
+    // explicit serialize_align immediately precedes its bytes field, making the operation's
+    // internal align a no-op there.
+    static const uint8_t pinned_bytes[4] = { 0x01, 0xEF, 0xBE, 0x0F };
+
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        serialize::WriteStream stream( buffer, (int) sizeof( buffer ) );
+        uint32_t head = 1;
+        uint32_t tail = 0x0F;
+        uint8_t data[2] = { 0xEF, 0xBE };
+        serialize_check( UnalignedBytesSerialize( stream, head, data, tail ) == true );
+        stream.Flush();
+        serialize_check( stream.GetBytesProcessed() == (int) sizeof( pinned_bytes ) );
+        serialize_check( memcmp( buffer, pinned_bytes, sizeof( pinned_bytes ) ) == 0 );
+    }
+
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        memcpy( buffer, pinned_bytes, sizeof( pinned_bytes ) );
+        serialize::ReadStream stream( buffer, (int) sizeof( pinned_bytes ) );
+        uint32_t head = 0;
+        uint32_t tail = 0;
+        uint8_t data[2] = { 0, 0 };
+        serialize_check( UnalignedBytesSerialize( stream, head, data, tail ) == true );
+        serialize_check( head == 1 );
+        serialize_check( data[0] == 0xEF );
+        serialize_check( data[1] == 0xBE );
+        serialize_check( tail == 0x0F );
+        serialize_check( stream.GetBytesProcessed() == (int) sizeof( pinned_bytes ) );
+    }
+}
+
+inline void test_measure_bound()
+{
+    // STANDARD.md, "The Measure Stream" (adopted 2026-08-15): a measure reports a size
+    // sufficient at ANY starting bit position — a bound, not the packet size — and the
+    // expected implementation charges worst-case 7 bits per alignment-performing
+    // operation. Exact-from-zero accounting is non-conforming: it under-counts every
+    // unaligned start.
+
+    // the ruling's worked example: { bits(8); align; bits(8) }
+    {
+        serialize::MeasureStream measureStream;
+        uint32_t byte_value = 0xAB;
+        serialize_check( measureStream.SerializeBits( byte_value, 8 ) == true );
+        serialize_check( measureStream.SerializeAlign() == true );
+        serialize_check( measureStream.SerializeBits( byte_value, 8 ) == true );
+        serialize_check( measureStream.GetBitsProcessed() == 23 );      // 8 + 7 + 8: the conservative charge.
+                                                                        // an exact-from-zero measure reports 16 —
+                                                                        // 2 bytes — which is NOT enough room when
+                                                                        // the message lands at bit offset 1
+
+        // written at every starting offset, the message's actual span never exceeds the
+        // measure — the property the bound exists to guarantee
+        for ( int offset = 0; offset < 8; offset++ )
+        {
+            uint8_t buffer[64];
+            memset( buffer, 0, sizeof( buffer ) );
+            serialize::WriteStream writeStream( buffer, (int) sizeof( buffer ) );
+            for ( int i = 0; i < offset; i++ )
+            {
+                uint32_t one_bit = 1;
+                serialize_check( writeStream.SerializeBits( one_bit, 1 ) == true );
+            }
+            const int64_t start = writeStream.GetBitsProcessed();
+            serialize_check( writeStream.SerializeBits( byte_value, 8 ) == true );
+            serialize_check( writeStream.SerializeAlign() == true );
+            serialize_check( writeStream.SerializeBits( byte_value, 8 ) == true );
+            const int64_t span = writeStream.GetBitsProcessed() - start;
+            serialize_check( span <= measureStream.GetBitsProcessed() );
+            if ( offset == 0 )
+                serialize_check( span == 16 );                          // 2 bytes from an aligned start...
+            if ( offset == 1 )
+                serialize_check( span == 23 );                          // ...3 bytes of room needed from offset 1
+        }
+    }
+
+    // measure >= written, across every message this suite pins. (The fuzz harness holds
+    // the same inequality over arbitrary op programs on every run.)
+    {
+        GoldenWireData data;
+        GoldenWireInit( data );
+        serialize::MeasureStream measureStream;
+        serialize_check( GoldenWireSerialize( measureStream, data ) == true );
+        uint8_t buffer[256];
+        memset( buffer, 0, sizeof( buffer ) );
+        serialize::WriteStream writeStream( buffer, (int) sizeof( buffer ) );
+        serialize_check( GoldenWireSerialize( writeStream, data ) == true );
+        writeStream.Flush();
+        serialize_check( measureStream.GetBitsProcessed() >= writeStream.GetBitsProcessed() );
+    }
+
+    {
+        float float_values[5];
+        double double_values[2];
+        for ( int i = 0; i < 5; i++ )
+            memcpy( &float_values[i], &golden_float_patterns[i], 4 );
+        for ( int i = 0; i < 2; i++ )
+            memcpy( &double_values[i], &golden_double_patterns[i], 8 );
+        serialize::MeasureStream measureStream;
+        serialize_check( GoldenFloatSerialize( measureStream, float_values, double_values ) == true );
+        serialize_check( measureStream.GetBitsProcessed() >= 5 * 32 + 2 * 64 );     // no aligns: exact, and still a bound
+    }
+
+    {
+        uint32_t head = 5;
+        uint32_t tail = 0xA5;
+        uint8_t data[1] = { 0 };
+        serialize::MeasureStream measureStream;
+        serialize_check( ZeroLengthBytesSerialize( measureStream, head, data, tail ) == true );
+        serialize_check( measureStream.GetBitsProcessed() >= 16 );                  // 3 + pad + 8 written; measure charges 3 + 7 + 8
+    }
+
+    {
+        uint32_t head = 5;
+        uint32_t tail = 0xA5;
+        char string[8] = { 0 };
+        serialize::MeasureStream measureStream;
+        serialize_check( ZeroLengthStringSerialize( measureStream, head, string, tail ) == true );
+        serialize_check( measureStream.GetBitsProcessed() >= 16 );
+    }
+
+    {
+        uint32_t head = 1;
+        uint32_t tail = 0x0F;
+        uint8_t data[2] = { 0xEF, 0xBE };
+        serialize::MeasureStream measureStream;
+        serialize_check( UnalignedBytesSerialize( measureStream, head, data, tail ) == true );
+        serialize_check( measureStream.GetBitsProcessed() >= 28 );                  // 28 bits written; measure charges 1 + 7 + 16 + 4
+    }
+}
+
 inline void test_unaligned_writer()
 {
     // the bit writer stores each dword with memcpy, so the write buffer does not need 4 byte alignment.
@@ -7793,6 +8119,11 @@ inline void serialize_test()
 #endif // #if defined( SERIALIZE_HAS_COMPILE_TIME_SURFACE )
         SERIALIZE_RUN_TEST( test_golden_wire_format );
         SERIALIZE_RUN_TEST( test_compressed_float_conformance_nonzero_min );
+        SERIALIZE_RUN_TEST( test_golden_float_bit_transparency );
+        SERIALIZE_RUN_TEST( test_golden_zero_length_bytes );
+        SERIALIZE_RUN_TEST( test_golden_zero_length_string );
+        SERIALIZE_RUN_TEST( test_golden_unaligned_bytes );
+        SERIALIZE_RUN_TEST( test_measure_bound );
         SERIALIZE_RUN_TEST( test_unaligned_writer );
         SERIALIZE_RUN_TEST( test_large_buffer );
     }
