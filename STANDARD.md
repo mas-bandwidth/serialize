@@ -42,6 +42,19 @@ required, rounded up to a byte.
 The stream is *aligned* when the bit index is a multiple of 8. The number of
 bits needed to reach alignment is `(8 - (bit_index % 8)) % 8`.
 
+**Writes assume trusted data — doctrine, ratified** *(adopted 2026-08-15 from
+the schema enactment; the ruling verbatim: "this is an intentional design
+choice of serialize. the write path is trusted, and it's your responsibility
+as the user of serialize library to write correctly. asserts in languages that
+support them in debug only.")*. Writer inputs are stated as **obligations, not
+defined behaviors**: this document owes a conforming writer exact bytes and
+owes a misbehaving writer nothing. Within that doctrine, misuse surfaces by
+each implementation's own convention, and costlier contracts — the UTF-8
+well-formedness contract under `string` is the type case, an O(n) check no
+release path should carry — assert in debug only, everywhere. The read side is
+untouched by the doctrine: readers face untrusted data, and every refusal rule
+this document states binds in every build mode.
+
 ## Bit-Level Primitives
 
 ### bits
@@ -192,10 +205,32 @@ convention — and with `fraction_bits = 0` the operation *is* a ranged integer.
 Readers must check that the decoded offset is at most `raw_max - raw_min` and
 fail otherwise — reject, never clamp.
 
+**A degenerate range where `min == max` is legal and costs zero bits — on
+every storage width** *(adopted 2026-08-15 from the schema enactment)*. The
+wire carries nothing and the reader recovers the value from the range alone:
+the raw value is `min << fraction_bits`, exactly the rule the ranged integers
+have always stated. The storage width must not change this: a Q112.16 field
+over a degenerate range costs zero bits, not `fraction_bits` zeros. *(Until
+2026-08-15 the implementations behaved four different ways here — zero bits,
+`fraction_bits` of zeros on the wide path only, a compile failure and a
+panic — the divergence the ruling closes.)*
+
 Because fixed point values are integers underneath, the round trip is
 **exact**: unlike `compressed_float` there is no quantization step, and the
 same raw value produces the same bytes and reads back bit-for-bit identical on
 every platform.
+
+**The one rounding rule** *(adopted 2026-08-15 from the schema enactment)*:
+the wire itself never rounds — the round trip above is exact — but wherever a
+value is quantized into a Q format or narrowed out of one, fixed point rounds
+ties **half away from zero**, everywhere it rounds: `( raw + half ) >> drop`
+for `raw >= 0`, `-( ( -raw + half ) >> drop )` for `raw < 0`, with
+`half = 1 << ( drop - 1 )`. The hazard, named: the naive arithmetic shift
+*floors*, so an implementation that applies `( raw + half ) >> drop` to a
+negative raw rounds ties toward +infinity and diverges by exactly one raw
+step, on exact ties of negative raws only. A rounding rule is not wire shape —
+no protocol identifier can see the divergence — so a conformance vector must
+pin a negative tie value that distinguishes the two rules.
 
 ### int_relative
 
@@ -223,6 +258,14 @@ width the subtraction buys nothing, and sending the absolute value lets the
 reader check `current > previous` directly. A reader must perform that check
 and fail if it does not hold, since the absolute form carries no ordering
 guarantee of its own.
+
+**The semantics are pinned: no wrapping** *(adopted 2026-08-15 from the schema
+enactment; the ruling verbatim: "no wrapping sequence numbers. meant for
+positive only and up to maximum only.")*. `serialize_int_relative` is strictly
+increasing — `current > previous`, the reader fails otherwise — and no wrap
+semantics exist: a caller with a wrapping counter unwraps it before
+serializing. Wrap-around is not an encoding this operation carries, not now
+and not by future amendment.
 
 ## Floating Point
 
@@ -316,6 +359,16 @@ The terminator is not transmitted; the reader appends it.
 Because `buffer_size` is an operand rather than a transmitted value, the same
 string serialized against different buffer sizes produces different bytes.
 
+**`string` payloads are well-formed UTF-8 by contract** *(adopted 2026-08-15
+from the schema enactment, writer-trusted per the doctrine above)*. The wire
+shape is unchanged; what the `string` spelling adds is a **contract**: the
+payload is well-formed UTF-8, the writer's obligation, never the reader's
+check. Writing malformed UTF-8 is a writer contract violation — debug-only
+asserts where the language supports them — there is no mandatory read-path
+validation and no release-path cost anywhere, and the conformance vectors
+carry only valid UTF-8. An application with genuinely arbitrary payloads uses
+`serialize_bytes`, which remains exactly that.
+
 ### wstring
 
     serialize_wstring( stream, string, buffer_size )
@@ -332,10 +385,20 @@ counterpart, which aligns via `serialize_bytes`. An implementation that mirrors
 the narrow string path here will produce the wrong bytes.
 
 Wide characters are transmitted as 32 bits regardless of the local `wchar_t`
-width, so streams are compatible between platforms with 2-byte and 4-byte
-`wchar_t`. Code points are not translated between UTF-16 and UTF-32: a reader
-whose `wchar_t` cannot hold a received value **fails the read rather than
-truncating**.
+width. A reader whose `wchar_t` cannot hold a received value **fails the read
+rather than truncating**.
+
+**Each 32-bit group carries one UTF-16 code unit — not one code point — and
+the payload is well-formed UTF-16 by contract** *(adopted 2026-08-15 from the
+schema enactment, writer-trusted per the doctrine above)*. Surrogate **pairs**
+are valid — full Unicode, an astral character is two groups; an **unpaired**
+surrogate is a writer contract violation, debug-asserted where the language
+supports it. 2-byte and 4-byte `wchar_t` platforms must produce **identical
+bytes**: the 4-byte platform converts at the boundary — splits astral code
+points into surrogate pairs on write, recombines on read — because the
+platform-compatibility claim this section used to make was false for astral
+text when each platform transmitted its own `wchar_t` units. Basic-plane text
+is unaffected on every platform.
 
 ## Worked Example
 

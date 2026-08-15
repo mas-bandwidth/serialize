@@ -123,7 +123,7 @@
     #elif __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
       #define SERIALIZE_BIG_ENDIAN 1
     #else
-      #error Unknown machine endianess detected. User needs to define SERIALIZE_LITTLE_ENDIAN or SERIALIZE_BIG_ENDIAN.
+      #error Unknown machine endianness detected. User needs to define SERIALIZE_LITTLE_ENDIAN or SERIALIZE_BIG_ENDIAN.
     #endif // __BYTE_ORDER__
 
   // Detect with GLIBC's endian.h
@@ -134,7 +134,7 @@
     #elif (__BYTE_ORDER == __BIG_ENDIAN)
       #define SERIALIZE_BIG_ENDIAN 1
     #else
-      #error Unknown machine endianess detected. User needs to define SERIALIZE_LITTLE_ENDIAN or SERIALIZE_BIG_ENDIAN.
+      #error Unknown machine endianness detected. User needs to define SERIALIZE_LITTLE_ENDIAN or SERIALIZE_BIG_ENDIAN.
     #endif // __BYTE_ORDER
 
   // Detect with _LITTLE_ENDIAN and _BIG_ENDIAN macro
@@ -158,7 +158,7 @@
   #elif defined(_MSC_VER) && defined(_M_ARM)
     #define SERIALIZE_LITTLE_ENDIAN 1
   #else
-    #error Unknown machine endianess detected. User needs to define SERIALIZE_LITTLE_ENDIAN or SERIALIZE_BIG_ENDIAN.
+    #error Unknown machine endianness detected. User needs to define SERIALIZE_LITTLE_ENDIAN or SERIALIZE_BIG_ENDIAN.
   #endif
 #endif
 
@@ -3018,6 +3018,20 @@ namespace serialize
             const uint64_t raw_max = uint64_t( MaxUnits ) << FractionalBits;
             const uint64_t raw_range = raw_max - raw_min;
 
+            if ( MinUnits == MaxUnits )
+            {
+                // degenerate range: the value IS the range, nothing to send (STANDARD.md: min == max costs zero bits, on every storage width)
+                if ( Stream::IsWriting )
+                {
+                    serialize_assert( uint64_t( value ) == raw_min );       // all checking is performed by debug asserts on write
+                }
+                if ( Stream::IsReading )
+                {
+                    value = Storage( raw_min );
+                }
+                return true;
+            }
+
             const int bits = BitsRequired64<raw_min, raw_max>::result;
 
             uint64_t offset = 0;
@@ -3098,6 +3112,22 @@ namespace serialize
             const Unsigned raw_min = Unsigned( Storage( MinUnits ) ) << FractionalBits;
             const Unsigned raw_max = Unsigned( Storage( MaxUnits ) ) << FractionalBits;
             const Unsigned raw_range = raw_max - raw_min;
+
+            if ( MinUnits == MaxUnits )
+            {
+                // degenerate range: the value IS the range, nothing to send. the wide path must agree
+                // with the narrow path here — FractionalBits of zeros is NOT a degenerate encoding
+                // (STANDARD.md: min == max costs zero bits, on every storage width)
+                if ( Stream::IsWriting )
+                {
+                    serialize_assert( Unsigned( value ) == raw_min );       // all checking is performed by debug asserts on write
+                }
+                if ( Stream::IsReading )
+                {
+                    value = Storage( raw_min );
+                }
+                return true;
+            }
 
             // the wire cost, computed in the 64 bit compile time domain: the range in whole units
             // is exact in a uint64, and shifting it left by FractionalBits adds exactly
@@ -3205,7 +3235,7 @@ namespace serialize
         serialize_static_assert( IntegerBits >= 1, "serialize_fixed needs at least one integer bit. the sign bit counts for signed storage" );
         serialize_static_assert( FractionalBits >= 0, "serialize_fixed fractional bits can't be negative" );
         serialize_static_assert( IntegerBits + FractionalBits == 8 * (int) sizeof( Storage ), "serialize_fixed integer bits plus fractional bits must equal the number of bits in the storage type" );
-        serialize_static_assert( MinUnits < MaxUnits, "serialize_fixed min must be below max" );
+        serialize_static_assert( MinUnits <= MaxUnits, "serialize_fixed min must not exceed max" );
 
         return FixedPointSerializer< ( 8 * (int) sizeof( Storage ) > 64 ) >::template Serialize<IntegerBits, FractionalBits, MinUnits, MaxUnits>( stream, value );
     }
@@ -3215,6 +3245,7 @@ namespace serialize
         This is a helper macro to make writing unified serialize functions easier.
         The Q format and the bounds are compile time constants: integer_bits plus fraction_bits must equal the number of bits in the storage type, with the sign bit counting towards integer_bits for signed storage. For example, Q48.16 in an int64_t is ( 48, 16 ) and Q112.16 in a serialize::int128_t is ( 112, 16 ). Any integer storage type works, including 128 bit storage on every platform: native __int128 where the compiler provides it, the emulated pair where it doesn't.
         The bounds are whole units and must be constant expressions: a runtime bound fails to compile, and bounds that don't fit the Q format fail with a static assert. The value is serialized as an offset from min in the minimal number of bits for the range — a constant of the call site — and the round trip is exact: fixed point values are integers underneath, so unlike compressed floats there is no quantization error and results are identical across platforms.
+        A degenerate range where min == max is legal and costs zero bits on every storage width: nothing is written, and the reader recovers the value from the range alone — the raw value min << fraction_bits.
         For storage of 64 bits or fewer the wire format is byte identical to serialize_int64 of the raw value over the raw bounds.
         Serialize macros returns false on error so we don't need to use exceptions for error handling on read. This is an important safety measure because packet data comes from the network and may be malicious.
         IMPORTANT: This macro must be called inside a templated serialize function with template \<typename Stream\>. The serialize method must have a bool return value.
@@ -5101,7 +5132,7 @@ inline void test_serialize_fixed()
     //     int32_t value = 0;
     //     serialize::serialize_fixed_internal<16, 8, 0, 100>( stream, value );                 // 16 + 8 != 32: the Q format doesn't fill the storage type
     //     serialize::serialize_fixed_internal<16, 16, -40000, +40000>( stream, value );        // bounds exceed the Q16.16 whole unit capacity [-32768,32767]
-    //     serialize::serialize_fixed_internal<16, 16, 100, 100>( stream, value );              // min must be below max
+    //     serialize::serialize_fixed_internal<16, 16, 200, 100>( stream, value );              // min must not exceed max (min == max is LEGAL: zero bits, see test_serialize_fixed_degenerate)
     //     float not_an_integer = 0.0f;
     //     serialize::serialize_fixed_internal<16, 16, 0, 100>( stream, not_an_integer );       // storage must be an integer type
     //     int runtime_bound = 100;
@@ -5384,6 +5415,146 @@ inline void test_serialize_fixed_wide_emulated()
         serialize_check( read_back == ::serialize_int128_t( raw ) );
     }
 #endif // #if defined(__SIZEOF_INT128__)
+}
+
+inline void test_serialize_fixed_degenerate()
+{
+    // STANDARD.md: a degenerate range where min == max is LEGAL and costs ZERO
+    // BITS on every storage width -- nothing is written, and the reader
+    // recovers the value from the range alone: the raw value min << fraction_bits.
+    //
+    // The wide path is why this test exists (serialize#54): ports computed the
+    // wide bit count as bits_required( min, max ) + fraction_bits, which
+    // degenerates to fraction_bits ZEROS when min == max while their narrow
+    // paths wrote nothing -- the same library disagreeing with itself across
+    // the 64/128 storage boundary. This library refused to compile the case
+    // outright (static assert min < max), stricter than the format. Both
+    // paths must write zero bits, and this test pins each of them.
+
+    // narrow storage: Q16.16
+    {
+        uint8_t buffer[16] = { 0 };
+
+        serialize::WriteStream writeStream( buffer, 16 );
+        int32_t degenerate = 5 * 65536;                              // 5.0 in Q16.16: the raw value IS min << 16
+        int32_t after = 3;
+        serialize_check( ( serialize::serialize_fixed_internal<16, 16, 5, 5>( writeStream, degenerate ) ) == true );
+        serialize_check( writeStream.GetBitsProcessed() == 0 );      // nothing written
+        serialize_check( writeStream.SerializeInteger( after, 0, 7 ) );
+        serialize_check( writeStream.GetBitsProcessed() == 3 );      // the NEXT field starts at bit 0
+        writeStream.Flush();
+
+        serialize::ReadStream readStream( buffer, writeStream.GetBytesProcessed() );
+        int32_t read_degenerate = 0;
+        int32_t read_after = 0;
+        serialize_check( ( serialize::serialize_fixed_internal<16, 16, 5, 5>( readStream, read_degenerate ) ) == true );
+        serialize_check( read_degenerate == 5 * 65536 );             // recovered from the range
+        serialize_check( readStream.GetBitsProcessed() == 0 );
+        serialize_check( readStream.SerializeInteger( read_after, 0, 7 ) );
+        serialize_check( read_after == 3 );
+
+        serialize::MeasureStream measureStream;
+        int32_t measured = 5 * 65536;
+        serialize_check( ( serialize::serialize_fixed_internal<16, 16, 5, 5>( measureStream, measured ) ) == true );
+        serialize_check( measureStream.GetBitsProcessed() == 0 );
+    }
+
+    // narrow storage, negative degenerate bound: Q48.16 at -7.0 -- the raw min
+    // is negative, and the reader must still recover it exactly
+    {
+        uint8_t buffer[16] = { 0 };
+
+        serialize::WriteStream writeStream( buffer, 16 );
+        int64_t degenerate = int64_t( -7 ) * 65536;
+        int32_t after = 3;
+        serialize_check( ( serialize::serialize_fixed_internal<48, 16, -7, -7>( writeStream, degenerate ) ) == true );
+        serialize_check( writeStream.GetBitsProcessed() == 0 );
+        serialize_check( writeStream.SerializeInteger( after, 0, 7 ) );
+        writeStream.Flush();
+
+        serialize::ReadStream readStream( buffer, writeStream.GetBytesProcessed() );
+        int64_t read_degenerate = 0;
+        int32_t read_after = 0;
+        serialize_check( ( serialize::serialize_fixed_internal<48, 16, -7, -7>( readStream, read_degenerate ) ) == true );
+        serialize_check( read_degenerate == int64_t( -7 ) * 65536 );
+        serialize_check( readStream.SerializeInteger( read_after, 0, 7 ) );
+        serialize_check( read_after == 3 );
+    }
+
+    // wide storage: Q112.16 -- the path that used to cost fraction_bits zeros
+    // in the ports. zero bits here, exactly like the narrow path
+    {
+        uint8_t buffer[16] = { 0 };
+
+        serialize::WriteStream writeStream( buffer, 16 );
+        serialize::int128_t degenerate = serialize::int128_t( 9 * 65536 );  // 9.0 in Q112.16
+        int32_t after = 3;
+        serialize_check( ( serialize::serialize_fixed_internal<112, 16, 9, 9>( writeStream, degenerate ) ) == true );
+        serialize_check( writeStream.GetBitsProcessed() == 0 );      // zero bits, NOT fraction_bits
+        serialize_check( writeStream.SerializeInteger( after, 0, 7 ) );
+        serialize_check( writeStream.GetBitsProcessed() == 3 );
+        writeStream.Flush();
+
+        serialize::ReadStream readStream( buffer, writeStream.GetBytesProcessed() );
+        serialize::int128_t read_degenerate( 0 );
+        int32_t read_after = 0;
+        serialize_check( ( serialize::serialize_fixed_internal<112, 16, 9, 9>( readStream, read_degenerate ) ) == true );
+        serialize_check( read_degenerate == serialize::int128_t( 9 * 65536 ) );
+        serialize_check( readStream.GetBitsProcessed() == 0 );
+        serialize_check( readStream.SerializeInteger( read_after, 0, 7 ) );
+        serialize_check( read_after == 3 );
+
+        serialize::MeasureStream measureStream;
+        serialize::int128_t measured = serialize::int128_t( 9 * 65536 );
+        serialize_check( ( serialize::serialize_fixed_internal<112, 16, 9, 9>( measureStream, measured ) ) == true );
+        serialize_check( measureStream.GetBitsProcessed() == 0 );
+    }
+
+    // wide storage, negative degenerate bound: Q112.16 at -9.0
+    {
+        uint8_t buffer[16] = { 0 };
+
+        serialize::WriteStream writeStream( buffer, 16 );
+        serialize::int128_t degenerate = serialize::int128_t( -9 * 65536 );
+        int32_t after = 3;
+        serialize_check( ( serialize::serialize_fixed_internal<112, 16, -9, -9>( writeStream, degenerate ) ) == true );
+        serialize_check( writeStream.GetBitsProcessed() == 0 );
+        serialize_check( writeStream.SerializeInteger( after, 0, 7 ) );
+        writeStream.Flush();
+
+        serialize::ReadStream readStream( buffer, writeStream.GetBytesProcessed() );
+        serialize::int128_t read_degenerate( 0 );
+        int32_t read_after = 0;
+        serialize_check( ( serialize::serialize_fixed_internal<112, 16, -9, -9>( readStream, read_degenerate ) ) == true );
+        serialize_check( read_degenerate == serialize::int128_t( -9 * 65536 ) );
+        serialize_check( readStream.SerializeInteger( read_after, 0, 7 ) );
+        serialize_check( read_after == 3 );
+    }
+
+    // wide storage, emulated representation: Q64.64 over min == max == 0. the
+    // old wide formula would have made this 64 bits of zeros -- the fraction
+    // alone spans the full 64 bit fractional field. explicitly the emulated
+    // pair, so the degenerate path is proven in both representations on every
+    // platform
+    {
+        uint8_t buffer[16] = { 0 };
+
+        serialize::WriteStream writeStream( buffer, 16 );
+        ::serialize_int128_t degenerate( 0 );
+        int32_t after = 3;
+        serialize_check( ( serialize::serialize_fixed_internal<64, 64, 0, 0>( writeStream, degenerate ) ) == true );
+        serialize_check( writeStream.GetBitsProcessed() == 0 );      // zero bits, not the 64 bit fractional field
+        serialize_check( writeStream.SerializeInteger( after, 0, 7 ) );
+        writeStream.Flush();
+
+        serialize::ReadStream readStream( buffer, writeStream.GetBytesProcessed() );
+        ::serialize_int128_t read_degenerate( 1 );                   // a wrong value, so recovery is observable
+        int32_t read_after = 0;
+        serialize_check( ( serialize::serialize_fixed_internal<64, 64, 0, 0>( readStream, read_degenerate ) ) == true );
+        serialize_check( read_degenerate == ::serialize_int128_t( 0 ) );
+        serialize_check( readStream.SerializeInteger( read_after, 0, 7 ) );
+        serialize_check( read_after == 3 );
+    }
 }
 
 inline void test_serialize_uint128()
@@ -7292,6 +7463,7 @@ inline void serialize_test()
         SERIALIZE_RUN_TEST( test_serialize_fixed_matches_int64 );
         SERIALIZE_RUN_TEST( test_serialize_fixed_wide );
         SERIALIZE_RUN_TEST( test_serialize_fixed_wide_emulated );
+        SERIALIZE_RUN_TEST( test_serialize_fixed_degenerate );
         SERIALIZE_RUN_TEST( test_serialize_uint128 );
         SERIALIZE_RUN_TEST( test_serialize_int128 );
         SERIALIZE_RUN_TEST( test_uint128_emulation );
