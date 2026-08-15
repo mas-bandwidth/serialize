@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # the corpus is cached across runs so fuzzing is cumulative: each night
       # starts from the most recent corpus and saves the evolved one
