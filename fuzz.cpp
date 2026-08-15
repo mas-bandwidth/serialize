@@ -414,9 +414,15 @@ template <typename Stream> bool FuzzRoundTrip( Stream & stream, const uint8_t * 
 
             case 7:
             {
-                // arbitrary bit patterns again: out of range, nan and inf values must clamp into
-                // [min,max] on write, and finite in range values must round trip within the resolution
-                const uint32_t expected_bits = pool.NextUint32();
+                // arbitrary FINITE bit patterns: out of range values must clamp into [min,max] on
+                // write, and finite in range values must round trip within the resolution. non-finite
+                // values are non-conforming on write (STANDARD.md, adopted 2026-08-15) and assert out
+                // in debug, so the writer is fed only finite input: clearing the exponent of a
+                // non-finite pattern yields a subnormal, keeping the sign and mantissa entropy.
+                // hostile non-finite coverage belongs to the read path, which stage one exercises.
+                const uint32_t raw_bits = pool.NextUint32();
+                const bool raw_finite = ( raw_bits & 0x7FFFFFFF ) < 0x7F800000;
+                const uint32_t expected_bits = raw_finite ? raw_bits : ( raw_bits & 0x807FFFFF );
                 float expected = 0.0f;
                 memcpy( &expected, &expected_bits, 4 );
                 float value = Stream::IsWriting ? expected : 0.0f;
@@ -481,8 +487,11 @@ template <typename Stream> bool FuzzRoundTrip( Stream & stream, const uint8_t * 
                 for ( int j = 0; j < length; j++ )
                 {
                     // masked to ASCII: the string payload is well-formed UTF-8 by the
-                    // writer's contract, debug-asserted, and asserts are live in this
-                    // harness. Arbitrary bytes still reach the READ path via FuzzRead.
+                    // writer's contract (debug-asserted, and asserts are live in this
+                    // harness), and the reader REFUSES malformed payloads (STANDARD.md,
+                    // adopted 2026-08-15), so the differential round trip must generate
+                    // conforming content. Arbitrary bytes still reach the READ path via
+                    // FuzzRead.
                     const uint8_t c = pool.NextByte() & 0x7F;
                     expected[j] = ( c != 0 ) ? (char) c : ' ';
                 }
@@ -510,8 +519,9 @@ template <typename Stream> bool FuzzRoundTrip( Stream & stream, const uint8_t * 
                     if ( unit >= 0xD800 && unit <= 0xDFFF )
                     {
                         unit -= 0x0800;     // out of the surrogate block: the payload is well-formed
-                                            // UTF-16 by the writer's contract, debug-asserted, and
-                                            // asserts are live in this harness
+                                            // UTF-16 by the writer's contract (debug-asserted, live in
+                                            // this harness), and the reader REFUSES unpaired surrogates
+                                            // (STANDARD.md, adopted 2026-08-15)
                     }
                     expected[j] = (wchar_t) unit;
                 }

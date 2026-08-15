@@ -15,8 +15,10 @@ in `[0,7]` costs three.
 
 Reading and writing are expressed once, as a single templated function per
 message type, instantiated against a write stream, a read stream, or a measure
-stream. The measure stream computes the size a message would occupy without
-producing bytes. This document concerns only the bytes on the wire.
+stream. The measure stream computes a conservative bound on the size a message
+would occupy, without producing bytes — its obligations are specified in "The
+Measure Stream" below. Everything else in this document concerns the bytes on
+the wire.
 
 ## General Conventions
 
@@ -283,6 +285,19 @@ The 32 bits of the IEEE-754 single-precision representation, written as a
 The 64 bits of the IEEE-754 double-precision representation, written as one
 64-bit group.
 
+**Bit transparency — both directions** *(ratified 2026-08-15 from the #56
+re-audit; every implementation already complies)*. `float` and `double` are
+transparent in both directions. Every bit pattern is legal on the wire — NaNs
+with any payload, signaling NaNs, infinities, negative zero, denormals — and
+the reader reproduces the transmitted pattern exactly: it must not
+canonicalize, quiet, flush, or refuse any of them. There is no reader
+latitude here — a reader that rejects NaN, or canonicalizes payloads, does
+not conform; the read returns exactly the bits read. A round trip through any
+conforming writer/reader pair preserves all 32 (or 64) bits. Conformance
+vectors for these operations must compare **bit patterns, not values**: NaN
+compares unequal to itself, `-0.0 == 0.0`, and a tolerance comparison cannot
+see a quieted signaling bit, so a value-space comparison here proves nothing.
+
 ### compressed_float
 
     serialize_compressed_float( stream, value, min, max, res )
@@ -319,7 +334,32 @@ under every variant, so a conformance vector built only from such values will
 pass while the wire is wrong. Vectors must include values that land between
 quanta.
 
+**The reader's arithmetic is pinned the same way.** The decode — divide by
+`max_integer_value`, multiply by `delta`, add `min` — is `float32` with every
+step rounding: the quotient rounds, the product rounds BEFORE `min` is added,
+and the sum rounds. An implementation must not widen any step to `double`, and
+must not contract the multiply and the add into a fused multiply-add — fused,
+the decode rounds once instead of twice, and whenever `min` is non-zero the
+decoded value can land one ulp away from the conformant result. That never
+changes the bytes being read, but it changes the value obtained from them: a
+value decoded on a fusing platform and re-encoded produces different wire,
+which breaks round-tripping between conforming implementations. The same
+suppression techniques the writer paragraph lists apply here, and conformance
+vectors over a non-zero-`min` range must pin decoded values **bit-exactly** —
+a tolerance comparison cannot see a one-ulp divergence.
+
 Readers must reject an integer greater than `max_integer_value`.
+
+**Non-finite inputs are non-conforming.** *(Adopted 2026-08-15; the ruling
+verbatim: "it's non-conforming. also, attempting to send NaN or INF or
+anything else through compressed float is non-conforming and should assert
+out on write too.")* A declaration whose `delta = max - min` — or whose
+`values = delta / res` — is not finite in `float32` is non-conforming, and
+this document defines no wire meaning for it. Writing a non-finite value
+(NaN, `+Inf`, `-Inf`) through `compressed_float` is non-conforming.
+Conforming writers assert in debug builds, per the family's writer-trusted
+model. The read path is untouched: the poison is in the declaration or the
+input value, never on the wire, so there is nothing for a reader to refuse.
 
 This is lossy by construction: a round trip returns the nearest representable
 quantum, not the original value.
@@ -344,6 +384,15 @@ format, not an optimization — a reader that does not align will desynchronize.
 
 `count` is not written. Both sides must already agree on it.
 
+**`count` may be zero** *(ratified 2026-08-15 from the #56 re-audit; every
+implementation already complies)*. The alignment is performed regardless: a
+zero-length `serialize_bytes` pads to the byte boundary and writes nothing
+else, and the reader performs and verifies the same alignment. Skipping the
+alignment when `count` is zero — a plausible "optimization" — desynchronizes
+every field that follows, and a round-trip self-test cannot catch it, because
+both halves skip the same align. This clause is load-bearing for `string`,
+whose empty case reaches exactly this path.
+
 ### string
 
     serialize_string( stream, string, buffer_size )
@@ -362,12 +411,38 @@ string serialized against different buffer sizes produces different bytes.
 **`string` payloads are well-formed UTF-8 by contract** *(adopted 2026-08-15
 from the schema enactment, writer-trusted per the doctrine above)*. The wire
 shape is unchanged; what the `string` spelling adds is a **contract**: the
-payload is well-formed UTF-8, the writer's obligation, never the reader's
-check. Writing malformed UTF-8 is a writer contract violation — debug-only
-asserts where the language supports them — there is no mandatory read-path
-validation and no release-path cost anywhere, and the conformance vectors
-carry only valid UTF-8. An application with genuinely arbitrary payloads uses
-`serialize_bytes`, which remains exactly that.
+payload is well-formed UTF-8, the writer's obligation. Writing malformed UTF-8
+is a writer contract violation — debug-only asserts where the language
+supports them — and the conformance vectors carry only valid UTF-8. An
+application with genuinely arbitrary payloads uses `serialize_bytes`, which
+remains exactly that. *(Until 2026-08-15 this paragraph also promised no
+mandatory read-path validation; the ruling below supersedes that half. The
+writer's obligation stands unchanged.)*
+
+**Readers must refuse malformed `string` payloads** *(adopted 2026-08-15)*.
+Two refusal rules, binding in every build mode like every other read-side rule
+in this document:
+
+* **Invalid UTF-8 fails the read.** The payload the contract above promises is
+  the payload the reader insists on: a stream carrying malformed UTF-8 was not
+  produced by a conforming writer, and the reader refuses it rather than
+  handing it to the application.
+* **An interior NUL fails the read** — a zero byte anywhere among the `length`
+  transmitted bytes. A conforming writer derives `length` from `strlen`, so no
+  zero byte can reach the wire from conformance; a stream carrying one gives
+  the payload **two lengths** — the wire length, and the `strlen` every
+  consumer downstream will compute — and everything between them rides
+  invisibly past whichever side uses the other. Refusing the byte closes the
+  smuggling primitive. (NUL is well-formed UTF-8, which is why this is its own
+  rule.)
+
+These are refusal rules, and refusal rules are format: an implementation that
+skips one accepts streams a conforming implementation refuses. *(Cost,
+recorded with the ruling: the string operations are the convenience path, not
+the hot path — strings are rare in serialized game traffic, and a design
+chasing minimal bandwidth does not send strings at all — so the O(n)
+validation prices into traffic that performance-sensitive designs do not
+carry.)*
 
 ### wstring
 
@@ -399,6 +474,21 @@ points into surrogate pairs on write, recombines on read — because the
 platform-compatibility claim this section used to make was false for astral
 text when each platform transmitted its own `wchar_t` units. Basic-plane text
 is unaffected on every platform.
+
+**Readers must refuse malformed `wstring` payloads** *(adopted 2026-08-15, the
+same ruling as `string`'s)*. The same two rules, in UTF-16 terms, binding in
+every build mode:
+
+* **An unpaired surrogate fails the read**: a high surrogate
+  (`0xD800`–`0xDBFF`) not immediately followed by a low surrogate
+  (`0xDC00`–`0xDFFF`), a low surrogate not immediately preceded by a high
+  surrogate, or a high surrogate as the final transmitted group. Well-formed
+  surrogate **pairs** remain valid — they are how astral text travels.
+* **An interior NUL fails the read** — a zero group among the `length`
+  transmitted groups — by the same two-lengths logic as `string`: a conforming
+  writer derives `length` from `wcslen`, so a zero group is impossible from
+  conformance, and a stream carrying one is carrying a payload with two
+  lengths.
 
 ## Worked Example
 
@@ -449,6 +539,126 @@ write, rather than sharing one templated function.
 exist for convenience and to avoid a branch, not to encode anything
 differently. This document therefore specifies each operation once, under its
 `serialize_` name.
+
+## The Measure Stream
+
+Until 2026-08-15 this document disclaimed the measure stream in its third
+paragraph and never mentioned it again — the same silence `compressed_float`
+once enjoyed, and the implementations had quietly split under it: one measured
+alignment exactly from a running bit index, four charged the worst case. This
+section replaces the silence with the ruling *(2026-08-15, verbatim: "measure
+must be large enough to serialize the message but doesn't need to be exact. it
+is used only for yojimbo message serialization to see if there is enough room
+in the packet to definitely serialize a message.")*.
+
+**A measure is a bound, not the packet size.** A measure must report a size
+**sufficient to serialize the message at any starting bit position**. It need
+not be exact, and cannot be: alignment cost depends on the bit position the
+message is later written at, which a measure does not know — the same message
+costs different bits at different offsets, so no single number is exact for
+all of them *(the ruling: "the exact is not possible, since align is going to
+be different in 1st and 2nd times serialize is called. it is bit position
+dependent.")*.
+
+**The expected implementation charges the worst case: 7 bits per
+alignment-performing operation** — `align`, `bytes`, `string` — and exact
+width for everything else, which is every other operation: nothing else in
+this document is position-dependent.
+
+**A measure refuses nothing at runtime.** The measure follows the write
+path's misuse model *(the writes-trusted doctrine above)*: invalid parameters
+or out-of-range values are the caller's contract violation, asserted in debug
+builds where the language supports it, and a measure never refuses at runtime
+in release. A measure sits on the trusted side of the boundary — nothing it
+sees came off a network.
+
+**Exact-from-zero accounting is non-conforming** *(the ruling: "so if some
+implementations of serialize measure in other languages are exact, they
+probably should not be. make them conservative bounds like in C++, and the
+standard should specify this is what is expected.")*. A measure that computes
+alignment from a running bit index starting at zero reports the exact cost of
+writing the message from an aligned start — and **under-counts every unaligned
+start**. The worked example: `{ bits(8); align; bits(8) }` is 16 bits — 2
+bytes — written from an aligned start, where the align is a no-op; written
+from bit offset 1, the align pads 7 bits and the message spans 23 bits — 3
+bytes of room needed. The exact-from-zero answer of 2 bytes is not sufficient
+at every starting position, which is the one thing a measure is for. The
+conservative answer — 8 + 7 + 8 = 23 bits — is sufficient everywhere.
+
+**What a measure is for, and what it is not** *(rationale, recorded)*. The
+operation exists so a packet assembler can ask "does this message definitely
+fit in the space remaining?" — the yojimbo fits-check — and a conservative
+bound answers exactly that question. Comparing a measure to a write's
+`bytes_processed` and expecting equality is a misuse: the bound is not the
+packet size. An application that needs the true bit count of a message from a
+known starting position has always had the escape hatch — write it to a
+scratch stream and read the count off the write. And the operation is probably
+vestigial — *"we won't support it with the rANS encoder for example"* — 
+specified here because five implementations ship it today and had already
+begun to disagree, not because it is expected to survive into entropy-coded
+encodings.
+
+**Testable**: for every message in the conformance corpus,
+`measure >= bits written`, at every starting bit position; and the worked
+example discriminates — a conservative measure reports 23 bits for
+`{ bits(8); align; bits(8) }` where an exact-from-zero measure reports 16.
+
+## Reader Obligations
+
+The operations above state what the bytes mean. This section states what a
+reader must **do**. These streams arrive from the network; for a parser of
+untrusted input, whatever this document leaves unspecified is the attack
+surface.
+
+**Reading past the end must fail.** An operation that would consume more bits
+than remain in the stream fails the read. It must not produce a partial value,
+zero-fill the missing bits, or wrap. A failed read is terminal for the stream:
+nothing after the failing operation has a defined position, so nothing after
+it is interpretable.
+
+**Past-end memory is an implementation contract, not a format concern.** The
+stream is exactly its stated length, and no operation's meaning ever depends
+on memory beyond it. An implementation may still *load* — never interpret —
+bytes past the end as an artifact of how it reads: the C++ implementation
+loads 64-bit windows at byte granularity and therefore requires its caller to
+allocate at least 8 bytes beyond the data; the C implementation prices its
+window to stay inside the buffer and imposes no such requirement. Both are
+conforming. Conformance requires that loaded-but-uninterpreted bytes can never
+influence a decoded value or an accept/reject decision, and that an
+implementation state which allocation contract its caller is under — a caller
+holding the wrong contract is reading out of bounds, and that is a property of
+the implementation's documentation, not of the wire.
+
+**Trailing bits: writers must write zero; readers must not look; tools may
+judge.** *(Adopted 2026-08-15; the ruling verbatim: "Yes, I am OK with
+writers must write zero, readers must ignore non-zero. And it's good for a
+check, we want to check-- was this really written by serialize? and this is
+another way to encode this in.")* After the final operation of a message, up
+to 7 bits may remain in the final byte. Three rules, one per party:
+
+* Writers **must emit zero** in the unused bits of the final byte. Every
+  implementation already does this by construction — the flushed scratch
+  beyond the bit index is zero — and the behavior is now an obligation
+  rather than an observation. It makes the encoding canonical: among
+  conforming writers, one logical stream is exactly one byte sequence.
+* Readers **must not reject** a stream for the contents of those bits. No
+  read operation examines them. The zero-check obligation applies exactly
+  where an operation actually reads padding: `serialize_align`, and the
+  alignment step inside `serialize_bytes` and `serialize_string`.
+* Non-zero trailing bits are a **provenance signal, not a protocol error**:
+  a conformance or diagnostic check may treat them as evidence that the
+  stream was not produced by a conforming writer — another way to ask "was
+  this really written by serialize?". Such a check lives in tooling and
+  validators, never on the read path, and its verdict never changes what a
+  reader accepts.
+
+**Refusal rules are part of the format.** The per-operation obligations stated
+above — decoded values within `[min,max]`, decoded offsets within range,
+alignment padding zero, `wstring` code points representable in the local wide
+character — are refusal rules, not advice. An implementation that skips one
+accepts streams a conforming implementation refuses, and two implementations
+that disagree about refusal disagree about the format. Every refusal rule is
+testable by a vector that a conforming reader must reject.
 
 ## Compatibility Notes
 

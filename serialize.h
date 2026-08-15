@@ -2424,6 +2424,13 @@ namespace serialize
 
         float values = delta / res;
 
+        // a declaration whose delta or values is not finite in float32 is non-conforming
+        // (STANDARD.md, adopted 2026-08-15) -- assert in debug, per the writer-trusted model.
+        // finiteness is spelled x - x == 0 (NaN and both infinities fail it: Inf - Inf is NaN)
+        // so the header needs no isfinite and no new include.
+        serialize_assert( delta - delta == 0.0f );
+        serialize_assert( values - values == 0.0f );
+
         // clamp so the uint32_t cast below is defined even for pathological delta / res (the !>= form also catches NaN)
         if ( !( values >= 1.0f ) )
         {
@@ -2442,6 +2449,11 @@ namespace serialize
         
         if ( Stream::IsWriting )
         {
+            // writing a non-finite value (NaN, +/-Inf) through compressed_float is
+            // non-conforming (STANDARD.md, adopted 2026-08-15) -- assert in debug. in release
+            // the clamp below remains the backstop that keeps the uint32 cast defined.
+            serialize_assert( value - value == 0.0f );
+
             // clamp with the !>= / !<= form so a NaN value is forced into range instead of reaching the uint32 cast below
             float normalizedValue = (value - min) / delta;
             if ( !( normalizedValue >= 0.0f ) )
@@ -2665,12 +2677,14 @@ namespace serialize
         } while (0)
 
     /*
-        The string payload is well-formed UTF-8 BY CONTRACT (STANDARD.md, adopted
-        2026-08-15): the writer's obligation, never the reader's check. Per the
-        writes-trusted doctrine the contract is a debug-only assert — an O(n) check
-        no release path should carry — so this validator is referenced only from
-        serialize_assert and compiles out under NDEBUG. The read side is untouched:
-        there is no mandatory read-path validation.
+        UTF-8 well-formedness, one validator with two callers (STANDARD.md, adopted
+        2026-08-15): the WRITE path's contract check — a debug-only assert per the
+        writes-trusted doctrine, compiled out under NDEBUG — and the READ path's
+        refusal rule ("Readers must refuse malformed string payloads"), which binds
+        in every build mode, because the read side faces untrusted data. Rejects
+        overlong encodings, surrogate code points, values above U+10FFFF, truncated
+        sequences and stray continuation bytes. NUL bytes are VALID UTF-8: the
+        interior-NUL refusal is a separate rule with its own reason.
     */
 
     inline bool serialize_string_is_valid_utf8( const char * string, int length )
@@ -2746,6 +2760,24 @@ namespace serialize
         serialize_bytes( stream, (uint8_t*)string, length );
         if ( Stream::IsReading )
         {
+            // STANDARD.md, "Readers must refuse malformed string payloads" (adopted
+            // 2026-08-15). Interior NUL first: a conforming writer derives the length
+            // from strlen, so a zero byte among the transmitted bytes only arrives
+            // doctored — and it gives the payload TWO lengths, the wire length and the
+            // strlen every consumer downstream computes, with everything between them
+            // riding invisibly past whichever side uses the other. NUL is valid UTF-8,
+            // so the validator below cannot catch it.
+            for ( int i = 0; i < length; i++ )
+            {
+                if ( string[i] == '\0' )
+                {
+                    return false;
+                }
+            }
+            if ( !serialize_string_is_valid_utf8( string, length ) )
+            {
+                return false;
+            }
             string[length] = '\0';
         }
         return true;
@@ -2818,8 +2850,15 @@ namespace serialize
     // 2026-08-15), so streams are byte-identical between platforms with 2 and 4 byte wchar_t:
     // the 4 byte platform converts at the boundary — an astral code point splits into its
     // surrogate pair on write, and the pair recombines on read. The length field counts the
-    // units transmitted. Reading a value that doesn't fit in the local wchar_t fails rather
-    // than truncating.
+    // units transmitted.
+    //
+    // On read, malformed payloads are REFUSED in every build mode (STANDARD.md, "Readers must
+    // refuse malformed wstring payloads", adopted 2026-08-15): a group above 0xFFFF is not a
+    // code unit; an unpaired surrogate fails the read — a high surrogate without its low, a
+    // low with no high before it, or a dangling high as the final group — and so does an
+    // interior NUL group, because a conforming writer derives the length from the terminator,
+    // so a zero group only arrives doctored and gives the payload two lengths. Well-formed
+    // surrogate PAIRS pass: they are how astral text travels.
 
     template <typename Stream> bool serialize_wstring_internal( Stream & stream, wchar_t * string, int buffer_size )
     {
@@ -2856,6 +2895,14 @@ namespace serialize
         }
         else
         {
+            // Each group is one UTF-16 code unit (STANDARD.md, adopted 2026-08-15), and
+            // malformed payloads are REFUSED in every build mode: a group above 0xFFFF is
+            // not a code unit and no conforming writer emits one; an interior NUL gives
+            // the payload two lengths; the pair discipline refuses a high surrogate
+            // without its low, a low with no high before it, and a dangling high as the
+            // final group. Well-formed pairs pass — they are how astral text travels —
+            // and on a 4 byte wchar_t they recombine at the boundary, the inverse of the
+            // split the writer performed; a 2 byte wchar_t stores units as they arrive.
             // through a local rather than tested inline, so MSVC /W4 does not flag the constant conditional
             const bool wide_wchar = sizeof( wchar_t ) >= 4;
             uint32_t pending = 0;                   // a high surrogate awaiting its pair
@@ -2865,48 +2912,47 @@ namespace serialize
             {
                 uint32_t character = 0;
                 serialize_bits( stream, character, 32 );
-                if ( wide_wchar )
+                if ( character > 0xFFFF )
                 {
-                    // recombine at the boundary: a surrogate pair becomes one code point,
-                    // the inverse of the split the writer performed. The payload is
-                    // well-formed by the WRITER's contract, so an unpaired surrogate is
-                    // not a mandated refusal here: it is stored as it arrived, which a
-                    // 4 byte wchar_t can always hold.
-                    if ( have_pending )
+                    return false;                   // not a UTF-16 code unit: nothing conforming emits one
+                }
+                if ( character == 0 )
+                {
+                    return false;                   // interior NUL: the two-lengths smuggling primitive
+                }
+                if ( have_pending )
+                {
+                    if ( character < 0xDC00 || character > 0xDFFF )
                     {
-                        if ( character >= 0xDC00 && character <= 0xDFFF )
-                        {
-                            string[output_index++] = (wchar_t) ( 0x10000 + ( ( pending - 0xD800 ) << 10 ) + ( character - 0xDC00 ) );
-                            have_pending = false;
-                            continue;
-                        }
+                        return false;               // high surrogate without its low
+                    }
+                    if ( wide_wchar )
+                    {
+                        string[output_index++] = (wchar_t) ( 0x10000 + ( ( pending - 0xD800 ) << 10 ) + ( character - 0xDC00 ) );
+                    }
+                    else
+                    {
                         string[output_index++] = (wchar_t) pending;
-                        have_pending = false;
+                        string[output_index++] = (wchar_t) character;
                     }
-                    if ( character >= 0xD800 && character <= 0xDBFF )
-                    {
-                        pending = character;
-                        have_pending = true;
-                        continue;
-                    }
-                    string[output_index++] = (wchar_t) character;
+                    have_pending = false;
+                    continue;
                 }
-                else
+                if ( character >= 0xDC00 && character <= 0xDFFF )
                 {
-                    // a 2 byte wchar_t IS a UTF-16 code unit, so units are stored as they
-                    // arrive — surrogate pairs included. Where wchar_t cannot hold what
-                    // arrived, FAIL rather than truncate: a silently mangled code point
-                    // is worse than a refused packet.
-                    if ( character > 0xFFFF )
-                    {
-                        return false;
-                    }
-                    string[output_index++] = (wchar_t) character;
+                    return false;                   // low surrogate with no high before it
                 }
+                if ( character >= 0xD800 && character <= 0xDBFF )
+                {
+                    pending = character;
+                    have_pending = true;
+                    continue;
+                }
+                string[output_index++] = (wchar_t) character;
             }
             if ( have_pending )
             {
-                string[output_index++] = (wchar_t) pending;
+                return false;                       // the final group is a dangling high surrogate
             }
             string[output_index] = L'\0';
         }
@@ -2918,6 +2964,7 @@ namespace serialize
         Serialize a string to the stream (read/write/measure).
         This is a helper macro to make writing unified serialize functions easier.
         Serialize macros returns false on error so we don't need to use exceptions for error handling on read. This is an important safety measure because packet data comes from the network and may be malicious.
+        On read, malformed payloads are refused (STANDARD.md, adopted 2026-08-15): invalid UTF-8 fails the read, and so does an interior NUL byte among the transmitted bytes.
         IMPORTANT: This macro must be called inside a templated serialize function with template \<typename Stream\>. The serialize method must have a bool return value.
         @param stream The stream object. May be a read, write or measure stream.
         @param string The string to serialize write/measure. Pointer to buffer to be filled on read.
@@ -2937,7 +2984,8 @@ namespace serialize
         Serialize a wide string to the stream (read/write/measure).
         This is a helper macro to make writing unified serialize functions easier.
         Serialize macros returns false on error so we don't need to use exceptions for error handling on read. This is an important safety measure because packet data comes from the network and may be malicious.
-        The wire format is 32 bits per group, each group one UTF-16 code unit, so streams are byte-identical between platforms with 2 and 4 byte wchar_t: on a 4 byte wchar_t platform an astral code point splits into its surrogate pair on write and recombines on read. The payload is well-formed UTF-16 by the writer's contract (debug-asserted). Reading a character that doesn't fit in the local wchar_t fails rather than truncating.
+        The wire format is 32 bits per group, each group one UTF-16 code unit, so streams are byte-identical between platforms with 2 and 4 byte wchar_t: on a 4 byte wchar_t platform an astral code point splits into its surrogate pair on write and recombines on read. The payload is well-formed UTF-16 by the writer's contract (debug-asserted).
+        On read, malformed payloads are refused (STANDARD.md, adopted 2026-08-15): a group above 0xFFFF is not a code unit and fails the read, an unpaired surrogate fails the read, and so does an interior NUL group among the transmitted groups.
         IMPORTANT: This macro must be called inside a templated serialize function with template \<typename Stream\>. The serialize method must have a bool return value.
         @param stream The stream object. May be a read, write or measure stream.
         @param string The wide string to serialize write/measure. Pointer to buffer to be filled on read.
@@ -5023,11 +5071,13 @@ inline void test_wstring_validation()
         serialize_check( measureStream.GetBitsProcessed() == writeStream.GetBitsProcessed() );
     }
 
-    // THE DOCUMENTED FAILURE BEHAVIOUR, previously untested. A code point that does not fit
-    // in the local wchar_t must FAIL THE READ rather than truncate, so a stream written on a
-    // 4-byte-wchar_t platform cannot silently lose data when read on a 2-byte one. The value
-    // is planted with raw bit operations so the test does not depend on the local width to
-    // produce it.
+    // A GROUP ABOVE 0xFFFF IS NOT A UTF-16 CODE UNIT (STANDARD.md, adopted 2026-08-15):
+    // each 32 bit group carries one code unit, so no conforming writer can emit a larger
+    // value — astral text travels as a surrogate pair. The doctored group is REFUSED on
+    // every platform, subsuming the old width-dependent behaviour (accept on 4 byte
+    // wchar_t, refuse on 2), whose acceptance half was a wire divergence between
+    // platforms once each group became one unit. The value is planted with raw bit
+    // operations so the test does not depend on the local width to produce it.
     {
         uint8_t buffer[256];
         const uint32_t above_bmp = 0x0001F600;      // beyond 16 bits by construction
@@ -5042,18 +5092,8 @@ inline void test_wstring_validation()
         serialize::ReadStream readStream( buffer, writeStream.GetBytesProcessed() );
         const bool result = serialize::serialize_wstring_internal( readStream, read_back, BufferSize );
 
-        if ( sizeof( wchar_t ) >= 4 )
-        {
-            // the value fits: it must round-trip exactly
-            serialize_check( result == true );
-            serialize_check( (uint32_t) read_back[0] == above_bmp );
-        }
-        else
-        {
-            // the value does not fit: reject, and do not leave a truncated character behind
-            serialize_check( result == false );
-            serialize_check( read_back[0] != (wchar_t) ( above_bmp & 0xFFFF ) );
-        }
+        serialize_check( result == false );
+        serialize_check( read_back[0] != (wchar_t) ( above_bmp & 0xFFFF ) );    // nothing truncated left behind
     }
 }
 
@@ -5144,6 +5184,191 @@ inline void test_wstring_utf16_code_units()
         serialize::ReadStream readStream( expected_bytes, expected_bytes_processed );
         serialize_check( serialize::serialize_wstring_internal( readStream, read_back, BufferSize ) );
         serialize_check( wcscmp( read_back, ws_in ) == 0 );
+    }
+}
+
+inline void test_string_read_validation()
+{
+    // STANDARD.md, "Readers must refuse malformed string payloads" (adopted 2026-08-15).
+    // Every refused stream below is DOCTORED with raw bit operations — no conforming
+    // writer can produce it — and the refusal binds in every build mode. Proven
+    // red-then-green: against the pre-ruling reader, every doctored stream here was
+    // ACCEPTED (harness run recorded with the ruling batch); with the refusals in
+    // place they are REFUSED, and the valid-content controls are unchanged.
+
+    const int BufferSize = 16;
+
+    // invalid UTF-8: 0xFF can never appear anywhere in well-formed UTF-8
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        serialize::WriteStream writeStream( buffer, sizeof( buffer ) );
+        int32_t length = 3;
+        serialize_check( writeStream.SerializeInteger( length, 0, BufferSize - 1 ) );
+        const uint8_t payload[3] = { 0xFF, 0xFE, 0xFF };
+        serialize_check( writeStream.SerializeBytes( payload, 3 ) );
+        writeStream.Flush();
+
+        char read_back[BufferSize];
+        serialize::ReadStream readStream( buffer, writeStream.GetBytesProcessed() );
+        serialize_check( serialize::serialize_string_internal( readStream, read_back, BufferSize ) == false );
+    }
+
+    // truncated UTF-8: a 3 byte lead as the final transmitted byte
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        serialize::WriteStream writeStream( buffer, sizeof( buffer ) );
+        int32_t length = 2;
+        serialize_check( writeStream.SerializeInteger( length, 0, BufferSize - 1 ) );
+        const uint8_t payload[2] = { 'a', 0xE2 };
+        serialize_check( writeStream.SerializeBytes( payload, 2 ) );
+        writeStream.Flush();
+
+        char read_back[BufferSize];
+        serialize::ReadStream readStream( buffer, writeStream.GetBytesProcessed() );
+        serialize_check( serialize::serialize_string_internal( readStream, read_back, BufferSize ) == false );
+    }
+
+    // interior NUL: wire length 3, strlen 1 — the TWO-LENGTHS smuggling primitive. A
+    // conforming writer derives the length from strlen, so this stream is impossible
+    // from conformance; accepted, it hands the application a payload whose wire length
+    // and C length disagree, and everything between them travels invisibly.
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        serialize::WriteStream writeStream( buffer, sizeof( buffer ) );
+        int32_t length = 3;
+        serialize_check( writeStream.SerializeInteger( length, 0, BufferSize - 1 ) );
+        const uint8_t payload[3] = { 'a', 0x00, 'b' };
+        serialize_check( writeStream.SerializeBytes( payload, 3 ) );
+        writeStream.Flush();
+
+        char read_back[BufferSize];
+        serialize::ReadStream readStream( buffer, writeStream.GetBytesProcessed() );
+        serialize_check( serialize::serialize_string_internal( readStream, read_back, BufferSize ) == false );
+    }
+
+    // control: valid multi-byte UTF-8 — 2, 3 and 4 byte sequences, built from explicit
+    // bytes so the source file encoding can never change the test — still round trips.
+    // The refusal costs no valid stream.
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        char text[BufferSize];
+        const uint8_t utf8[11] = { 'h', 0xC3, 0xA9, 0xE2, 0x82, 0xAC, 0xF0, 0x9F, 0x98, 0x80, 0 };  // h, e-acute, euro sign, U+1F600
+        memcpy( text, utf8, sizeof( utf8 ) );
+
+        serialize::WriteStream writeStream( buffer, sizeof( buffer ) );
+        serialize_check( serialize::serialize_string_internal( writeStream, text, BufferSize ) );
+        writeStream.Flush();
+
+        char read_back[BufferSize];
+        serialize::ReadStream readStream( buffer, writeStream.GetBytesProcessed() );
+        serialize_check( serialize::serialize_string_internal( readStream, read_back, BufferSize ) );
+        serialize_check( strcmp( read_back, text ) == 0 );
+    }
+}
+
+inline void test_wstring_read_validation()
+{
+    // STANDARD.md, "Readers must refuse malformed wstring payloads" (adopted 2026-08-15).
+    // Same shape as the narrow test above: doctored streams refused in every build mode,
+    // proven red-then-green, valid content unchanged.
+
+    const int BufferSize = 8;
+
+    // high surrogate followed by a non-surrogate: unpaired, refused
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        serialize::WriteStream writeStream( buffer, sizeof( buffer ) );
+        int32_t length = 2;
+        serialize_check( writeStream.SerializeInteger( length, 0, BufferSize - 1 ) );
+        uint32_t group0 = 0xD800;
+        uint32_t group1 = 0x0041;
+        serialize_check( writeStream.SerializeBits( group0, 32 ) );
+        serialize_check( writeStream.SerializeBits( group1, 32 ) );
+        writeStream.Flush();
+
+        wchar_t read_back[BufferSize];
+        serialize::ReadStream readStream( buffer, writeStream.GetBytesProcessed() );
+        serialize_check( serialize::serialize_wstring_internal( readStream, read_back, BufferSize ) == false );
+    }
+
+    // low surrogate with no high before it: refused
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        serialize::WriteStream writeStream( buffer, sizeof( buffer ) );
+        int32_t length = 1;
+        serialize_check( writeStream.SerializeInteger( length, 0, BufferSize - 1 ) );
+        uint32_t group0 = 0xDC00;
+        serialize_check( writeStream.SerializeBits( group0, 32 ) );
+        writeStream.Flush();
+
+        wchar_t read_back[BufferSize];
+        serialize::ReadStream readStream( buffer, writeStream.GetBytesProcessed() );
+        serialize_check( serialize::serialize_wstring_internal( readStream, read_back, BufferSize ) == false );
+    }
+
+    // high surrogate as the final transmitted group: dangling, refused
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        serialize::WriteStream writeStream( buffer, sizeof( buffer ) );
+        int32_t length = 1;
+        serialize_check( writeStream.SerializeInteger( length, 0, BufferSize - 1 ) );
+        uint32_t group0 = 0xD83D;
+        serialize_check( writeStream.SerializeBits( group0, 32 ) );
+        writeStream.Flush();
+
+        wchar_t read_back[BufferSize];
+        serialize::ReadStream readStream( buffer, writeStream.GetBytesProcessed() );
+        serialize_check( serialize::serialize_wstring_internal( readStream, read_back, BufferSize ) == false );
+    }
+
+    // interior NUL group: wire length 3, wcslen 1 — the same two-lengths primitive as
+    // the narrow string, refused
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        serialize::WriteStream writeStream( buffer, sizeof( buffer ) );
+        int32_t length = 3;
+        serialize_check( writeStream.SerializeInteger( length, 0, BufferSize - 1 ) );
+        uint32_t group0 = 0x0041;
+        uint32_t group1 = 0x0000;
+        uint32_t group2 = 0x0042;
+        serialize_check( writeStream.SerializeBits( group0, 32 ) );
+        serialize_check( writeStream.SerializeBits( group1, 32 ) );
+        serialize_check( writeStream.SerializeBits( group2, 32 ) );
+        writeStream.Flush();
+
+        wchar_t read_back[BufferSize];
+        serialize::ReadStream readStream( buffer, writeStream.GetBytesProcessed() );
+        serialize_check( serialize::serialize_wstring_internal( readStream, read_back, BufferSize ) == false );
+    }
+
+    // control: a well-formed surrogate PAIR is valid UTF-16 — it is how astral text
+    // travels — and must be ACCEPTED. Against main's reader the pair is stored as its
+    // two units on every platform; recombination on 4 byte wchar_t is the surrogate
+    // boundary branch's work and composes on top of this check.
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        serialize::WriteStream writeStream( buffer, sizeof( buffer ) );
+        int32_t length = 2;
+        serialize_check( writeStream.SerializeInteger( length, 0, BufferSize - 1 ) );
+        uint32_t group0 = 0xD83D;
+        uint32_t group1 = 0xDE00;
+        serialize_check( writeStream.SerializeBits( group0, 32 ) );
+        serialize_check( writeStream.SerializeBits( group1, 32 ) );
+        writeStream.Flush();
+
+        wchar_t read_back[BufferSize];
+        memset( read_back, 0, sizeof( read_back ) );
+        serialize::ReadStream readStream( buffer, writeStream.GetBytesProcessed() );
+        serialize_check( serialize::serialize_wstring_internal( readStream, read_back, BufferSize ) == true );
     }
 }
 
@@ -5254,7 +5479,11 @@ inline void test_compressed_float_validation()
         serialize_check( fabs( value - written ) <= 4096.0f );
     }
 
-    // a NaN value must not reach the uint32 cast (clamp comparisons are all false for NaN)
+    // writing NaN is non-conforming and asserts in debug (STANDARD.md, adopted 2026-08-15;
+    // test_compressed_float_non_finite_asserts proves the assert fires). in release the
+    // asserts compile out and the clamp is the backstop: a NaN value must not reach the
+    // uint32 cast (clamp comparisons are all false for NaN).
+#if defined( NDEBUG )
     {
         uint8_t buffer[8 + 8] = { 0 };          // + 8: read buffer allocations extend 8 bytes past the data
 
@@ -5270,6 +5499,68 @@ inline void test_compressed_float_validation()
         serialize_check( serialize::serialize_compressed_float_internal( readStream, value, 0.0f, 10.0f, 0.01f ) == true );
         serialize_check( value >= 0.0f && value <= 10.0f );      // NaN clamps to the low end of the range
     }
+#endif // #if defined( NDEBUG )
+}
+
+#if !defined( NDEBUG ) && !defined( _WIN32 )
+
+#include <unistd.h>         // fork, _exit
+#include <sys/wait.h>       // waitpid
+
+// run fn in a forked child with stderr silenced, and report whether it died on a signal --
+// which is what a fired debug assert looks like from outside (assert calls abort, SIGABRT).
+inline bool serialize_test_assert_fires( void (*fn)() )
+{
+    fflush( stdout );
+    fflush( stderr );
+    pid_t pid = fork();
+    if ( pid == 0 )
+    {
+        freopen( "/dev/null", "w", stderr );    // the child's assert message is the expected outcome, not test noise
+        fn();
+        _exit( 0 );                             // the assert did not fire
+    }
+    if ( pid < 0 )
+        return false;
+    int status = 0;
+    waitpid( pid, &status, 0 );
+    return WIFSIGNALED( status );
+}
+
+inline void serialize_test_write_non_finite_declaration()
+{
+    // delta = max - min overflows float32 to +Inf: a non-conforming declaration
+    uint8_t buffer[8] = { 0 };
+    serialize::WriteStream writeStream( buffer, 8 );
+    float value = 0.0f;
+    serialize::serialize_compressed_float_internal( writeStream, value, -3e38f, 3e38f, 1.0f );
+}
+
+inline void serialize_test_write_non_finite_value()
+{
+    // a NaN value over a perfectly good declaration: a non-conforming write
+    uint8_t buffer[8] = { 0 };
+    serialize::WriteStream writeStream( buffer, 8 );
+    uint32_t nan_bits = 0x7fc00000;             // quiet NaN bit pattern, built without the NAN macro (finite-math builds reject it)
+    float value = 0.0f;
+    memcpy( &value, &nan_bits, 4 );
+    serialize::serialize_compressed_float_internal( writeStream, value, 0.0f, 10.0f, 0.01f );
+}
+
+#endif // #if !defined( NDEBUG ) && !defined( _WIN32 )
+
+inline void test_compressed_float_non_finite_asserts()
+{
+    // STANDARD.md, compressed_float (adopted 2026-08-15): a declaration whose delta or
+    // values is not finite in float32 is non-conforming, and writing a non-finite value is
+    // non-conforming -- conforming writers assert in debug builds. prove each assert fires,
+    // in a forked child so the abort is observed rather than suffered.
+#if !defined( NDEBUG ) && !defined( _WIN32 )
+    serialize_check( serialize_test_assert_fires( serialize_test_write_non_finite_declaration ) == true );
+    serialize_check( serialize_test_assert_fires( serialize_test_write_non_finite_value ) == true );
+#else
+    printf( "(skipped test_compressed_float_non_finite_asserts: needs an assert-enabled build and fork)\n" );
+#endif // #if !defined( NDEBUG ) && !defined( _WIN32 )
 }
 
 // Fixed point test helpers. Every configuration in the matrix runs the same case list, and every
@@ -7560,6 +7851,134 @@ inline void test_golden_wire_format()
     }
 }
 
+inline void test_trailing_bits()
+{
+    // STANDARD.md, "Trailing bits" (adopted 2026-08-15): writers must emit zero in the unused
+    // bits of the final byte; readers must not reject a stream for their contents. The third
+    // rule — non-zero trailing bits as a provenance signal — belongs to tooling (see
+    // tools/conformance), never to this read path, which is exactly what the reader half of
+    // this test proves.
+
+    // writer obligation: emit a message that ends 3 bits into its final byte, into a buffer
+    // pre-filled with 0xFF so the zeros must come from the writer, not from the caller.
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0xFF, sizeof( buffer ) );
+
+        serialize::WriteStream writeStream( buffer, (int) sizeof( buffer ) );
+        uint32_t head = 0xDEADBEEF;
+        serialize_check( writeStream.SerializeBits( head, 32 ) == true );
+        uint32_t tail = 5;
+        serialize_check( writeStream.SerializeBits( tail, 3 ) == true );
+        writeStream.Flush();
+
+        const int bytesWritten = (int) writeStream.GetBytesProcessed();
+        const int bitsInFinalByte = (int) ( writeStream.GetBitsProcessed() % 8 );
+        serialize_check( bitsInFinalByte == 3 );                                        // the stream really does end unaligned
+        const uint8_t trailingMask = (uint8_t) ( 0xFF << bitsInFinalByte );
+        serialize_check( ( buffer[bytesWritten-1] & trailingMask ) == 0 );              // writers must write zero
+
+        // reader indifference, small stream: set every trailing bit and read back. the
+        // doctored stream must be accepted and must decode the same values.
+        buffer[bytesWritten-1] |= trailingMask;
+        serialize::ReadStream readStream( buffer, bytesWritten );
+        uint32_t readHead = 0;
+        serialize_check( readStream.SerializeBits( readHead, 32 ) == true );
+        serialize_check( readHead == 0xDEADBEEF );
+        uint32_t readTail = 0;
+        serialize_check( readStream.SerializeBits( readTail, 3 ) == true );
+        serialize_check( readTail == 5 );
+    }
+
+    // reader indifference, full message: doctor the trailing bits of the golden stream.
+    // a conforming reader accepts the doctored stream and decodes byte-identical results.
+    {
+        uint8_t buffer[256];
+        memset( buffer, 0, sizeof( buffer ) );
+        memcpy( buffer, golden_wire_bytes, sizeof( golden_wire_bytes ) );
+
+        serialize::ReadStream cleanStream( buffer, (int) sizeof( golden_wire_bytes ) );
+        GoldenWireData cleanData;
+        memset( (void*) &cleanData, 0, sizeof( GoldenWireData ) );
+        serialize_check( GoldenWireSerialize( cleanStream, cleanData ) == true );
+
+        const int bitsInFinalByte = (int) ( cleanStream.GetBitsProcessed() % 8 );
+        serialize_check( bitsInFinalByte != 0 );                                        // golden ends unaligned, so this test can discriminate
+        const uint8_t trailingMask = (uint8_t) ( 0xFF << bitsInFinalByte );
+        serialize_check( ( golden_wire_bytes[sizeof( golden_wire_bytes ) - 1] & trailingMask ) == 0 );  // the pinned emission met the writer obligation
+
+        buffer[sizeof( golden_wire_bytes ) - 1] |= trailingMask;                        // set every trailing bit
+
+        serialize::ReadStream doctoredStream( buffer, (int) sizeof( golden_wire_bytes ) );
+        GoldenWireData doctoredData;
+        memset( (void*) &doctoredData, 0, sizeof( GoldenWireData ) );
+        serialize_check( GoldenWireSerialize( doctoredStream, doctoredData ) == true );                 // readers must not reject
+        serialize_check( memcmp( &doctoredData, &cleanData, sizeof( GoldenWireData ) ) == 0 );          // and must decode identically
+        serialize_check( doctoredStream.GetBitsProcessed() == cleanStream.GetBitsProcessed() );
+    }
+}
+
+inline void test_past_end_poison()
+{
+    // STANDARD.md, "Past-end memory is an implementation contract, not a format concern"
+    // (ruled 2026-08-15: the draft stands). The C++ reader loads 64-bit windows at byte
+    // granularity and requires its caller to allocate at least 8 bytes past the data; bytes
+    // past the end are loaded but never interpreted. This proves the "never interpreted"
+    // half: poison planted beyond the stream end must not change a single decoded byte, and
+    // must not change refusal behavior.
+
+    // accept path: identical decode with a zeroed tail and a poisoned tail
+    {
+        uint8_t cleanBuffer[256];
+        uint8_t poisonBuffer[256];
+        memset( cleanBuffer, 0, sizeof( cleanBuffer ) );
+        memset( poisonBuffer, 0xFF, sizeof( poisonBuffer ) );           // poison everywhere, including the loaded-but-never-interpreted window
+        memcpy( cleanBuffer, golden_wire_bytes, sizeof( golden_wire_bytes ) );
+        memcpy( poisonBuffer, golden_wire_bytes, sizeof( golden_wire_bytes ) );
+
+        serialize::ReadStream cleanStream( cleanBuffer, (int) sizeof( golden_wire_bytes ) );
+        GoldenWireData cleanData;
+        memset( (void*) &cleanData, 0, sizeof( GoldenWireData ) );
+        serialize_check( GoldenWireSerialize( cleanStream, cleanData ) == true );
+
+        serialize::ReadStream poisonStream( poisonBuffer, (int) sizeof( golden_wire_bytes ) );
+        GoldenWireData poisonData;
+        memset( (void*) &poisonData, 0, sizeof( GoldenWireData ) );
+        serialize_check( GoldenWireSerialize( poisonStream, poisonData ) == true );
+
+        serialize_check( memcmp( &poisonData, &cleanData, sizeof( GoldenWireData ) ) == 0 );    // byte-identical decode
+        serialize_check( poisonStream.GetBitsProcessed() == cleanStream.GetBitsProcessed() );
+    }
+
+    // refusal path: truncate the stream one byte short so the decode must fail. the bytes at
+    // and past the truncated end are exactly where the reader's 64-bit window loads from, and
+    // the refusal must be identical whether they are zero or poison.
+    {
+        const int truncatedBytes = (int) sizeof( golden_wire_bytes ) - 1;
+
+        uint8_t cleanBuffer[256];
+        uint8_t poisonBuffer[256];
+        memset( cleanBuffer, 0, sizeof( cleanBuffer ) );
+        memset( poisonBuffer, 0xFF, sizeof( poisonBuffer ) );
+        memcpy( cleanBuffer, golden_wire_bytes, truncatedBytes );
+        memcpy( poisonBuffer, golden_wire_bytes, truncatedBytes );
+
+        serialize::ReadStream cleanStream( cleanBuffer, truncatedBytes );
+        GoldenWireData cleanData;
+        memset( (void*) &cleanData, 0, sizeof( GoldenWireData ) );
+        serialize_check( GoldenWireSerialize( cleanStream, cleanData ) == false );
+
+        serialize::ReadStream poisonStream( poisonBuffer, truncatedBytes );
+        GoldenWireData poisonData;
+        memset( (void*) &poisonData, 0, sizeof( GoldenWireData ) );
+        serialize_check( GoldenWireSerialize( poisonStream, poisonData ) == false );
+
+        serialize_check( poisonStream.GetBitsProcessed() == cleanStream.GetBitsProcessed() );   // refused at the same point
+        serialize_check( memcmp( &poisonData, &cleanData, sizeof( GoldenWireData ) ) == 0 );    // with identical partial state
+    }
+}
+
+
 // Conformance vector for compressed_float over a range with a NON-ZERO min. Additive: the
 // golden wire test above is untouched and its bytes are pinned forever.
 //
@@ -7628,6 +8047,332 @@ inline void test_compressed_float_conformance_nonzero_min()
         serialize_check( bits_a == 0x00000000u );
         serialize_check( bits_b == 0xC2C7BD71u );
         serialize_check( bits_c == 0xC2055C2Au );
+    }
+}
+
+// Conformance vector for float/double BIT TRANSPARENCY (STANDARD.md, "Floating Point",
+// ratified 2026-08-15 from the #56 re-audit). Additive: golden_wire_bytes is untouched.
+//
+// The golden's float is 3.1415926f and its double 1.0/3.0 — ordinary values that any
+// sanitizing implementation reproduces — and the document-side checker compares them by
+// TOLERANCE, which is structurally unable to see a canonicalized NaN payload, a quieted
+// signaling bit, or a sign-of-zero flip. These patterns are the ones a sanitizer breaks,
+// constructed by bit-cast (never by literal) and compared by bits (never by value: NaN
+// compares unequal to itself and -0.0 == 0.0, so value comparison proves nothing here).
+
+static const uint8_t golden_float_bytes[] =
+{
+    0x01, 0x00, 0xC0, 0x7F,                             // f32 0x7FC00001: quiet NaN, payload 1
+    0x01, 0x00, 0x80, 0x7F,                             // f32 0x7F800001: SIGNALING NaN
+    0x00, 0x00, 0x80, 0xFF,                             // f32 0xFF800000: -Inf
+    0x00, 0x00, 0x00, 0x80,                             // f32 0x80000000: -0.0
+    0x01, 0x00, 0x00, 0x00,                             // f32 0x00000001: smallest denormal
+    0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF4, 0x7F,     // f64 0x7FF4000000000001: signaling NaN, payload 1
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80      // f64 0x8000000000000000: -0.0
+};
+
+static const uint32_t golden_float_patterns[5] = { 0x7FC00001u, 0x7F800001u, 0xFF800000u, 0x80000000u, 0x00000001u };
+static const uint64_t golden_double_patterns[2] = { 0x7FF4000000000001ULL, 0x8000000000000000ULL };
+
+template <typename Stream> bool GoldenFloatSerialize( Stream & stream, float * float_values, double * double_values )
+{
+    for ( int i = 0; i < 5; i++ )
+    {
+        serialize_float( stream, float_values[i] );
+    }
+    for ( int i = 0; i < 2; i++ )
+    {
+        serialize_double( stream, double_values[i] );
+    }
+    return true;
+}
+
+inline void test_golden_float_bit_transparency()
+{
+    // write side: the bit patterns above, bit-cast into float/double and serialized, must
+    // produce exactly the pinned little-endian bytes — no quieting, no canonicalization
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        serialize::WriteStream stream( buffer, (int) sizeof( buffer ) );
+        float float_values[5];
+        double double_values[2];
+        for ( int i = 0; i < 5; i++ )
+            memcpy( &float_values[i], &golden_float_patterns[i], 4 );
+        for ( int i = 0; i < 2; i++ )
+            memcpy( &double_values[i], &golden_double_patterns[i], 8 );
+        serialize_check( GoldenFloatSerialize( stream, float_values, double_values ) == true );
+        stream.Flush();
+        serialize_check( stream.GetBytesProcessed() == (int) sizeof( golden_float_bytes ) );
+        serialize_check( memcmp( buffer, golden_float_bytes, sizeof( golden_float_bytes ) ) == 0 );
+    }
+
+    // read side: the recovered BIT PATTERNS must equal the transmitted ones exactly.
+    // a tolerance-based harness passes a sanitizing reader forever — which is the point
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        memcpy( buffer, golden_float_bytes, sizeof( golden_float_bytes ) );
+        serialize::ReadStream stream( buffer, (int) sizeof( golden_float_bytes ) );
+        float float_values[5];
+        double double_values[2];
+        memset( float_values, 0, sizeof( float_values ) );
+        memset( double_values, 0, sizeof( double_values ) );
+        serialize_check( GoldenFloatSerialize( stream, float_values, double_values ) == true );
+        for ( int i = 0; i < 5; i++ )
+        {
+            uint32_t bits = 0;
+            memcpy( &bits, &float_values[i], 4 );
+            serialize_check( bits == golden_float_patterns[i] );
+        }
+        for ( int i = 0; i < 2; i++ )
+        {
+            uint64_t bits = 0;
+            memcpy( &bits, &double_values[i], 8 );
+            serialize_check( bits == golden_double_patterns[i] );
+        }
+    }
+}
+
+// Conformance vectors for the zero-count and unaligned bytes paths (STANDARD.md, "bytes —
+// count may be zero", ratified 2026-08-15 from the #56 re-audit). Additive pins. Each one
+// discriminates: the wrong-but-plausible implementation produces DIFFERENT bytes, spelled
+// out per vector, so a port carrying the divergence fails the pin instead of agreeing with
+// itself forever — round-trip self-tests cannot catch a skipped align, because both halves
+// skip the same one.
+
+template <typename Stream> bool ZeroLengthBytesSerialize( Stream & stream, uint32_t & head, uint8_t * data, uint32_t & tail )
+{
+    serialize_bits( stream, head, 3 );
+    serialize_bytes( stream, data, 0 );
+    serialize_bits( stream, tail, 8 );
+    return true;
+}
+
+inline void test_golden_zero_length_bytes()
+{
+    // { bits(5,3); bytes(count=0); bits(0xA5,8) }. The zero-length bytes still ALIGNS:
+    // the pad lands in bits [3,8) and 0xA5 occupies byte 1. A port that early-returns on
+    // count == 0 writes { 0x2D, 0x05 } — every later field shifted by five bits.
+    static const uint8_t pinned_bytes[2] = { 0x05, 0xA5 };
+
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        serialize::WriteStream stream( buffer, (int) sizeof( buffer ) );
+        uint32_t head = 5;
+        uint32_t tail = 0xA5;
+        uint8_t data[1] = { 0 };
+        serialize_check( ZeroLengthBytesSerialize( stream, head, data, tail ) == true );
+        stream.Flush();
+        serialize_check( stream.GetBytesProcessed() == (int) sizeof( pinned_bytes ) );
+        serialize_check( memcmp( buffer, pinned_bytes, sizeof( pinned_bytes ) ) == 0 );
+    }
+
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        memcpy( buffer, pinned_bytes, sizeof( pinned_bytes ) );
+        serialize::ReadStream stream( buffer, (int) sizeof( pinned_bytes ) );
+        uint32_t head = 0;
+        uint32_t tail = 0;
+        uint8_t data[1] = { 0 };
+        serialize_check( ZeroLengthBytesSerialize( stream, head, data, tail ) == true );
+        serialize_check( head == 5 );
+        serialize_check( tail == 0xA5 );
+        serialize_check( stream.GetBytesProcessed() == (int) sizeof( pinned_bytes ) );
+    }
+}
+
+template <typename Stream> bool ZeroLengthStringSerialize( Stream & stream, uint32_t & head, char * string, uint32_t & tail )
+{
+    serialize_bits( stream, head, 3 );
+    serialize_string( stream, string, 8 );
+    serialize_bits( stream, tail, 8 );
+    return true;
+}
+
+inline void test_golden_zero_length_string()
+{
+    // { bits(5,3); string("", buffer_size 8); bits(0xA5,8) }. The empty string is a 3-bit
+    // length of 0, then the zero-length payload's align pads bits [6,8). A port whose
+    // STRING path skips the empty-payload align writes { 0x45, 0x29 } — the exact hazard
+    // the C port's comment names, and a separate code path from bytes in three ports.
+    static const uint8_t pinned_bytes[2] = { 0x05, 0xA5 };
+
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        serialize::WriteStream stream( buffer, (int) sizeof( buffer ) );
+        uint32_t head = 5;
+        uint32_t tail = 0xA5;
+        char string[8] = { 0 };
+        serialize_check( ZeroLengthStringSerialize( stream, head, string, tail ) == true );
+        stream.Flush();
+        serialize_check( stream.GetBytesProcessed() == (int) sizeof( pinned_bytes ) );
+        serialize_check( memcmp( buffer, pinned_bytes, sizeof( pinned_bytes ) ) == 0 );
+    }
+
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        memcpy( buffer, pinned_bytes, sizeof( pinned_bytes ) );
+        serialize::ReadStream stream( buffer, (int) sizeof( pinned_bytes ) );
+        uint32_t head = 0;
+        uint32_t tail = 0;
+        char string[8];
+        memset( string, 0xFF, sizeof( string ) );
+        serialize_check( ZeroLengthStringSerialize( stream, head, string, tail ) == true );
+        serialize_check( head == 5 );
+        serialize_check( string[0] == '\0' );
+        serialize_check( tail == 0xA5 );
+        serialize_check( stream.GetBytesProcessed() == (int) sizeof( pinned_bytes ) );
+    }
+}
+
+template <typename Stream> bool UnalignedBytesSerialize( Stream & stream, uint32_t & head, uint8_t * data, uint32_t & tail )
+{
+    serialize_bits( stream, head, 1 );
+    serialize_bytes( stream, data, 2 );
+    serialize_bits( stream, tail, 4 );
+    return true;
+}
+
+inline void test_golden_unaligned_bytes()
+{
+    // { bits(1,1); bytes({0xEF,0xBE}, 2); bits(0x0F,4) }. Exercises serialize_bytes' OWN
+    // align from bit index 1 — the case the golden vector structurally shadows, because an
+    // explicit serialize_align immediately precedes its bytes field, making the operation's
+    // internal align a no-op there.
+    static const uint8_t pinned_bytes[4] = { 0x01, 0xEF, 0xBE, 0x0F };
+
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        serialize::WriteStream stream( buffer, (int) sizeof( buffer ) );
+        uint32_t head = 1;
+        uint32_t tail = 0x0F;
+        uint8_t data[2] = { 0xEF, 0xBE };
+        serialize_check( UnalignedBytesSerialize( stream, head, data, tail ) == true );
+        stream.Flush();
+        serialize_check( stream.GetBytesProcessed() == (int) sizeof( pinned_bytes ) );
+        serialize_check( memcmp( buffer, pinned_bytes, sizeof( pinned_bytes ) ) == 0 );
+    }
+
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        memcpy( buffer, pinned_bytes, sizeof( pinned_bytes ) );
+        serialize::ReadStream stream( buffer, (int) sizeof( pinned_bytes ) );
+        uint32_t head = 0;
+        uint32_t tail = 0;
+        uint8_t data[2] = { 0, 0 };
+        serialize_check( UnalignedBytesSerialize( stream, head, data, tail ) == true );
+        serialize_check( head == 1 );
+        serialize_check( data[0] == 0xEF );
+        serialize_check( data[1] == 0xBE );
+        serialize_check( tail == 0x0F );
+        serialize_check( stream.GetBytesProcessed() == (int) sizeof( pinned_bytes ) );
+    }
+}
+
+inline void test_measure_bound()
+{
+    // STANDARD.md, "The Measure Stream" (adopted 2026-08-15): a measure reports a size
+    // sufficient at ANY starting bit position — a bound, not the packet size — and the
+    // expected implementation charges worst-case 7 bits per alignment-performing
+    // operation. Exact-from-zero accounting is non-conforming: it under-counts every
+    // unaligned start.
+
+    // the ruling's worked example: { bits(8); align; bits(8) }
+    {
+        serialize::MeasureStream measureStream;
+        uint32_t byte_value = 0xAB;
+        serialize_check( measureStream.SerializeBits( byte_value, 8 ) == true );
+        serialize_check( measureStream.SerializeAlign() == true );
+        serialize_check( measureStream.SerializeBits( byte_value, 8 ) == true );
+        serialize_check( measureStream.GetBitsProcessed() == 23 );      // 8 + 7 + 8: the conservative charge.
+                                                                        // an exact-from-zero measure reports 16 —
+                                                                        // 2 bytes — which is NOT enough room when
+                                                                        // the message lands at bit offset 1
+
+        // written at every starting offset, the message's actual span never exceeds the
+        // measure — the property the bound exists to guarantee
+        for ( int offset = 0; offset < 8; offset++ )
+        {
+            uint8_t buffer[64];
+            memset( buffer, 0, sizeof( buffer ) );
+            serialize::WriteStream writeStream( buffer, (int) sizeof( buffer ) );
+            for ( int i = 0; i < offset; i++ )
+            {
+                uint32_t one_bit = 1;
+                serialize_check( writeStream.SerializeBits( one_bit, 1 ) == true );
+            }
+            const int64_t start = writeStream.GetBitsProcessed();
+            serialize_check( writeStream.SerializeBits( byte_value, 8 ) == true );
+            serialize_check( writeStream.SerializeAlign() == true );
+            serialize_check( writeStream.SerializeBits( byte_value, 8 ) == true );
+            const int64_t span = writeStream.GetBitsProcessed() - start;
+            serialize_check( span <= measureStream.GetBitsProcessed() );
+            if ( offset == 0 )
+                serialize_check( span == 16 );                          // 2 bytes from an aligned start...
+            if ( offset == 1 )
+                serialize_check( span == 23 );                          // ...3 bytes of room needed from offset 1
+        }
+    }
+
+    // measure >= written, across every message this suite pins. (The fuzz harness holds
+    // the same inequality over arbitrary op programs on every run.)
+    {
+        GoldenWireData data;
+        GoldenWireInit( data );
+        serialize::MeasureStream measureStream;
+        serialize_check( GoldenWireSerialize( measureStream, data ) == true );
+        uint8_t buffer[256];
+        memset( buffer, 0, sizeof( buffer ) );
+        serialize::WriteStream writeStream( buffer, (int) sizeof( buffer ) );
+        serialize_check( GoldenWireSerialize( writeStream, data ) == true );
+        writeStream.Flush();
+        serialize_check( measureStream.GetBitsProcessed() >= writeStream.GetBitsProcessed() );
+    }
+
+    {
+        float float_values[5];
+        double double_values[2];
+        for ( int i = 0; i < 5; i++ )
+            memcpy( &float_values[i], &golden_float_patterns[i], 4 );
+        for ( int i = 0; i < 2; i++ )
+            memcpy( &double_values[i], &golden_double_patterns[i], 8 );
+        serialize::MeasureStream measureStream;
+        serialize_check( GoldenFloatSerialize( measureStream, float_values, double_values ) == true );
+        serialize_check( measureStream.GetBitsProcessed() >= 5 * 32 + 2 * 64 );     // no aligns: exact, and still a bound
+    }
+
+    {
+        uint32_t head = 5;
+        uint32_t tail = 0xA5;
+        uint8_t data[1] = { 0 };
+        serialize::MeasureStream measureStream;
+        serialize_check( ZeroLengthBytesSerialize( measureStream, head, data, tail ) == true );
+        serialize_check( measureStream.GetBitsProcessed() >= 16 );                  // 3 + pad + 8 written; measure charges 3 + 7 + 8
+    }
+
+    {
+        uint32_t head = 5;
+        uint32_t tail = 0xA5;
+        char string[8] = { 0 };
+        serialize::MeasureStream measureStream;
+        serialize_check( ZeroLengthStringSerialize( measureStream, head, string, tail ) == true );
+        serialize_check( measureStream.GetBitsProcessed() >= 16 );
+    }
+
+    {
+        uint32_t head = 1;
+        uint32_t tail = 0x0F;
+        uint8_t data[2] = { 0xEF, 0xBE };
+        serialize::MeasureStream measureStream;
+        serialize_check( UnalignedBytesSerialize( measureStream, head, data, tail ) == true );
+        serialize_check( measureStream.GetBitsProcessed() >= 28 );                  // 28 bits written; measure charges 1 + 7 + 16 + 4
     }
 }
 
@@ -7756,8 +8501,11 @@ inline void serialize_test()
         SERIALIZE_RUN_TEST( test_serialize_bytes_validation );
         SERIALIZE_RUN_TEST( test_wstring_validation );
         SERIALIZE_RUN_TEST( test_wstring_utf16_code_units );
+        SERIALIZE_RUN_TEST( test_string_read_validation );
+        SERIALIZE_RUN_TEST( test_wstring_read_validation );
         SERIALIZE_RUN_TEST( test_int_relative_validation );
         SERIALIZE_RUN_TEST( test_compressed_float_validation );
+        SERIALIZE_RUN_TEST( test_compressed_float_non_finite_asserts );
         SERIALIZE_RUN_TEST( test_serialize_fixed );
         SERIALIZE_RUN_TEST( test_serialize_fixed_validation );
         SERIALIZE_RUN_TEST( test_serialize_fixed_matches_int64 );
@@ -7783,7 +8531,14 @@ inline void serialize_test()
         SERIALIZE_RUN_TEST( test_compile_time_packet );
 #endif // #if defined( SERIALIZE_HAS_COMPILE_TIME_SURFACE )
         SERIALIZE_RUN_TEST( test_golden_wire_format );
+        SERIALIZE_RUN_TEST( test_trailing_bits );
+        SERIALIZE_RUN_TEST( test_past_end_poison );
         SERIALIZE_RUN_TEST( test_compressed_float_conformance_nonzero_min );
+        SERIALIZE_RUN_TEST( test_golden_float_bit_transparency );
+        SERIALIZE_RUN_TEST( test_golden_zero_length_bytes );
+        SERIALIZE_RUN_TEST( test_golden_zero_length_string );
+        SERIALIZE_RUN_TEST( test_golden_unaligned_bytes );
+        SERIALIZE_RUN_TEST( test_measure_bound );
         SERIALIZE_RUN_TEST( test_unaligned_writer );
         SERIALIZE_RUN_TEST( test_large_buffer );
     }
