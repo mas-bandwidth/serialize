@@ -292,6 +292,17 @@ a tolerance comparison cannot see a one-ulp divergence.
 
 Readers must reject an integer greater than `max_integer_value`.
 
+**Non-finite inputs are non-conforming.** *(Adopted 2026-08-15; the ruling
+verbatim: "it's non-conforming. also, attempting to send NaN or INF or
+anything else through compressed float is non-conforming and should assert
+out on write too.")* A declaration whose `delta = max - min` — or whose
+`values = delta / res` — is not finite in `float32` is non-conforming, and
+this document defines no wire meaning for it. Writing a non-finite value
+(NaN, `+Inf`, `-Inf`) through `compressed_float` is non-conforming.
+Conforming writers assert in debug builds, per the family's writer-trusted
+model. The read path is untouched: the poison is in the declaration or the
+input value, never on the wire, so there is nothing for a reader to refuse.
+
 This is lossy by construction: a round trip returns the nearest representable
 quantum, not the original value.
 

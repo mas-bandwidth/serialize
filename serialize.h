@@ -2424,6 +2424,13 @@ namespace serialize
 
         float values = delta / res;
 
+        // a declaration whose delta or values is not finite in float32 is non-conforming
+        // (STANDARD.md, adopted 2026-08-15) -- assert in debug, per the writer-trusted model.
+        // finiteness is spelled x - x == 0 (NaN and both infinities fail it: Inf - Inf is NaN)
+        // so the header needs no isfinite and no new include.
+        serialize_assert( delta - delta == 0.0f );
+        serialize_assert( values - values == 0.0f );
+
         // clamp so the uint32_t cast below is defined even for pathological delta / res (the !>= form also catches NaN)
         if ( !( values >= 1.0f ) )
         {
@@ -2442,6 +2449,11 @@ namespace serialize
         
         if ( Stream::IsWriting )
         {
+            // writing a non-finite value (NaN, +/-Inf) through compressed_float is
+            // non-conforming (STANDARD.md, adopted 2026-08-15) -- assert in debug. in release
+            // the clamp below remains the backstop that keeps the uint32 cast defined.
+            serialize_assert( value - value == 0.0f );
+
             // clamp with the !>= / !<= form so a NaN value is forced into range instead of reaching the uint32 cast below
             float normalizedValue = (value - min) / delta;
             if ( !( normalizedValue >= 0.0f ) )
@@ -4912,7 +4924,11 @@ inline void test_compressed_float_validation()
         serialize_check( fabs( value - written ) <= 4096.0f );
     }
 
-    // a NaN value must not reach the uint32 cast (clamp comparisons are all false for NaN)
+    // writing NaN is non-conforming and asserts in debug (STANDARD.md, adopted 2026-08-15;
+    // test_compressed_float_non_finite_asserts proves the assert fires). in release the
+    // asserts compile out and the clamp is the backstop: a NaN value must not reach the
+    // uint32 cast (clamp comparisons are all false for NaN).
+#if defined( NDEBUG )
     {
         uint8_t buffer[8 + 8] = { 0 };          // + 8: read buffer allocations extend 8 bytes past the data
 
@@ -4928,6 +4944,68 @@ inline void test_compressed_float_validation()
         serialize_check( serialize::serialize_compressed_float_internal( readStream, value, 0.0f, 10.0f, 0.01f ) == true );
         serialize_check( value >= 0.0f && value <= 10.0f );      // NaN clamps to the low end of the range
     }
+#endif // #if defined( NDEBUG )
+}
+
+#if !defined( NDEBUG ) && !defined( _WIN32 )
+
+#include <unistd.h>         // fork, _exit
+#include <sys/wait.h>       // waitpid
+
+// run fn in a forked child with stderr silenced, and report whether it died on a signal --
+// which is what a fired debug assert looks like from outside (assert calls abort, SIGABRT).
+inline bool serialize_test_assert_fires( void (*fn)() )
+{
+    fflush( stdout );
+    fflush( stderr );
+    pid_t pid = fork();
+    if ( pid == 0 )
+    {
+        freopen( "/dev/null", "w", stderr );    // the child's assert message is the expected outcome, not test noise
+        fn();
+        _exit( 0 );                             // the assert did not fire
+    }
+    if ( pid < 0 )
+        return false;
+    int status = 0;
+    waitpid( pid, &status, 0 );
+    return WIFSIGNALED( status );
+}
+
+inline void serialize_test_write_non_finite_declaration()
+{
+    // delta = max - min overflows float32 to +Inf: a non-conforming declaration
+    uint8_t buffer[8] = { 0 };
+    serialize::WriteStream writeStream( buffer, 8 );
+    float value = 0.0f;
+    serialize::serialize_compressed_float_internal( writeStream, value, -3e38f, 3e38f, 1.0f );
+}
+
+inline void serialize_test_write_non_finite_value()
+{
+    // a NaN value over a perfectly good declaration: a non-conforming write
+    uint8_t buffer[8] = { 0 };
+    serialize::WriteStream writeStream( buffer, 8 );
+    uint32_t nan_bits = 0x7fc00000;             // quiet NaN bit pattern, built without the NAN macro (finite-math builds reject it)
+    float value = 0.0f;
+    memcpy( &value, &nan_bits, 4 );
+    serialize::serialize_compressed_float_internal( writeStream, value, 0.0f, 10.0f, 0.01f );
+}
+
+#endif // #if !defined( NDEBUG ) && !defined( _WIN32 )
+
+inline void test_compressed_float_non_finite_asserts()
+{
+    // STANDARD.md, compressed_float (adopted 2026-08-15): a declaration whose delta or
+    // values is not finite in float32 is non-conforming, and writing a non-finite value is
+    // non-conforming -- conforming writers assert in debug builds. prove each assert fires,
+    // in a forked child so the abort is observed rather than suffered.
+#if !defined( NDEBUG ) && !defined( _WIN32 )
+    serialize_check( serialize_test_assert_fires( serialize_test_write_non_finite_declaration ) == true );
+    serialize_check( serialize_test_assert_fires( serialize_test_write_non_finite_value ) == true );
+#else
+    printf( "(skipped test_compressed_float_non_finite_asserts: needs an assert-enabled build and fork)\n" );
+#endif // #if !defined( NDEBUG ) && !defined( _WIN32 )
 }
 
 // Fixed point test helpers. Every configuration in the matrix runs the same case list, and every
@@ -7331,6 +7409,7 @@ inline void serialize_test()
         SERIALIZE_RUN_TEST( test_wstring_validation );
         SERIALIZE_RUN_TEST( test_int_relative_validation );
         SERIALIZE_RUN_TEST( test_compressed_float_validation );
+        SERIALIZE_RUN_TEST( test_compressed_float_non_finite_asserts );
         SERIALIZE_RUN_TEST( test_serialize_fixed );
         SERIALIZE_RUN_TEST( test_serialize_fixed_validation );
         SERIALIZE_RUN_TEST( test_serialize_fixed_matches_int64 );
