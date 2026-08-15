@@ -2677,14 +2677,14 @@ namespace serialize
         } while (0)
 
     /*
-        UTF-8 well-formedness. Used by the READ path's refusal rule (STANDARD.md,
-        "Readers must refuse malformed string payloads", adopted 2026-08-15) — which
-        binds in every build mode, because the read side faces untrusted data — and
-        shaped to match the writer's debug-only contract validator byte for byte, so
-        the two branches carrying them merge to one function. Rejects overlong
-        encodings, surrogate code points, values above U+10FFFF, truncated sequences
-        and stray continuation bytes. NUL bytes are VALID UTF-8: the interior-NUL
-        refusal is a separate rule with its own reason.
+        UTF-8 well-formedness, one validator with two callers (STANDARD.md, adopted
+        2026-08-15): the WRITE path's contract check — a debug-only assert per the
+        writes-trusted doctrine, compiled out under NDEBUG — and the READ path's
+        refusal rule ("Readers must refuse malformed string payloads"), which binds
+        in every build mode, because the read side faces untrusted data. Rejects
+        overlong encodings, surrogate code points, values above U+10FFFF, truncated
+        sequences and stray continuation bytes. NUL bytes are VALID UTF-8: the
+        interior-NUL refusal is a separate rule with its own reason.
     */
 
     inline bool serialize_string_is_valid_utf8( const char * string, int length )
@@ -2753,6 +2753,8 @@ namespace serialize
         {
             length = (int) strlen( string );
             serialize_assert( length < buffer_size );
+            // the writer's contract, debug only. See serialize_string_is_valid_utf8.
+            serialize_assert( serialize_string_is_valid_utf8( string, length ) );
         }
         serialize_int( stream, length, 0, buffer_size - 1 );
         serialize_bytes( stream, (uint8_t*)string, length );
@@ -2781,72 +2783,178 @@ namespace serialize
         return true;
     }
 
-    // Wire format is 32 bits per character, so streams are compatible between platforms with 2 and 4 byte wchar_t.
-    // Code points above 0xFFFF are not translated between UTF-16 and UTF-32 platforms: reading a value that doesn't
-    // fit in the local wchar_t fails rather than truncating.
+    // Counts the UTF-16 code units a wide string transmits — which on a 4 byte wchar_t
+    // platform is more than its character count when astral text is present, and is the
+    // count the wstring length field carries (STANDARD.md: each 32 bit group is one UTF-16
+    // code unit). Shared by write and measure, so both agree on cost.
+
+    inline int serialize_wstring_unit_count( const wchar_t * string )
+    {
+        int units = 0;
+        for ( int i = 0; string[i] != L'\0'; i++ )
+        {
+            const uint32_t character = (uint32_t) string[i];
+            units += ( character >= 0x10000 && character <= 0x10FFFF ) ? 2 : 1;
+        }
+        return units;
+    }
+
+    /*
+        The wstring payload is well-formed UTF-16 BY CONTRACT (STANDARD.md, adopted
+        2026-08-15): an unpaired surrogate is a writer contract violation, debug-asserted
+        per the writes-trusted doctrine. On a 4 byte wchar_t platform the string is UTF-32,
+        where a surrogate CODE POINT or a value above U+10FFFF is the malformation; on a
+        2 byte platform it is UTF-16, where the pairing itself is checked. Referenced only
+        from serialize_assert; compiles out under NDEBUG.
+    */
+
+    inline bool serialize_wstring_is_valid_utf16( const wchar_t * string )
+    {
+        // through a local rather than tested inline, so MSVC /W4 does not flag the constant conditional
+        const bool wide_wchar = sizeof( wchar_t ) >= 4;
+        int i = 0;
+        while ( string[i] != L'\0' )
+        {
+            const uint32_t character = (uint32_t) string[i];
+            if ( wide_wchar )
+            {
+                if ( character >= 0xD800 && character <= 0xDFFF )       // a surrogate is not a code point
+                    return false;
+                if ( character > 0x10FFFF )                             // above Unicode
+                    return false;
+                i += 1;
+            }
+            else
+            {
+                if ( character >= 0xD800 && character <= 0xDBFF )
+                {
+                    const uint32_t next = (uint32_t) string[i+1];
+                    if ( next < 0xDC00 || next > 0xDFFF )               // high surrogate without its pair
+                        return false;
+                    i += 2;
+                }
+                else if ( character >= 0xDC00 && character <= 0xDFFF )
+                {
+                    return false;                                       // low surrogate with no high before it
+                }
+                else
+                {
+                    i += 1;
+                }
+            }
+        }
+        return true;
+    }
+
+    // Wire format is 32 bits per group, EACH GROUP ONE UTF-16 CODE UNIT (STANDARD.md, adopted
+    // 2026-08-15), so streams are byte-identical between platforms with 2 and 4 byte wchar_t:
+    // the 4 byte platform converts at the boundary — an astral code point splits into its
+    // surrogate pair on write, and the pair recombines on read. The length field counts the
+    // units transmitted.
     //
     // On read, malformed payloads are REFUSED in every build mode (STANDARD.md, "Readers must
-    // refuse malformed wstring payloads", adopted 2026-08-15): an unpaired surrogate fails the
-    // read — a high surrogate without its low, a low with no high before it, or a dangling high
-    // as the final group — and so does an interior NUL group, because a conforming writer
-    // derives the length from wcslen, so a zero group only arrives doctored and gives the
-    // payload two lengths. Well-formed surrogate PAIRS pass: they are how astral text travels.
+    // refuse malformed wstring payloads", adopted 2026-08-15): a group above 0xFFFF is not a
+    // code unit; an unpaired surrogate fails the read — a high surrogate without its low, a
+    // low with no high before it, or a dangling high as the final group — and so does an
+    // interior NUL group, because a conforming writer derives the length from the terminator,
+    // so a zero group only arrives doctored and gives the payload two lengths. Well-formed
+    // surrogate PAIRS pass: they are how astral text travels.
 
     template <typename Stream> bool serialize_wstring_internal( Stream & stream, wchar_t * string, int buffer_size )
     {
-        const uint32_t max_wchar_value = ( sizeof( wchar_t ) >= 4 ) ? 0xFFFFFFFFU : 0xFFFFU;
         int length = 0;
         if ( Stream::IsWriting )
         {
-            length = (int) wcslen( string );
+            // the writer's contract, debug only. See serialize_wstring_is_valid_utf16.
+            serialize_assert( serialize_wstring_is_valid_utf16( string ) );
+            length = serialize_wstring_unit_count( string );
             serialize_assert( length < buffer_size );
         }
         serialize_int( stream, length, 0, buffer_size - 1 );
-        bool expecting_low_surrogate = false;
-        for ( int i = 0; i < length; i++ )
+        if ( Stream::IsWriting )
         {
-            uint32_t character = 0;
-            if ( Stream::IsWriting )
+            for ( int i = 0; string[i] != L'\0'; i++ )
             {
-                character = (uint32_t) string[i];
-            }
-            serialize_bits( stream, character, 32 );
-            if ( Stream::IsReading )
-            {
-                if ( character > max_wchar_value )
+                const uint32_t character = (uint32_t) string[i];
+                if ( character >= 0x10000 && character <= 0x10FFFF )
                 {
-                    return false;
+                    // an astral code point in a 4 byte wchar_t: split into its surrogate
+                    // pair at the boundary, so the bytes are the ones a 2 byte wchar_t
+                    // platform produces
+                    uint32_t high_surrogate = 0xD800 + ( ( character - 0x10000 ) >> 10 );
+                    uint32_t low_surrogate = 0xDC00 + ( ( character - 0x10000 ) & 0x3FF );
+                    serialize_bits( stream, high_surrogate, 32 );
+                    serialize_bits( stream, low_surrogate, 32 );
+                }
+                else
+                {
+                    uint32_t unit = character;
+                    serialize_bits( stream, unit, 32 );
+                }
+            }
+        }
+        else
+        {
+            // Each group is one UTF-16 code unit (STANDARD.md, adopted 2026-08-15), and
+            // malformed payloads are REFUSED in every build mode: a group above 0xFFFF is
+            // not a code unit and no conforming writer emits one; an interior NUL gives
+            // the payload two lengths; the pair discipline refuses a high surrogate
+            // without its low, a low with no high before it, and a dangling high as the
+            // final group. Well-formed pairs pass — they are how astral text travels —
+            // and on a 4 byte wchar_t they recombine at the boundary, the inverse of the
+            // split the writer performed; a 2 byte wchar_t stores units as they arrive.
+            // through a local rather than tested inline, so MSVC /W4 does not flag the constant conditional
+            const bool wide_wchar = sizeof( wchar_t ) >= 4;
+            uint32_t pending = 0;                   // a high surrogate awaiting its pair
+            bool have_pending = false;
+            int output_index = 0;
+            for ( int i = 0; i < length; i++ )
+            {
+                uint32_t character = 0;
+                serialize_bits( stream, character, 32 );
+                if ( character > 0xFFFF )
+                {
+                    return false;                   // not a UTF-16 code unit: nothing conforming emits one
                 }
                 if ( character == 0 )
                 {
                     return false;                   // interior NUL: the two-lengths smuggling primitive
                 }
-                if ( expecting_low_surrogate )
+                if ( have_pending )
                 {
                     if ( character < 0xDC00 || character > 0xDFFF )
                     {
                         return false;               // high surrogate without its low
                     }
-                    expecting_low_surrogate = false;
+                    if ( wide_wchar )
+                    {
+                        string[output_index++] = (wchar_t) ( 0x10000 + ( ( pending - 0xD800 ) << 10 ) + ( character - 0xDC00 ) );
+                    }
+                    else
+                    {
+                        string[output_index++] = (wchar_t) pending;
+                        string[output_index++] = (wchar_t) character;
+                    }
+                    have_pending = false;
+                    continue;
                 }
-                else if ( character >= 0xDC00 && character <= 0xDFFF )
+                if ( character >= 0xDC00 && character <= 0xDFFF )
                 {
                     return false;                   // low surrogate with no high before it
                 }
-                else if ( character >= 0xD800 && character <= 0xDBFF )
+                if ( character >= 0xD800 && character <= 0xDBFF )
                 {
-                    expecting_low_surrogate = true;
+                    pending = character;
+                    have_pending = true;
+                    continue;
                 }
-                string[i] = (wchar_t) character;
+                string[output_index++] = (wchar_t) character;
             }
-        }
-        if ( Stream::IsReading )
-        {
-            if ( expecting_low_surrogate )
+            if ( have_pending )
             {
                 return false;                       // the final group is a dangling high surrogate
             }
-            string[length] = L'\0';
+            string[output_index] = L'\0';
         }
         return true;
     }
@@ -2876,8 +2984,8 @@ namespace serialize
         Serialize a wide string to the stream (read/write/measure).
         This is a helper macro to make writing unified serialize functions easier.
         Serialize macros returns false on error so we don't need to use exceptions for error handling on read. This is an important safety measure because packet data comes from the network and may be malicious.
-        The wire format is 32 bits per character, so streams are compatible between platforms with 2 and 4 byte wchar_t. Reading a character that doesn't fit in the local wchar_t fails rather than truncating.
-        On read, malformed payloads are refused (STANDARD.md, adopted 2026-08-15): an unpaired surrogate fails the read, and so does an interior NUL group among the transmitted groups.
+        The wire format is 32 bits per group, each group one UTF-16 code unit, so streams are byte-identical between platforms with 2 and 4 byte wchar_t: on a 4 byte wchar_t platform an astral code point splits into its surrogate pair on write and recombines on read. The payload is well-formed UTF-16 by the writer's contract (debug-asserted).
+        On read, malformed payloads are refused (STANDARD.md, adopted 2026-08-15): a group above 0xFFFF is not a code unit and fails the read, an unpaired surrogate fails the read, and so does an interior NUL group among the transmitted groups.
         IMPORTANT: This macro must be called inside a templated serialize function with template \<typename Stream\>. The serialize method must have a bool return value.
         @param stream The stream object. May be a read, write or measure stream.
         @param string The wide string to serialize write/measure. Pointer to buffer to be filled on read.
@@ -3642,21 +3750,36 @@ namespace serialize
         {                                                                                   \
             int length = (int) strlen( string );                                            \
             serialize_assert( length < (buffer_size) );                                     \
+            /* the writer's contract, debug only. See serialize_string_is_valid_utf8 */     \
+            serialize_assert( serialize::serialize_string_is_valid_utf8( string, length ) );\
             write_int( stream, length, 0, (buffer_size) - 1 );                              \
             write_bytes( stream, (uint8_t*) ( string ), length );                           \
         } while (0)
 
-    #define write_wstring( stream, string, buffer_size )                                    \
-        do                                                                                  \
-        {                                                                                   \
-            const wchar_t * wstring_ptr = (const wchar_t*) ( string );                      \
-            int length = (int) wcslen( wstring_ptr );                                       \
-            serialize_assert( length < (buffer_size) );                                     \
-            write_int( stream, length, 0, (buffer_size) - 1 );                              \
-            for ( int i = 0; i < length; i++ )                                              \
-            {                                                                               \
-                write_bits( stream, (uint32_t) wstring_ptr[i], 32 );                        \
-            }                                                                               \
+    #define write_wstring( stream, string, buffer_size )                                            \
+        do                                                                                          \
+        {                                                                                           \
+            const wchar_t * wstring_ptr = (const wchar_t*) ( string );                              \
+            /* the writer's contract, debug only. See serialize_wstring_is_valid_utf16 */           \
+            serialize_assert( serialize::serialize_wstring_is_valid_utf16( wstring_ptr ) );         \
+            int wstring_units = serialize::serialize_wstring_unit_count( wstring_ptr );             \
+            serialize_assert( wstring_units < (buffer_size) );                                      \
+            write_int( stream, wstring_units, 0, (buffer_size) - 1 );                               \
+            for ( int i = 0; wstring_ptr[i] != L'\0'; i++ )                                         \
+            {                                                                                       \
+                const uint32_t wstring_character = (uint32_t) wstring_ptr[i];                       \
+                if ( wstring_character >= 0x10000 && wstring_character <= 0x10FFFF )                \
+                {                                                                                   \
+                    /* astral: split into the surrogate pair at the boundary, matching */           \
+                    /* serialize_wstring_internal byte for byte */                                  \
+                    write_bits( stream, 0xD800 + ( ( wstring_character - 0x10000 ) >> 10 ), 32 );   \
+                    write_bits( stream, 0xDC00 + ( ( wstring_character - 0x10000 ) & 0x3FF ), 32 ); \
+                }                                                                                   \
+                else                                                                                \
+                {                                                                                   \
+                    write_bits( stream, wstring_character, 32 );                                    \
+                }                                                                                   \
+            }                                                                                       \
         } while (0)
 
 
@@ -4948,11 +5071,13 @@ inline void test_wstring_validation()
         serialize_check( measureStream.GetBitsProcessed() == writeStream.GetBitsProcessed() );
     }
 
-    // THE DOCUMENTED FAILURE BEHAVIOUR, previously untested. A code point that does not fit
-    // in the local wchar_t must FAIL THE READ rather than truncate, so a stream written on a
-    // 4-byte-wchar_t platform cannot silently lose data when read on a 2-byte one. The value
-    // is planted with raw bit operations so the test does not depend on the local width to
-    // produce it.
+    // A GROUP ABOVE 0xFFFF IS NOT A UTF-16 CODE UNIT (STANDARD.md, adopted 2026-08-15):
+    // each 32 bit group carries one code unit, so no conforming writer can emit a larger
+    // value — astral text travels as a surrogate pair. The doctored group is REFUSED on
+    // every platform, subsuming the old width-dependent behaviour (accept on 4 byte
+    // wchar_t, refuse on 2), whose acceptance half was a wire divergence between
+    // platforms once each group became one unit. The value is planted with raw bit
+    // operations so the test does not depend on the local width to produce it.
     {
         uint8_t buffer[256];
         const uint32_t above_bmp = 0x0001F600;      // beyond 16 bits by construction
@@ -4967,18 +5092,98 @@ inline void test_wstring_validation()
         serialize::ReadStream readStream( buffer, writeStream.GetBytesProcessed() );
         const bool result = serialize::serialize_wstring_internal( readStream, read_back, BufferSize );
 
-        if ( sizeof( wchar_t ) >= 4 )
-        {
-            // the value fits: it must round-trip exactly
-            serialize_check( result == true );
-            serialize_check( (uint32_t) read_back[0] == above_bmp );
-        }
-        else
-        {
-            // the value does not fit: reject, and do not leave a truncated character behind
-            serialize_check( result == false );
-            serialize_check( read_back[0] != (wchar_t) ( above_bmp & 0xFFFF ) );
-        }
+        serialize_check( result == false );
+        serialize_check( read_back[0] != (wchar_t) ( above_bmp & 0xFFFF ) );    // nothing truncated left behind
+    }
+}
+
+inline void test_wstring_utf16_code_units()
+{
+    // wstring transmits UTF-16 CODE UNITS: an astral code point is a surrogate pair on the
+    // wire, and 2 and 4 byte wchar_t platforms produce IDENTICAL bytes — the 4 byte platform
+    // converts at the boundary, splitting on write and recombining on read (STANDARD.md,
+    // adopted 2026-08-15). The input is built per the local width, the expected bytes are the
+    // code unit stream spelled out directly with raw bit operations, and the two must agree
+    // everywhere. Mirrors the vector serialize.c pins in test/roundtrip.c.
+
+    const int BufferSize = 8;
+
+    // U+1F600 is the surrogate pair 0xD83D 0xDE00: one character but two units on a 4 byte
+    // wchar_t platform. On a 2 byte platform the string already holds the pair.
+    wchar_t ws_in[8];
+    if ( sizeof( wchar_t ) >= 4 )
+    {
+        ws_in[0] = (wchar_t) 0x0001F600;
+        ws_in[1] = (wchar_t) 0x0041;
+        ws_in[2] = L'\0';
+    }
+    else
+    {
+        ws_in[0] = (wchar_t) 0xD83DU;
+        ws_in[1] = (wchar_t) 0xDE00U;
+        ws_in[2] = (wchar_t) 0x0041;
+        ws_in[3] = L'\0';
+    }
+
+    // the wire, spelled out with raw bit operations: three units in a [0,7] length field,
+    // then each unit as a 32 bit group
+    uint8_t expected_bytes[64];
+    memset( expected_bytes, 0, sizeof( expected_bytes ) );
+    int expected_bytes_processed = 0;
+    {
+        serialize::WriteStream expectedStream( expected_bytes, sizeof( expected_bytes ) );
+        serialize_check( expectedStream.SerializeInteger( 3, 0, BufferSize - 1 ) );
+        uint32_t high_surrogate = 0xD83D;
+        uint32_t low_surrogate = 0xDE00;
+        uint32_t letter_a = 0x0041;
+        serialize_check( expectedStream.SerializeBits( high_surrogate, 32 ) );
+        serialize_check( expectedStream.SerializeBits( low_surrogate, 32 ) );
+        serialize_check( expectedStream.SerializeBits( letter_a, 32 ) );
+        expectedStream.Flush();
+        expected_bytes_processed = expectedStream.GetBytesProcessed();
+    }
+
+    // write side: the unified serialize path must produce exactly those bytes
+    int bits_written = 0;
+    uint8_t buffer[64];
+    {
+        memset( buffer, 0, sizeof( buffer ) );
+        serialize::WriteStream writeStream( buffer, sizeof( buffer ) );
+        serialize_check( serialize::serialize_wstring_internal( writeStream, ws_in, BufferSize ) );
+        writeStream.Flush();
+        serialize_check( writeStream.GetBytesProcessed() == expected_bytes_processed );
+        serialize_check( memcmp( buffer, expected_bytes, expected_bytes_processed ) == 0 );
+        bits_written = writeStream.GetBitsProcessed();
+    }
+
+    // the measure counts the units transmitted, not the characters held
+    {
+        serialize::MeasureStream measureStream;
+        serialize_check( serialize::serialize_wstring_internal( measureStream, ws_in, BufferSize ) );
+        serialize_check( measureStream.GetBitsProcessed() == bits_written );
+    }
+
+    // the write-only macro form must stay byte-identical to the unified path
+    // (STANDARD.md, "Read-only and write-only forms")
+    {
+        uint8_t macro_buffer[64];
+        memset( macro_buffer, 0, sizeof( macro_buffer ) );
+        serialize::WriteStream writeStream( macro_buffer, sizeof( macro_buffer ) );
+        const wchar_t * wstring = ws_in;
+        write_wstring( writeStream, wstring, BufferSize );
+        writeStream.Flush();
+        serialize_check( writeStream.GetBytesProcessed() == expected_bytes_processed );
+        serialize_check( memcmp( macro_buffer, expected_bytes, expected_bytes_processed ) == 0 );
+    }
+
+    // read side: the code unit stream decodes to the platform's own representation —
+    // recombined on 4 byte wchar_t, the pair itself on 2 byte
+    {
+        wchar_t read_back[BufferSize];
+        memset( read_back, 0xFF, sizeof( read_back ) );
+        serialize::ReadStream readStream( expected_bytes, expected_bytes_processed );
+        serialize_check( serialize::serialize_wstring_internal( readStream, read_back, BufferSize ) );
+        serialize_check( wcscmp( read_back, ws_in ) == 0 );
     }
 }
 
@@ -8295,6 +8500,7 @@ inline void serialize_test()
         SERIALIZE_RUN_TEST( test_serialize_int64_validation );
         SERIALIZE_RUN_TEST( test_serialize_bytes_validation );
         SERIALIZE_RUN_TEST( test_wstring_validation );
+        SERIALIZE_RUN_TEST( test_wstring_utf16_code_units );
         SERIALIZE_RUN_TEST( test_string_read_validation );
         SERIALIZE_RUN_TEST( test_wstring_read_validation );
         SERIALIZE_RUN_TEST( test_int_relative_validation );
