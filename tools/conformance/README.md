@@ -55,6 +55,16 @@ property. So the checker additionally carries the discriminating battery:
 - **Degenerate-range vectors** decoded from an empty stream, proving
   `min == max` costs zero bits on every storage width.
 
-Two refusal classes are deliberately absent because each turns on a ruling
-PR #60 leaves open: trailing bits after the final operation, and reads past
-the end of the caller's buffer. Vectors for those land when the rulings do.
+## Trailing bits: the writer obligation and the diagnostic
+
+STANDARD.md (adopted 2026-08-15) makes the writer's zeroed trailing bits an
+obligation, keeps readers indifferent to their contents, and licenses a
+diagnostic that may treat non-zero trailing bits as evidence a stream was not
+produced by a conforming writer. The checker enforces the writer side against
+pinned real emissions — `golden_wire_bytes` (the C++ writer) and the
+`int_relative` tier-boundary streams (serialize.c) — and proves the
+distinction both ways on a doctored stream: the document's reader accepts it
+and decodes identical values, and the diagnostic flags it. The check
+exercises 2 of the 5 writers; Go, C# and Rust emissions are not pinned in
+this repo yet. The diagnostic lives here by rule: it never moves into a read
+path.
