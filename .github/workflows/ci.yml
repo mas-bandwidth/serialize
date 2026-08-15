@@ -123,14 +123,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # -ffp-contract=off, not -ffast-math: this binary runs the golden and conformance
+      # vectors, and those pin exact bytes and decoded bit patterns. Same rationale as
+      # SERIALIZE_DEV_FLAGS in CMakeLists.txt — the gates build strict.
       - name: Build and run tests at -std=c++03 (emulated pair alongside native)
         run: |
-          clang++ -std=c++03 -DSERIALIZE_ENABLE_TESTS=1 -DSERIALIZE_DEBUG -Wall -Wextra -ffast-math -fno-rtti test.cpp -o test_cxx03
+          clang++ -std=c++03 -DSERIALIZE_ENABLE_TESTS=1 -DSERIALIZE_DEBUG -Wall -Wextra -ffp-contract=off -fno-rtti test.cpp -o test_cxx03
           ./test_cxx03
 
       - name: Build and run tests at -std=c++03 (emulated pair as the serialize types)
         run: |
-          clang++ -std=c++03 -DSERIALIZE_ENABLE_TESTS=1 -DSERIALIZE_DEBUG -U__SIZEOF_INT128__ -Wall -Wextra -ffast-math -fno-rtti test.cpp -o test_cxx03_no_int128
+          clang++ -std=c++03 -DSERIALIZE_ENABLE_TESTS=1 -DSERIALIZE_DEBUG -U__SIZEOF_INT128__ -Wall -Wextra -ffp-contract=off -fno-rtti test.cpp -o test_cxx03_no_int128
           ./test_cxx03_no_int128
 
   conformance:

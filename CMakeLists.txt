@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(serialize VERSION 1.7.0 LANGUAGES CXX)
+project(serialize VERSION 1.8.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
@@ -49,7 +49,21 @@ if(SERIALIZE_TOP_LEVEL AND NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPE
 endif()
 
 if(SERIALIZE_BUILD_TESTS OR SERIALIZE_FUZZ)
-    # same flags as the historical premake build: extra warnings, fast float, no rtti
+    # STRICT floating point, deliberately. These executables are the gates that certify
+    # the wire: the golden and conformance vectors pin exact bytes and exact decoded bit
+    # patterns. The historical premake flags carried -ffast-math (MSVC /fp:fast) here,
+    # which licenses contraction, reassociation and reciprocal approximation in exactly
+    # the arithmetic those vectors exist to pin — measured on arm64, it changed both the
+    # quantized integer (writer) and the decoded float (reader) of compressed_float.
+    # A proof of byte-exactness earned under flags that permit different bytes is not a
+    # proof, so every target here builds strict:
+    #   - GCC/Clang: -ffp-contract=off. Not just "no -ffast-math" — GCC's default is
+    #     -ffp-contract=fast, and clang's default =on still fuses single expressions.
+    #   - MSVC: /fp:precise. Since VS 2022 this no longer implies contraction
+    #     (there is no /fp:contract in these flags, so contraction stays off).
+    # bench builds strict too: a benchmark of arithmetic the format forbids would be a
+    # number about some other library. Consumers are unaffected either way — the library
+    # target above is INTERFACE-only and none of these flags leak.
     if(MSVC)
         # 4127/4244 are opted back in here: the header now push/pops them, and this repo's own
         # executables use the same implicit-narrowing style as the header
@@ -57,9 +71,9 @@ if(SERIALIZE_BUILD_TESTS OR SERIALIZE_FUZZ)
         # source as the local ANSI code page — mangling non-ASCII characters and warning
         # C4819. The test data is written as explicit code points so behaviour never
         # depends on this, but the comments and the copyright line still need it.
-        set(SERIALIZE_DEV_FLAGS /W4 /utf-8 /fp:fast /GR- /wd4127 /wd4244)
+        set(SERIALIZE_DEV_FLAGS /W4 /utf-8 /fp:precise /GR- /wd4127 /wd4244)
     else()
-        set(SERIALIZE_DEV_FLAGS -Wall -Wextra -ffast-math -fno-rtti)
+        set(SERIALIZE_DEV_FLAGS -Wall -Wextra -ffp-contract=off -fno-rtti)
     endif()
     set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 endif()
