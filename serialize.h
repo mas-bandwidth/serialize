@@ -92,6 +92,30 @@
 #define SERIALIZE_ALWAYS_INLINE inline
 #endif // #if defined( _MSC_VER )
 
+/*
+    SERIALIZE_BULK_COPY — how WriteBytes moves memory, spelled so the fortify capture
+    can never touch it. Where _FORTIFY_SOURCE is armed (glibc honors it in C++ too, and
+    some toolchains arm it by default; Darwin's capture fires for C, which is how
+    serialize.c hit it), the string.h macros rewrite
+    a plain memcpy call into __builtin___memcpy_chk before the compiler proper ever
+    sees it, and the checked form rides LLVM's mid-pipeline as an opaque call. Late
+    simplification folds the check away — the destination's object size is unknowable
+    here, so it never checked anything — but the inliner prices the function before
+    the fold, and WriteBytes sits exactly at that boundary: not on the demanded spine
+    (see SERIALIZE_ALWAYS_INLINE above), so its body is costed call by call in every
+    generated string and byte-array caller. clang and GCC spell the builtin, which
+    lowers identically to memcpy but is never captured; MSVC never fortifies, so plain
+    memcpy is already the same thing there. Semantics are byte-identical either way —
+    only the mid-pipeline IR form changes. The always-inlined packer paths (WriteBits,
+    FlushBits, ReadBits) keep their plain memcpy spelling: the demand makes inline
+    pricing moot there.
+*/
+#if defined( __clang__ ) || defined( __GNUC__ )
+#define SERIALIZE_BULK_COPY( dst, src, bytes ) __builtin_memcpy( ( dst ), ( src ), ( bytes ) )
+#else // #if defined( __clang__ ) || defined( __GNUC__ )
+#define SERIALIZE_BULK_COPY( dst, src, bytes ) memcpy( ( dst ), ( src ), ( bytes ) )
+#endif // #if defined( __clang__ ) || defined( __GNUC__ )
+
 #ifndef serialize_assert
 #include <assert.h>
 #define serialize_assert assert
@@ -1217,6 +1241,9 @@ namespace serialize
             Write an array of bytes to the bit stream.
             Use this when you have to copy a large block of data into your bitstream.
             Faster than just writing each byte to the bit stream via BitWriter::WriteBits( value, 8 ), because it aligns to byte index and copies into the buffer without bitpacking.
+            The body is fused: one qword store flushes the partial scratch word (its high bytes are zero and the payload overwrites them), one bulk copy lands the whole payload at the byte cursor, and one qword load reloads the trailing partial word into the scratch — masked to its tail bits — so later writes pack into it exactly as if its bytes had gone through the packer.
+            The old shape pushed the block's head and tail through the packer a byte at a time, and that loop priced the function out of inlining in generated callers (refused at cost 345 against threshold 225 for a string body; fused it inlines at cost 90); serialize.c fused its body first, and the wire bytes are identical either way.
+            The tail load reads only the word the final flush is already obliged to store, and the byte-swapped scratch is what makes the edge words single moves on either endianness — the golden vectors pin that, and CI runs them on s390x.
             @param data The byte array data to write to the bit stream.
             @param bytes The number of bytes to write.
             @see BitReader::ReadBytes
@@ -1227,38 +1254,42 @@ namespace serialize
             serialize_assert( m_data );                 // if this fires, the writer was used before Initialize
             serialize_assert( uint64_t(m_bitsWritten) + uint64_t(bytes) * 8 <= uint64_t(m_numBits) );
             serialize_assert( ( m_bitsWritten % 8 ) == 0 );                         // byte aligned (GetAlignBits() == 0, spelled directly: a restrict qualified function cannot call unqualified members on some compilers)
+            serialize_assert( m_scratchBits == m_bitsWritten % 64 );                // mid-stream the scratch tracks the cursor (writing after FlushBits mid-stream was never supported)
 
-            int64_t headBytes = ( 8 - ( m_bitsWritten % 64 ) / 8 ) % 8;
-            if ( headBytes > bytes )
-                headBytes = bytes;
-            for ( int64_t i = 0; i < headBytes; ++i )
-                WriteBits( data[i], 8 );
-            if ( headBytes == bytes )
-                return;
-
-            serialize_assert( ( m_bitsWritten % 8 ) == 0 );     // still byte aligned
-            serialize_assert( ( m_bitsWritten % 64 ) == 0 && m_scratchBits == 0 );      // the head bytes flushed the scratch at the word boundary
-
-            int64_t numWords = ( bytes - headBytes ) / 8;
-            if ( numWords > 0 )
+            // the head: one word store, not a byte loop. the partial scratch word goes to the
+            // buffer whole — its low scratchBits are the bytes already written, its high bytes
+            // are zero, and the payload copy below overwrites exactly those zero bytes. the
+            // buffer size is a multiple of 8, so the qword store stays in bounds (see FlushBits).
+            if ( m_scratchBits != 0 )
             {
-                memcpy( m_data + (size_t) m_wordIndex * 8, data + headBytes, (size_t) ( numWords * 8 ) );
-                m_bitsWritten += numWords * 64;
-                m_wordIndex += numWords;
-                m_scratch = 0;
+                const uint64_t word = host_to_network( m_scratch );
+                SERIALIZE_BULK_COPY( m_data + (size_t) m_wordIndex * 8, &word, sizeof( word ) );
             }
 
-            serialize_assert( ( m_bitsWritten % 8 ) == 0 );     // still byte aligned
+            // the body: the whole payload, straight in at the byte cursor
+            SERIALIZE_BULK_COPY( m_data + (size_t) ( m_bitsWritten >> 3 ), data, (size_t) bytes );
 
-            int64_t tailStart = headBytes + numWords * 8;
-            int64_t tailBytes = bytes - tailStart;
-            serialize_assert( tailBytes >= 0 && tailBytes < 8 );
-            for ( int64_t i = 0; i < tailBytes; ++i )
-                WriteBits( data[tailStart+i], 8 );
+            m_bitsWritten += bytes * 8;
+            m_wordIndex = m_bitsWritten / 64;
 
-            serialize_assert( ( m_bitsWritten % 8 ) == 0 );     // still byte aligned
-
-            serialize_assert( headBytes + numWords * 8 + tailBytes == bytes );
+            // the tail: reload the trailing partial word into the scratch, masked to its tail
+            // bits, so later writes pack into it exactly as if its bytes had gone through the
+            // packer. the load reads the word the final flush is already obliged to store
+            // (tailBits != 0 keeps m_scratchBits != 0, so FlushBits WILL store it), so it
+            // touches no memory the stream does not already own; the bits above the tail are
+            // whatever the buffer held, and the mask discards them.
+            const int tailBits = (int) ( m_bitsWritten % 64 );
+            if ( tailBits != 0 )
+            {
+                uint64_t word;
+                SERIALIZE_BULK_COPY( &word, m_data + (size_t) m_wordIndex * 8, sizeof( word ) );
+                m_scratch = network_to_host( word ) & ( ( uint64_t(1) << tailBits ) - 1 );
+            }
+            else
+            {
+                m_scratch = 0;
+            }
+            m_scratchBits = tailBits;
         }
 
         /**
