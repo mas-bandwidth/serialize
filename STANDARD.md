@@ -660,6 +660,54 @@ accepts streams a conforming implementation refuses, and two implementations
 that disagree about refusal disagree about the format. Every refusal rule is
 testable by a vector that a conforming reader must reject.
 
+## Implementation Law
+
+*(Adopted 2026-08-16, after a six-implementation audit found invented contracts
+replicating port to port. These rules govern how implementations are built, not
+just what bytes they emit — because the audit proved the bytes stay honest only
+when the practice does.)*
+
+**The job.** When this library is ported to a language, the job is to find
+**the fastest correct implementation in that language.** Correct is defined by
+this standard; fastest is defined by measurement. Everything below serves that
+sentence.
+
+**Sources.** An implementation derives from exactly two sources: this standard,
+and — where the standard is silent — the C++ reference implementation
+(`mas-bandwidth/serialize`), which is canonical. **Sibling ports are never
+sources.** Copying a sibling's behavior because it is the nearest working
+example is how inventions travel disguised as specification; every port-to-port
+inheritance in the audit was carrying one. If the standard lacks the
+information needed to implement correctly and fast, **the standard is too
+loose: tighten it here, upstream — never improvise in a port.**
+
+**The check model.** The caller is responsible for well-formed writes. Where
+the language has compile-out assertions, write-side contract validation uses
+them and nothing else; release builds perform **zero** write-side validation in
+C and C++, and the minimum the language permits elsewhere. Readers perform
+exactly the refusal obligations of this standard (see Reader Obligations) plus
+buffer-end reporting — and nothing more. A check that neither this standard
+mandates nor the language forces is an invented contract, whatever its
+justification sounds like: "safer", "more defensive", and "best practice" are
+the exact phrases the audit found attached to every invention.
+
+**The buffer contract.** Reading whole words through the end of the buffer,
+with the allocation aligned up so the final word load is legal, is accepted
+best practice — the reference does this, and implementations should. Machinery
+that avoids the slack requirement at the cost of per-operation work in the hot
+path is a slower correct option, and is refused by the speed rule below.
+
+**Speed is normative.** Among correct implementations of an operation, the
+fastest correct option is the conforming one. A new approach a port invents is
+welcome **provided it is the fastest correct option** — beating the reference
+is a contribution, and the reference should then adopt it. The named error is
+choosing a slower correct option and calling it good: a port that is slower
+than the reference for any reason other than a documented language necessity is
+defective, and the deviation and its necessity must be documented where the
+divergence lives. Performance parity is part of conformance in spirit: C and
+C++ at total parity; systems languages within a few percent, with every
+residual attributed to a named language mechanism.
+
 ## Compatibility Notes
 
 * **The format is not self-describing.** There are no tags, lengths, or type
