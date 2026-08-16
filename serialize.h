@@ -46,7 +46,7 @@
 #endif // #if defined(_MSC_VER)
 
 /*
-    SERIALIZE_ALWAYS_INLINE — how the per-field write spine is spelled.
+    SERIALIZE_ALWAYS_INLINE — how the per-field serialize spine is spelled, both directions.
 
     A serialize function is a chain of fallible calls — if ( !stream.SerializeX( ... ) )
     return false; — and LLVM's static branch heuristics treat each success/failure split as
@@ -60,20 +60,20 @@
     the write spine inlines end to end and the same write rows lead instead
     (+57-92%, both optimization levels).
 
-    The read spine does not make the demand BY DEFAULT, because the original measurement said
-    the simple rows did not need it: the per-message read rows were `full` in the emitted code.
-    That claim has a named exception the remarks prove (Apple clang 21, -O3, schema bench):
-    inside a large generated reader the chain decays far enough that the read helpers strand —
-    ReadStream::SerializeInteger64 refused at cost=70 against the cold-callsite threshold 45,
-    SerializeBytes at 115 and 130, SerializeAlign at 80 — five per-op calls left in that
-    bench's read path while every write row inlines end to end. SERIALIZE_READ_SPINE_DEMAND
-    (below) arms the same demand on the read spine — BitReader::ReadBits/ReadAlign and
-    ReadStream's six per-field methods, the exact mirror of the write set — as a compile-time
-    switch, OFF by default: undefined, the spelling expands to nothing and the header is
-    token-identical to the undemanded form. It stays off until a bench-standard timing pass
-    validates it; arm it with -DSERIALIZE_READ_SPINE_DEMAND to build the candidate. This is
-    the split serialize.c records on its read spine, mirrored as a switch: demand inlining
-    exactly where measurement says the hint is not enough, and measure before defaulting.
+    The read spine makes the same demand — BitReader::ReadBits/ReadAlign and ReadStream's six
+    per-field methods, the exact mirror of the write set. The original measurement said the
+    reads did not need it (the per-message read rows were `full` in the emitted code), but the
+    remarks named the exception: inside a large generated reader the fallible chain decays far
+    enough that the read helpers strand at the cold-callsite threshold 45 — ReadStream::
+    SerializeInteger64 refused at cost=70, SerializeBytes at 115 and 130, SerializeAlign at 80.
+    The demand shipped first as a default-off switch, then won its tournament: armed alongside
+    the schema emitter's matching read demand (Apple clang 21, -O3, schema bench, tournament-air
+    and confirmation-air eras) the read rows swept with zero regressions — batch read +68%,
+    rigidbody_at_rest read +244%, rigidbody_moving read +232%, inputpacket read +187%, testdata
+    read +109%, confirmed in a second independent pass — so per the feature lifecycle the
+    winner became unconditional code and the switch was deleted.
+    The compressed-float and string bodies stay undemanded deliberately: their cost is the
+    work, not the call, the same boundary serialize.c draws on its own read spine.
 
     The sibling ports' other lever — pinning the error edges cold (serialize.rs's #[cold]
     constructor) — was tried here as __builtin_expect on the macros' error branches, measured,
@@ -91,25 +91,6 @@
 #else // #if defined( _MSC_VER )
 #define SERIALIZE_ALWAYS_INLINE inline
 #endif // #if defined( _MSC_VER )
-
-/*
-    SERIALIZE_READ_SPINE_DEMAND — the read-spine inlining demand, OFF by default.
-
-    Undefined (the default), SERIALIZE_READ_INLINE expands to nothing and the read spine is
-    spelled exactly as it always was. Defined, the read spine — BitReader::ReadBits and
-    ReadAlign, plus ReadStream's SerializeInteger/Integer64/Integer128/Bits/Bytes/Align, the
-    mirror of the demanded write set — demands inlining the same way the write spine does.
-    See the rationale above for the remark evidence this switch answers to. The compressed
-    float and string bodies stay undemanded either way, deliberately: their cost is the work,
-    not the call (the same boundary serialize.c draws). No branch-weight hints ride with the
-    demand — cold hints are measured in this library to activate the machine outliner
-    (bits write -25%); the demand is a demand.
-*/
-#if defined( SERIALIZE_READ_SPINE_DEMAND )
-#define SERIALIZE_READ_INLINE SERIALIZE_ALWAYS_INLINE
-#else // #if defined( SERIALIZE_READ_SPINE_DEMAND )
-#define SERIALIZE_READ_INLINE
-#endif // #if defined( SERIALIZE_READ_SPINE_DEMAND )
 
 #ifndef serialize_assert
 #include <assert.h>
@@ -1430,7 +1411,7 @@ namespace serialize
             @see BitWriter::WriteBits
          */
 
-        SERIALIZE_READ_INLINE uint32_t ReadBits( int bits )
+        SERIALIZE_ALWAYS_INLINE uint32_t ReadBits( int bits )
         {
             serialize_assert( m_data );                 // if this fires, the reader was used before Initialize
             serialize_assert( bits > 0 );
@@ -1458,7 +1439,7 @@ namespace serialize
             @see BitWriter::WriteAlign
          */
 
-        SERIALIZE_READ_INLINE bool ReadAlign()
+        SERIALIZE_ALWAYS_INLINE bool ReadAlign()
         {
             const int remainderBits = m_bitsRead % 8;
             if ( remainderBits != 0 )
@@ -1865,7 +1846,7 @@ namespace serialize
             @returns Returns true if the serialize succeeded and the value is in the correct range. False otherwise.
          */
 
-        SERIALIZE_READ_INLINE bool SerializeInteger( int32_t & value, int32_t min, int32_t max )
+        SERIALIZE_ALWAYS_INLINE bool SerializeInteger( int32_t & value, int32_t min, int32_t max )
         {
             serialize_assert( min <= max );
             const int bits = bits_required( min, max );
@@ -1892,7 +1873,7 @@ namespace serialize
             @returns Returns true if the serialize succeeded and the value is in the correct range. False otherwise.
          */
 
-        SERIALIZE_READ_INLINE bool SerializeInteger64( int64_t & value, int64_t min, int64_t max )
+        SERIALIZE_ALWAYS_INLINE bool SerializeInteger64( int64_t & value, int64_t min, int64_t max )
         {
             serialize_assert( min <= max );
             const int bits = bits_required64( uint64_t(min), uint64_t(max) );
@@ -1930,7 +1911,7 @@ namespace serialize
             @returns Returns true if the serialize succeeded and the value is in the correct range. False otherwise.
          */
 
-        SERIALIZE_READ_INLINE bool SerializeInteger128( int128_t & value, int128_t min, int128_t max )
+        SERIALIZE_ALWAYS_INLINE bool SerializeInteger128( int128_t & value, int128_t min, int128_t max )
         {
             serialize_assert( min <= max );
             const int bits = bits_required128( uint128_t(min), uint128_t(max) );
@@ -1978,7 +1959,7 @@ namespace serialize
             @returns Returns true if the serialize read succeeded, false otherwise.
          */
 
-        SERIALIZE_READ_INLINE bool SerializeBits( uint32_t & value, int bits )
+        SERIALIZE_ALWAYS_INLINE bool SerializeBits( uint32_t & value, int bits )
         {
             serialize_assert( bits > 0 );
             serialize_assert( bits <= 32 );
@@ -1996,7 +1977,7 @@ namespace serialize
             @returns Returns true if the serialize read succeeded. False otherwise.
          */
 
-        SERIALIZE_READ_INLINE bool SerializeBytes( uint8_t * data, int64_t bytes )
+        SERIALIZE_ALWAYS_INLINE bool SerializeBytes( uint8_t * data, int64_t bytes )
         {
             if ( bytes < 0 )
                 return false;
@@ -2014,7 +1995,7 @@ namespace serialize
             @returns Returns true if the serialize read succeeded. False otherwise.
          */
 
-        SERIALIZE_READ_INLINE bool SerializeAlign()
+        SERIALIZE_ALWAYS_INLINE bool SerializeAlign()
         {
             const int alignBits = m_reader.GetAlignBits();
             if ( m_reader.WouldReadPastEnd( alignBits ) )
