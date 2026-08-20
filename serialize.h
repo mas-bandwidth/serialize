@@ -2456,11 +2456,24 @@ namespace serialize
             }                                                                       \
         } while (0)
 
-    template <typename Stream> bool serialize_compressed_float_internal( Stream & stream, float & value, float min, float max, float res )
+    /**
+        Derive the compressed float wire constants from a (min,max,res) declaration.
+        This is the derivation serialize_compressed_float performs on every call, exposed so it can be paid once instead: the constants depend only on the declaration, never on the value, so a schema compiler runs the same derivation at code generation time and passes the results to serialize_compressed_float_precomputed at every call site.
+        serialize_compressed_float itself derives with exactly this function and forwards to exactly that entry point, so the two entry points are wire identical by construction.
+        A declaration whose delta = max - min, or whose delta / res, is not finite in float32 is non-conforming (STANDARD.md, adopted 2026-08-15) and asserts in debug builds.
+        @param min The minimum float value. Must be less than max.
+        @param max The maximum float value.
+        @param res The resolution the float value is quantized to.
+        @param max_integer_value The quantization step count: ceil( ( max - min ) / res ), clamped to [1,4294967040]. Values quantize to integers in [0,max_integer_value].
+        @param bits The wire width: bits_required( 0, max_integer_value ), the number of bits a quantized value occupies on the wire, in [1,32].
+        @param delta The range width max - min, computed in float32. The quantization arithmetic is pinned to float32, so the wire depends on this exact value, not on the real-number difference.
+     */
+
+    inline void serialize_compressed_float_params( float min, float max, float res, uint32_t & max_integer_value, int & bits, float & delta )
     {
         serialize_assert( min < max && res > 0 );
 
-        const float delta = max - min;
+        delta = max - min;
 
         float values = delta / res;
 
@@ -2481,12 +2494,34 @@ namespace serialize
             values = 4294967040.0f;
         }
 
-        const uint32_t maxIntegerValue = (uint32_t) ceil(values);
+        max_integer_value = (uint32_t) ceil(values);
 
-        const int bits = bits_required( 0, maxIntegerValue );
-        
+        bits = bits_required( 0, max_integer_value );
+    }
+
+    /**
+        Serialize compressed floating point value from precomputed wire constants (read/write/measure).
+        The audited home of the compressed float quantization arithmetic. serialize_compressed_float derives its constants per call and forwards here; generated code passes constants a schema compiler derived at generation time with the same arithmetic as serialize::serialize_compressed_float_params, skipping the per-field divide, clamp, ceil and bits_required. The two entry points are wire identical by construction, and test_compressed_float_precomputed_differential holds both, plus a frozen copy of the pre-split function, to byte and bit identity across the declaration corpus.
+        On write, the value is clamped into the declared range and quantized; writing a non-finite value is non-conforming and asserts in debug (STANDARD.md). On read, an integer above max_integer_value smuggled into the bit headroom is rejected and the function returns false.
+        The constants must be exactly what serialize_compressed_float_params derives for a conforming declaration — anything else is a caller bug, debug asserted per the writer-trusted model.
+        @param stream The stream object. May be a read, write or measure stream.
+        @param value The float value to serialize. Written on write/measure, filled in on read.
+        @param max_integer_value The quantization step count, in [1,4294967040].
+        @param bits The wire width in bits. Must equal serialize::bits_required( 0, max_integer_value ).
+        @param delta The range width max - min, in float32.
+        @param min The minimum float value of the range.
+        @returns True if the serialize succeeded, false if the read data is truncated or encodes an integer above max_integer_value.
+     */
+
+    template <typename Stream> bool serialize_compressed_float_precomputed_internal( Stream & stream, float & value, uint32_t max_integer_value, int bits, float delta, float min )
+    {
+        serialize_assert( max_integer_value >= 1 );
+        serialize_assert( bits == bits_required( 0, max_integer_value ) );
+        serialize_assert( delta > 0.0f );
+        serialize_assert( delta - delta == 0.0f );          // finite in float32 (Inf - Inf is NaN)
+
         uint32_t integerValue = 0;
-        
+
         if ( Stream::IsWriting )
         {
             // writing a non-finite value (NaN, +/-Inf) through compressed_float is
@@ -2515,7 +2550,7 @@ namespace serialize
             // so the goldens (generated on x86) and CI stayed green while
             // Apple Silicon emitted different bytes. Do not fold this back into
             // one expression.
-            const float scaled = normalizedValue * maxIntegerValue;
+            const float scaled = normalizedValue * max_integer_value;
             integerValue = (uint32_t) floor( scaled + 0.5f );
         }
 
@@ -2523,14 +2558,14 @@ namespace serialize
         {
             return false;
         }
-        
+
         if ( Stream::IsReading )
         {
-            if ( integerValue > maxIntegerValue )
+            if ( integerValue > max_integer_value )
             {
                 return false;
             }
-            const float normalizedValue = integerValue / float(maxIntegerValue);
+            const float normalizedValue = integerValue / float(max_integer_value);
             // The reader rounds twice for the same reason the writer above does:
             // the product must round to float32 BEFORE min is added, and storing
             // it through this local is what forces that. Written as one
@@ -2549,6 +2584,22 @@ namespace serialize
         return true;
     }
 
+    template <typename Stream> bool serialize_compressed_float_internal( Stream & stream, float & value, float min, float max, float res )
+    {
+        // derive the wire constants, then run the one audited home of the quantization
+        // arithmetic. this body IS the pre-#82 function, split at the line schema issue
+        // mas-bandwidth/schema#82 names: everything that depends only on the declaration
+        // lives in serialize_compressed_float_params, everything that touches the value or
+        // the wire lives in serialize_compressed_float_precomputed_internal, statement for
+        // statement. test_compressed_float_precomputed_differential holds this composition
+        // to byte and bit identity against a frozen copy of the original unsplit body.
+        uint32_t max_integer_value = 0;
+        int bits = 0;
+        float delta = 0.0f;
+        serialize_compressed_float_params( min, max, res, max_integer_value, bits, delta );
+        return serialize_compressed_float_precomputed_internal( stream, value, max_integer_value, bits, delta, min );
+    }
+
     /**
         Serialize compressed floating point value (read/write/measure).
         This is a helper macro to make writing unified serialize functions easier.
@@ -2565,6 +2616,28 @@ namespace serialize
         {                                                                                           \
             return false;                                                                           \
         }                                                                                           \
+    } while (0)
+
+    /**
+        Serialize compressed floating point value from precomputed wire constants (read/write/measure).
+        The precomputed companion to serialize_compressed_float, designed for generated code: a schema compiler derives max_integer_value, bits and delta from the declaration at code generation time with the same arithmetic as serialize::serialize_compressed_float_params and passes them as literals, so the per-field derivation (a divide, a clamp, a ceil and a bits_required) is never paid at runtime. Wire bytes are identical to serialize_compressed_float by construction.
+        Serialize macros returns false on error so we don't need to use exceptions for error handling on read. This is an important safety measure because packet data comes from the network and may be malicious.
+        IMPORTANT: This macro must be called inside a templated serialize function with template \<typename Stream\>. The serialize method must have a bool return value.
+        @param stream The stream object. May be a read, write or measure stream.
+        @param value The float value to serialize.
+        @param max_integer_value The quantization step count, exactly as serialize::serialize_compressed_float_params derives it from the declaration.
+        @param bits The wire width in bits: serialize::bits_required( 0, max_integer_value ).
+        @param delta The range width max - min, in float32.
+        @param min The minimum float value of the range.
+     */
+
+    #define serialize_compressed_float_precomputed( stream, value, max_integer_value, bits, delta, min )            \
+    do                                                                                                              \
+    {                                                                                                               \
+        if ( !serialize::serialize_compressed_float_precomputed_internal( stream, value, max_integer_value, bits, delta, min ) ) \
+        {                                                                                                           \
+            return false;                                                                                           \
+        }                                                                                                           \
     } while (0)
 
     template <typename Stream> SERIALIZE_ALWAYS_INLINE bool serialize_double_internal( Stream & stream, double & value )
@@ -5587,6 +5660,27 @@ inline void serialize_test_write_non_finite_value()
     serialize::serialize_compressed_float_internal( writeStream, value, 0.0f, 10.0f, 0.01f );
 }
 
+inline void serialize_test_write_non_finite_value_precomputed()
+{
+    // the same non-conforming NaN write, through the precomputed entry point directly
+    uint8_t buffer[8] = { 0 };
+    serialize::WriteStream writeStream( buffer, 8 );
+    uint32_t nan_bits = 0x7fc00000;             // quiet NaN bit pattern, built without the NAN macro (finite-math builds reject it)
+    float value = 0.0f;
+    memcpy( &value, &nan_bits, 4 );
+    serialize::serialize_compressed_float_precomputed_internal( writeStream, value, 1000, 10, 10.0f, 0.0f );
+}
+
+inline void serialize_test_precomputed_inconsistent_bits()
+{
+    // a wire width that disagrees with the step count is a caller bug: the field would not
+    // occupy the width every other conforming implementation of the declaration expects
+    uint8_t buffer[8] = { 0 };
+    serialize::WriteStream writeStream( buffer, 8 );
+    float value = 5.0f;
+    serialize::serialize_compressed_float_precomputed_internal( writeStream, value, 1000, 11, 10.0f, 0.0f );
+}
+
 #endif // #if !defined( NDEBUG ) && !defined( _WIN32 )
 
 inline void test_compressed_float_non_finite_asserts()
@@ -5601,6 +5695,64 @@ inline void test_compressed_float_non_finite_asserts()
 #else
     printf( "(skipped test_compressed_float_non_finite_asserts: needs an assert-enabled build and fork)\n" );
 #endif // #if !defined( NDEBUG ) && !defined( _WIN32 )
+}
+
+inline void test_compressed_float_precomputed_asserts()
+{
+    // the precomputed entry point carries the same write-side contract as
+    // serialize_compressed_float (a non-finite value asserts, STANDARD.md) plus its own:
+    // constants that are not what serialize_compressed_float_params derives are a caller
+    // bug. prove each assert fires, in a forked child so the abort is observed rather
+    // than suffered.
+#if !defined( NDEBUG ) && !defined( _WIN32 )
+    serialize_check( serialize_test_assert_fires( serialize_test_write_non_finite_value_precomputed ) == true );
+    serialize_check( serialize_test_assert_fires( serialize_test_precomputed_inconsistent_bits ) == true );
+#else
+    printf( "(skipped test_compressed_float_precomputed_asserts: needs an assert-enabled build and fork)\n" );
+#endif // #if !defined( NDEBUG ) && !defined( _WIN32 )
+}
+
+inline void test_compressed_float_precomputed_validation()
+{
+    // the constants serialize_compressed_float derives on every call, derived once instead:
+    // the precomputed read path must refuse the same smuggled integers and accept the same
+    // conforming ones as the derive-per-call path.
+    uint32_t max_integer_value = 0;
+    int bits = 0;
+    float delta = 0.0f;
+    serialize::serialize_compressed_float_params( 0.0f, 10.0f, 0.01f, max_integer_value, bits, delta );
+    serialize_check( max_integer_value == 1000 );
+    serialize_check( bits == 10 );
+    serialize_check( delta == 10.0f );
+
+    // a malicious packet can encode integer values above max_integer_value in the bit headroom. reads must reject them.
+    {
+        uint8_t buffer[8 + 8] = { 0 };          // + 8: read buffer allocations extend 8 bytes past the data
+
+        serialize::WriteStream writeStream( buffer, 8 );
+        uint32_t out_of_range = 1023;                       // max_integer_value is 1000 for [0,10] at res 0.01 -> 10 bits
+        writeStream.SerializeBits( out_of_range, 10 );
+        writeStream.Flush();
+
+        serialize::ReadStream readStream( buffer, 8 );
+        float value = 0.0f;
+        serialize_check( serialize::serialize_compressed_float_precomputed_internal( readStream, value, max_integer_value, bits, delta, 0.0f ) == false );
+    }
+
+    // the highest conforming integer still decodes
+    {
+        uint8_t buffer[8 + 8] = { 0 };          // + 8: read buffer allocations extend 8 bytes past the data
+
+        serialize::WriteStream writeStream( buffer, 8 );
+        uint32_t top_of_range = 1000;
+        writeStream.SerializeBits( top_of_range, 10 );
+        writeStream.Flush();
+
+        serialize::ReadStream readStream( buffer, 8 );
+        float value = 0.0f;
+        serialize_check( serialize::serialize_compressed_float_precomputed_internal( readStream, value, max_integer_value, bits, delta, 0.0f ) == true );
+        serialize_check( value == 10.0f );                  // 1000 / 1000 * 10 + 0: exact at the top of the range
+    }
 }
 
 // Fixed point test helpers. Every configuration in the matrix runs the same case list, and every
@@ -8090,6 +8242,493 @@ inline void test_compressed_float_conformance_nonzero_min()
     }
 }
 
+// The non-zero-min conformance vector again, through the PRECOMPUTED entry point, with the
+// constants a schema compiler derives for [-100,100] at resolution 0.01 written as literals —
+// exactly what generated code would pass. Same pinned bytes, same pinned decoded bit patterns:
+// the precomputed path is held to the conformance law directly, independently of the
+// differential below.
+
+template <typename Stream> bool CompressedFloatPrecomputedConformanceSerialize( Stream & stream, float & a, float & b, float & c )
+{
+    serialize_compressed_float_precomputed( stream, a, 20000, 15, 200.0f, -100.0f );
+    serialize_compressed_float_precomputed( stream, b, 20000, 15, 200.0f, -100.0f );
+    serialize_compressed_float_precomputed( stream, c, 20000, 15, 200.0f, -100.0f );
+    serialize_align( stream );
+    return true;
+}
+
+inline void test_compressed_float_precomputed_conformance()
+{
+    static const uint8_t pinned_bytes[6] = { 0x10, 0xA7, 0x06, 0x80, 0x82, 0x06 };
+
+    // write side: the precomputed quantization must produce exactly the pinned bytes
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        serialize::WriteStream stream( buffer, (int) sizeof( buffer ) );
+        float a = 0.0f;
+        float b = -99.875f;
+        float c = -33.34f;
+        serialize_check( CompressedFloatPrecomputedConformanceSerialize( stream, a, b, c ) == true );
+        stream.Flush();
+        serialize_check( stream.GetBytesProcessed() == (int) sizeof( pinned_bytes ) );
+        serialize_check( memcmp( buffer, pinned_bytes, sizeof( pinned_bytes ) ) == 0 );
+    }
+
+    // read side: the decoded floats are pinned bit-exactly, as in the derive-per-call vector above
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        memcpy( buffer, pinned_bytes, sizeof( pinned_bytes ) );
+        serialize::ReadStream stream( buffer, (int) sizeof( pinned_bytes ) );
+        float a = -1.0f;
+        float b = -1.0f;
+        float c = -1.0f;
+        serialize_check( CompressedFloatPrecomputedConformanceSerialize( stream, a, b, c ) == true );
+        uint32_t bits_a, bits_b, bits_c;
+        memcpy( &bits_a, &a, 4 );
+        memcpy( &bits_b, &b, 4 );
+        memcpy( &bits_c, &c, 4 );
+        serialize_check( bits_a == 0x00000000u );
+        serialize_check( bits_b == 0xC2C7BD71u );
+        serialize_check( bits_c == 0xC2055C2Au );
+    }
+}
+
+// The mas-bandwidth/schema#82 differential: the derive-per-call compressed float against the
+// precomputed one. Three implementations must be indistinguishable in measured bits, wire
+// bytes, read acceptance and decoded BIT PATTERNS on every input:
+//
+//   reference   -- serialize_compressed_float_frozen_reference below, a verbatim copy of the
+//                  serialize_compressed_float_internal body as it stood BEFORE it was split
+//                  into serialize_compressed_float_params plus the precomputed home. FROZEN:
+//                  never edit it. it is the code the audited home replaced, kept so the
+//                  differential proves the split changed nothing, forever.
+//   legacy      -- serialize_compressed_float( stream, value, min, max, res ), which since the
+//                  split derives the constants per call and forwards to the audited home.
+//   precomputed -- serialize_compressed_float_precomputed( ... ) with constants derived once
+//                  per declaration by serialize_compressed_float_params, exactly as a schema
+//                  compiler derives them at generation time.
+//
+// the declaration corpus is every compressed float declaration the schema compiler's examples,
+// bench corpus and test data emit (harvested from the mas-bandwidth/schema PR #79 differential,
+// which proved the same property for the Go generation-time fold), plus this repo's golden,
+// conformance, fuzz and example declarations, plus shapes at the edges of the derivation
+// itself: resolution coarser than the range, a step count that exactly fills its wire width,
+// a million steps, and the clamp at the largest float below 2^32.
+//
+// inputs per declaration: a dense sweep with overshoot past both bounds, the quantization step
+// edges and midpoints with their one-ulp neighbors (the midpoints are where a fused or widened
+// writer diverges — STANDARD.md's 0.005-over-[0,10] class), specials (bounds and their one-ulp
+// neighbors, negative zero, subnormals, float extremes), LCG uniform in-range values and LCG
+// uniform float32 bit patterns — and on the read side every representable wire integer
+// including the bit headroom, exhaustively up to 16-bit widths and sampled with the boundary
+// codes pinned above that. decoded values compare by BIT PATTERN, never by tolerance: the
+// divergence a fused or widened decode produces is one ulp, invisible to any tolerance.
+
+template <typename Stream> bool serialize_compressed_float_frozen_reference( Stream & stream, float & value, float min, float max, float res )
+{
+    // verbatim pre-split serialize_compressed_float_internal, comments elided, statements
+    // identical (locals included: the float stores are what pin the two roundings). DO NOT EDIT.
+    serialize_assert( min < max && res > 0 );
+
+    const float delta = max - min;
+
+    float values = delta / res;
+
+    serialize_assert( delta - delta == 0.0f );
+    serialize_assert( values - values == 0.0f );
+
+    if ( !( values >= 1.0f ) )
+    {
+        values = 1.0f;
+    }
+    else if ( values > 4294967040.0f )      // largest float below 2^32
+    {
+        values = 4294967040.0f;
+    }
+
+    const uint32_t maxIntegerValue = (uint32_t) ceil(values);
+
+    const int bits = serialize::bits_required( 0, maxIntegerValue );
+
+    uint32_t integerValue = 0;
+
+    if ( Stream::IsWriting )
+    {
+        serialize_assert( value - value == 0.0f );
+
+        float normalizedValue = (value - min) / delta;
+        if ( !( normalizedValue >= 0.0f ) )
+        {
+            normalizedValue = 0.0f;
+        }
+        else if ( !( normalizedValue <= 1.0f ) )
+        {
+            normalizedValue = 1.0f;
+        }
+        const float scaled = normalizedValue * maxIntegerValue;
+        integerValue = (uint32_t) floor( scaled + 0.5f );
+    }
+
+    if ( !stream.SerializeBits( integerValue, bits ) )
+    {
+        return false;
+    }
+
+    if ( Stream::IsReading )
+    {
+        if ( integerValue > maxIntegerValue )
+        {
+            return false;
+        }
+        const float normalizedValue = integerValue / float(maxIntegerValue);
+        const float scaledValue = normalizedValue * delta;
+        value = scaledValue + min;
+    }
+
+    return true;
+}
+
+// each helper drives the actual macro form under test, so the differential covers the macros as
+// well as the internals (the compile time surface tests established this pattern)
+
+template <typename Stream> bool serialize_compressed_float_legacy_form( Stream & stream, float & value, float min, float max, float res )
+{
+    serialize_compressed_float( stream, value, min, max, res );
+    return true;
+}
+
+template <typename Stream> bool serialize_compressed_float_precomputed_form( Stream & stream, float & value, uint32_t max_integer_value, int bits, float delta, float min )
+{
+    serialize_compressed_float_precomputed( stream, value, max_integer_value, bits, delta, min );
+    return true;
+}
+
+static uint64_t compressed_float_differential_check_count = 0;
+
+#define serialize_differential_check( condition )                           \
+    do                                                                      \
+    {                                                                       \
+        serialize_check( condition );                                       \
+        compressed_float_differential_check_count++;                        \
+    } while (0)
+
+// one written value through all three implementations: measured bits, wire bytes and decoded
+// bit patterns must agree exactly
+inline void check_compressed_float_value_agrees( float value, float min, float max, float res, uint32_t max_integer_value, int bits, float delta )
+{
+    // measure: all three forms agree on cost
+    serialize::MeasureStream measureReference;
+    float measure_value = value;
+    serialize_differential_check( serialize_compressed_float_frozen_reference( measureReference, measure_value, min, max, res ) == true );
+    serialize::MeasureStream measureLegacy;
+    measure_value = value;
+    serialize_differential_check( serialize_compressed_float_legacy_form( measureLegacy, measure_value, min, max, res ) == true );
+    serialize::MeasureStream measurePrecomputed;
+    measure_value = value;
+    serialize_differential_check( serialize_compressed_float_precomputed_form( measurePrecomputed, measure_value, max_integer_value, bits, delta, min ) == true );
+    serialize_differential_check( measureReference.GetBitsProcessed() == measureLegacy.GetBitsProcessed() );
+    serialize_differential_check( measureReference.GetBitsProcessed() == measurePrecomputed.GetBitsProcessed() );
+
+    // write: byte identical wire from all three
+    uint8_t buffer_reference[8 + 8] = { 0 };            // + 8: read buffer allocations extend 8 bytes past the data
+    uint8_t buffer_legacy[8 + 8] = { 0 };               // + 8: read buffer allocations extend 8 bytes past the data
+    uint8_t buffer_precomputed[8 + 8] = { 0 };          // + 8: read buffer allocations extend 8 bytes past the data
+
+    serialize::WriteStream writeReference( buffer_reference, 8 );
+    float write_value = value;
+    serialize_differential_check( serialize_compressed_float_frozen_reference( writeReference, write_value, min, max, res ) == true );
+    writeReference.Flush();
+
+    serialize::WriteStream writeLegacy( buffer_legacy, 8 );
+    write_value = value;
+    serialize_differential_check( serialize_compressed_float_legacy_form( writeLegacy, write_value, min, max, res ) == true );
+    writeLegacy.Flush();
+
+    serialize::WriteStream writePrecomputed( buffer_precomputed, 8 );
+    write_value = value;
+    serialize_differential_check( serialize_compressed_float_precomputed_form( writePrecomputed, write_value, max_integer_value, bits, delta, min ) == true );
+    writePrecomputed.Flush();
+
+    serialize_differential_check( writeReference.GetBitsProcessed() == writeLegacy.GetBitsProcessed() );
+    serialize_differential_check( writeReference.GetBitsProcessed() == writePrecomputed.GetBitsProcessed() );
+    serialize_differential_check( memcmp( buffer_reference, buffer_legacy, 8 ) == 0 );
+    serialize_differential_check( memcmp( buffer_reference, buffer_precomputed, 8 ) == 0 );
+
+    // read: decoded BIT PATTERNS agree exactly — one ulp of divergence must fail
+    serialize::ReadStream readReference( buffer_reference, 8 );
+    float decoded_reference = 0.0f;
+    serialize_differential_check( serialize_compressed_float_frozen_reference( readReference, decoded_reference, min, max, res ) == true );
+    serialize::ReadStream readLegacy( buffer_reference, 8 );
+    float decoded_legacy = 0.0f;
+    serialize_differential_check( serialize_compressed_float_legacy_form( readLegacy, decoded_legacy, min, max, res ) == true );
+    serialize::ReadStream readPrecomputed( buffer_reference, 8 );
+    float decoded_precomputed = 0.0f;
+    serialize_differential_check( serialize_compressed_float_precomputed_form( readPrecomputed, decoded_precomputed, max_integer_value, bits, delta, min ) == true );
+
+    uint32_t pattern_reference, pattern_legacy, pattern_precomputed;
+    memcpy( &pattern_reference, &decoded_reference, 4 );
+    memcpy( &pattern_legacy, &decoded_legacy, 4 );
+    memcpy( &pattern_precomputed, &decoded_precomputed, 4 );
+    serialize_differential_check( pattern_reference == pattern_legacy );
+    serialize_differential_check( pattern_reference == pattern_precomputed );
+}
+
+// one wire integer through all three read paths: acceptance must agree (the headroom refusal),
+// and accepted codes must decode to identical bit patterns
+inline void check_compressed_float_code_agrees( uint32_t code, float min, float max, float res, uint32_t max_integer_value, int bits, float delta )
+{
+    uint8_t buffer[8 + 8] = { 0 };              // + 8: read buffer allocations extend 8 bytes past the data
+    serialize::WriteStream writeStream( buffer, 8 );
+    uint32_t raw = code;
+    serialize_differential_check( writeStream.SerializeBits( raw, bits ) == true );
+    writeStream.Flush();
+
+    serialize::ReadStream readReference( buffer, 8 );
+    float decoded_reference = 0.0f;
+    const bool ok_reference = serialize_compressed_float_frozen_reference( readReference, decoded_reference, min, max, res );
+
+    serialize::ReadStream readLegacy( buffer, 8 );
+    float decoded_legacy = 0.0f;
+    const bool ok_legacy = serialize_compressed_float_legacy_form( readLegacy, decoded_legacy, min, max, res );
+
+    serialize::ReadStream readPrecomputed( buffer, 8 );
+    float decoded_precomputed = 0.0f;
+    const bool ok_precomputed = serialize_compressed_float_precomputed_form( readPrecomputed, decoded_precomputed, max_integer_value, bits, delta, min );
+
+    serialize_differential_check( ok_reference == ok_legacy );
+    serialize_differential_check( ok_reference == ok_precomputed );
+    serialize_differential_check( ok_reference == ( code <= max_integer_value ) );      // the headroom refusal itself
+
+    if ( ok_reference )
+    {
+        uint32_t pattern_reference, pattern_legacy, pattern_precomputed;
+        memcpy( &pattern_reference, &decoded_reference, 4 );
+        memcpy( &pattern_legacy, &decoded_legacy, 4 );
+        memcpy( &pattern_precomputed, &decoded_precomputed, 4 );
+        serialize_differential_check( pattern_reference == pattern_legacy );
+        serialize_differential_check( pattern_reference == pattern_precomputed );
+    }
+}
+
+struct CompressedFloatShape
+{
+    float min;
+    float max;
+    float res;
+    uint32_t expected_max_integer_value;        // pinned: the constants a schema compiler emits for this declaration
+    int expected_bits;                          // (the first eleven rows are the values the schema PR #79 differential published)
+};
+
+static const CompressedFloatShape compressed_float_shapes[] =
+{
+    // the schema compiler's corpus: examples, bench/corpus/RealWorld.schema and its test data
+    { 0.0f,       2000.0f,        0.1f,       20000,       15 },
+    { -2.0f,      2.0f,           0.25f,      16,          5  },
+    { -90.0f,     90.0f,          0.5f,       360,         9  },
+    { 0.0f,       30.0f,          0.5f,       60,          6  },
+    { -100.0f,    100.0f,         0.25f,      800,         10 },
+    { 0.0f,       2000.0f,        1.0f,       2000,        11 },
+    { 0.0f,       10.0f,          0.02f,      500,         9  },
+    { 0.0f,       100.0f,         0.01f,      10000,       14 },
+    { -180.0f,    180.0f,         0.01f,      36000,       16 },
+    { 0.0f,       10.0f,          0.01f,      1000,        10 },       // also this repo's golden wire declaration
+    { -5.0f,      5.0f,           0.001f,     10000,       14 },
+    // this repo's own declarations
+    { -100.0f,    100.0f,         0.01f,      20000,       15 },       // the non-zero-min conformance vector
+    { -10.0f,     10.0f,          0.01f,      2000,        11 },       // the fuzz harness declaration
+    { -1.0f,      1.0f,           0.001f,     2000,        11 },       // example.cpp's orientation declaration
+    // shapes at the edges of the derivation itself
+    { 0.0f,       1.0f,           2.0f,       1,           1  },       // resolution coarser than the range: values clamps up to 1
+    { 0.0f,       15.0f,          1.0f,       15,          4  },       // step count exactly fills the wire width: no headroom to refuse
+    { 0.0f,       1000000.0f,     1.0f,       1000000,     20 },       // a million steps
+    { 0.0f,       10000000000.0f, 1.0f,       4294967040u, 32 },       // values clamps down to the largest float below 2^32
+};
+
+inline void test_compressed_float_precomputed_differential()
+{
+    const float float_max = 3.402823466e+38f;               // FLT_MAX, spelled so the header needs no float.h
+
+    uint64_t lcg = 0xC0FFEE1234567890ULL;                   // fixed seed: failures reproduce
+
+    #define serialize_differential_next_lcg() ( lcg = lcg * 6364136223846793005ULL + 1442695040888963407ULL )
+
+    const int num_shapes = (int) ( sizeof( compressed_float_shapes ) / sizeof( compressed_float_shapes[0] ) );
+
+    for ( int s = 0; s < num_shapes; s++ )
+    {
+        const float min = compressed_float_shapes[s].min;
+        const float max = compressed_float_shapes[s].max;
+        const float res = compressed_float_shapes[s].res;
+
+        uint32_t max_integer_value = 0;
+        int bits = 0;
+        float delta = 0.0f;
+        serialize::serialize_compressed_float_params( min, max, res, max_integer_value, bits, delta );
+
+        // the derived constants are pinned against the schema compiler's generation-time table
+        serialize_differential_check( max_integer_value == compressed_float_shapes[s].expected_max_integer_value );
+        serialize_differential_check( bits == compressed_float_shapes[s].expected_bits );
+        serialize_differential_check( delta == max - min );
+
+        const double dmin = (double) min;
+        const double ddelta = (double) delta;
+
+        // dense sweep with overshoot a quarter of the range past both bounds
+        {
+            const int sweep_steps = 2048;
+            const double lo = dmin - 0.25 * ddelta;
+            const double span = 1.5 * ddelta;
+            for ( int i = 0; i <= sweep_steps; i++ )
+            {
+                const float value = (float) ( lo + span * i / sweep_steps );
+                check_compressed_float_value_agrees( value, min, max, res, max_integer_value, bits, delta );
+            }
+        }
+
+        // quantization step edges and midpoints, with their one-ulp neighbors. the midpoints
+        // are the discriminating band: 0.005 over [0,10] at 0.01 quantizes to 1 under the
+        // required two roundings and to 0 under a fused or widened writer (STANDARD.md)
+        {
+            const uint32_t stride = max_integer_value / 512 + 1;
+            for ( uint64_t k = 0; k <= max_integer_value; k += stride )      // 64 bit: k += stride must not wrap at the 2^32-clamped shape
+            {
+                const float on_quantum = (float) ( dmin + ddelta * ( (double) k / (double) max_integer_value ) );
+                const float midpoint = (float) ( dmin + ddelta * ( ( (double) k + 0.5 ) / (double) max_integer_value ) );
+                check_compressed_float_value_agrees( on_quantum, min, max, res, max_integer_value, bits, delta );
+                check_compressed_float_value_agrees( nextafterf( on_quantum, -float_max ), min, max, res, max_integer_value, bits, delta );
+                check_compressed_float_value_agrees( nextafterf( on_quantum, +float_max ), min, max, res, max_integer_value, bits, delta );
+                check_compressed_float_value_agrees( midpoint, min, max, res, max_integer_value, bits, delta );
+                check_compressed_float_value_agrees( nextafterf( midpoint, -float_max ), min, max, res, max_integer_value, bits, delta );
+                check_compressed_float_value_agrees( nextafterf( midpoint, +float_max ), min, max, res, max_integer_value, bits, delta );
+            }
+        }
+
+        // specials: the bounds and their one-ulp neighbors, both zeros, subnormals, extremes
+        {
+            const float specials[] =
+            {
+                min,
+                max,
+                nextafterf( min, -float_max ),
+                nextafterf( min, +float_max ),
+                nextafterf( max, -float_max ),
+                nextafterf( max, +float_max ),
+                min - res,
+                max + res,
+                min + res * 0.5f,
+                max - res * 0.5f,
+                min - delta,
+                max + delta,
+                0.0f,
+                -0.0f,
+                res,
+                -res,
+                float_max,
+                -float_max,
+                1.175494351e-38f,               // FLT_MIN
+                -1.175494351e-38f,
+                1.401298464e-45f,               // the smallest subnormal
+                -1.401298464e-45f,
+                1.0e30f,
+                -1.0e30f,
+            };
+            for ( int i = 0; i < (int) ( sizeof( specials ) / sizeof( specials[0] ) ); i++ )
+            {
+                check_compressed_float_value_agrees( specials[i], min, max, res, max_integer_value, bits, delta );
+            }
+        }
+
+#if defined( NDEBUG )
+        // non-finite inputs are non-conforming and assert in debug (proven by the fork tests),
+        // so the release build is where the differential can drive them: the clamp must force
+        // NaN and both infinities to the same wire in all three implementations
+        {
+            const uint32_t non_finite_patterns[] = { 0x7F800000u, 0xFF800000u, 0x7FC00000u, 0x7F800001u, 0xFFC00001u };
+            for ( int i = 0; i < (int) ( sizeof( non_finite_patterns ) / sizeof( non_finite_patterns[0] ) ); i++ )
+            {
+                float value = 0.0f;
+                memcpy( &value, &non_finite_patterns[i], 4 );
+                check_compressed_float_value_agrees( value, min, max, res, max_integer_value, bits, delta );
+            }
+        }
+#endif // #if defined( NDEBUG )
+
+        // LCG uniform values across the range and its overshoot band
+        {
+            for ( int i = 0; i < 2048; i++ )
+            {
+                const double fraction = (double) ( serialize_differential_next_lcg() >> 11 ) * ( 1.0 / 9007199254740992.0 );     // [0,1) in 53 bits
+                const float value = (float) ( dmin - 0.25 * ddelta + fraction * 1.5 * ddelta );
+                check_compressed_float_value_agrees( value, min, max, res, max_integer_value, bits, delta );
+            }
+        }
+
+        // LCG uniform float32 bit patterns, finite ones (non-finite writes assert in debug;
+        // the release-only block above drives those deliberately)
+        {
+            for ( int i = 0; i < 2048; i++ )
+            {
+                const uint32_t pattern = (uint32_t) ( serialize_differential_next_lcg() >> 32 );
+                float value = 0.0f;
+                memcpy( &value, &pattern, 4 );
+                if ( value - value == 0.0f )
+                {
+                    check_compressed_float_value_agrees( value, min, max, res, max_integer_value, bits, delta );
+                }
+            }
+        }
+
+        // the read side: every representable wire integer, including the bit headroom a
+        // malicious packet can encode into. exhaustive up to 16-bit widths; above that the
+        // boundary codes are pinned and the interior is sampled
+        {
+            const uint32_t top_code = ( bits == 32 ) ? 0xFFFFFFFFu : ( ( 1u << bits ) - 1u );
+            if ( bits <= 16 )
+            {
+                for ( uint32_t code = 0; code <= top_code; code++ )
+                {
+                    check_compressed_float_code_agrees( code, min, max, res, max_integer_value, bits, delta );
+                }
+            }
+            else
+            {
+                for ( uint32_t code = 0; code <= 1024; code++ )
+                {
+                    check_compressed_float_code_agrees( code, min, max, res, max_integer_value, bits, delta );
+                }
+                const uint32_t window_lo = max_integer_value - 512;                 // max_integer_value >= 2^16 here, so no underflow
+                const uint32_t window_hi = ( top_code - max_integer_value < 512 ) ? top_code : max_integer_value + 512;
+                for ( uint32_t code = window_lo; code <= window_hi && code >= window_lo; code++ )
+                {
+                    check_compressed_float_code_agrees( code, min, max, res, max_integer_value, bits, delta );
+                }
+                for ( uint32_t code = top_code - 64; code <= top_code && code >= top_code - 64; code++ )
+                {
+                    check_compressed_float_code_agrees( code, min, max, res, max_integer_value, bits, delta );
+                }
+                for ( int i = 0; i < 2048; i++ )
+                {
+                    const uint32_t code = ( (uint32_t) ( serialize_differential_next_lcg() >> 32 ) ) & top_code;
+                    check_compressed_float_code_agrees( code, min, max, res, max_integer_value, bits, delta );
+                }
+            }
+        }
+    }
+
+    #undef serialize_differential_next_lcg
+
+    // the coverage floor: if the differential ever silently shrinks below the mass it was
+    // built with, that is a test bug, and it fails here instead of fading quietly
+    serialize_check( compressed_float_differential_check_count >= 2000000 );
+
+    printf( "    (%llu checks, three implementations, %d declarations)\n",
+            (unsigned long long) compressed_float_differential_check_count, num_shapes );
+}
+
+#undef serialize_differential_check
+
 // Conformance vector for float/double BIT TRANSPARENCY (STANDARD.md, "Floating Point",
 // ratified 2026-08-15 from the #56 re-audit). Additive: golden_wire_bytes is untouched.
 //
@@ -8546,6 +9185,8 @@ inline void serialize_test()
         SERIALIZE_RUN_TEST( test_int_relative_validation );
         SERIALIZE_RUN_TEST( test_compressed_float_validation );
         SERIALIZE_RUN_TEST( test_compressed_float_non_finite_asserts );
+        SERIALIZE_RUN_TEST( test_compressed_float_precomputed_validation );
+        SERIALIZE_RUN_TEST( test_compressed_float_precomputed_asserts );
         SERIALIZE_RUN_TEST( test_serialize_fixed );
         SERIALIZE_RUN_TEST( test_serialize_fixed_validation );
         SERIALIZE_RUN_TEST( test_serialize_fixed_matches_int64 );
@@ -8574,6 +9215,8 @@ inline void serialize_test()
         SERIALIZE_RUN_TEST( test_trailing_bits );
         SERIALIZE_RUN_TEST( test_past_end_poison );
         SERIALIZE_RUN_TEST( test_compressed_float_conformance_nonzero_min );
+        SERIALIZE_RUN_TEST( test_compressed_float_precomputed_conformance );
+        SERIALIZE_RUN_TEST( test_compressed_float_precomputed_differential );
         SERIALIZE_RUN_TEST( test_golden_float_bit_transparency );
         SERIALIZE_RUN_TEST( test_golden_zero_length_bytes );
         SERIALIZE_RUN_TEST( test_golden_zero_length_string );
