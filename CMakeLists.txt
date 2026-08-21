@@ -99,6 +99,60 @@ if(SERIALIZE_BUILD_TESTS)
 
     enable_testing()
     add_test(NAME test COMMAND serialize_test)
+
+    # THE SAME SUITE A SECOND TIME, AT -ffp-contract=on. This is not belt and braces; it is
+    # the only build in which the compressed float's FMA discipline has teeth.
+    #
+    # That discipline is a pair of stores through float locals that keep the quantization's
+    # two roundings distinct. Whether DELETING them is visible depends entirely on the
+    # contraction setting, measured on clang 21 / arm64 by folding the reader's two roundings
+    # into one expression and rebuilding:
+    #
+    #   -ffp-contract=off    the falsified build PASSES -- contraction is forbidden in the
+    #                        frozen oracle too, so the fused spelling and the stored one
+    #                        compute the same thing
+    #   -ffp-contract=on     the falsified build is RED on the decoded bit patterns -- the
+    #                        compiler fuses one form and not the other, which is exactly the
+    #                        one-ulp divergence being guarded
+    #   -ffp-contract=fast   the falsified build PASSES -- `fast` fuses ACROSS statements, so
+    #                        the frozen oracle fuses as well and the two forms stop being
+    #                        distinguishable
+    #
+    # The mode that looks strictest is the one with no teeth, and the mode this repo pins for
+    # the wire is the other one with no teeth. So the targets above stay at -ffp-contract=off,
+    # because that is what the wire requires, and this target adds back the discrimination it
+    # costs. mas-bandwidth/schema#82; serialize.c#38 is the same build in the C port.
+    #
+    # -ffp-contract=on comes AFTER ${SERIALIZE_DEV_FLAGS} so it wins over the =off in there,
+    # including when CI overrides CMAKE_CXX_FLAGS wholesale (the sanitizers job does). Nothing
+    # new is asked of the compiler: the dev flags already spell -ffp-contract, so any compiler
+    # that can build the suite at all can build this. MSVC is excluded because cl has no such
+    # flag -- and needs none: it is the one configuration in the matrix that never receives
+    # -ffp-contract=off, so the first build is already the library's default-contraction
+    # behaviour executed rather than reasoned about.
+    #
+    # The binary reports whether contraction is actually LIVE on the target -- x86-64 without
+    # FMA cannot fuse however the flag is set -- so a green log never claims a discipline it
+    # did not exercise. And it detects the one compiler trap here: GCC before 14 mapped
+    # -ffp-contract=on onto =fast, so on gcc 13 asking for statement-local contraction gets
+    # cross-statement contraction, which is the unsupported mode.
+    # SERIALIZE_TEST_FP_CONTRACT_REQUESTED_ON tells the binary this build asked for =on, and
+    # it stands down with a printed reason instead of failing for a toolchain quirk that is
+    # not a defect in the library. Anyone transplanting this target should carry that check.
+    if(NOT MSVC)
+        add_executable(serialize_test_fp_contract_on test.cpp serialize.h)
+        set_target_properties(serialize_test_fp_contract_on PROPERTIES OUTPUT_NAME test-fp-contract-on)
+        target_link_libraries(serialize_test_fp_contract_on PRIVATE serialize)
+        target_compile_options(serialize_test_fp_contract_on PRIVATE ${SERIALIZE_DEV_FLAGS} -ffp-contract=on)
+        target_compile_definitions(serialize_test_fp_contract_on PRIVATE
+            SERIALIZE_ENABLE_TESTS=1
+            SERIALIZE_TEST_FP_CONTRACT="-ffp-contract=on"
+            SERIALIZE_TEST_FP_CONTRACT_REQUESTED_ON=1
+            $<$<CONFIG:Debug>:SERIALIZE_DEBUG>
+            $<$<NOT:$<CONFIG:Debug>>:SERIALIZE_RELEASE>
+        )
+        add_test(NAME test-fp-contract-on COMMAND serialize_test_fp_contract_on)
+    endif()
 endif()
 
 # libFuzzer harness for the read side. requires clang. build in Debug so asserts stay live.

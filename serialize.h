@@ -8172,6 +8172,125 @@ inline void test_past_end_poison()
 }
 
 
+// ---------------------------------------------------------------------------------------
+// Does THIS build actually fuse, and does it fuse ACROSS statements?
+//
+// The compressed float's whole FMA discipline is a pair of stores through float locals that
+// keep the quantization's two roundings distinct. Whether a build EXERCISES that discipline
+// depends on two things the source cannot see: whether the target has an FMA instruction at
+// all, and what the compiler's contraction setting is. -ffp-contract=on buys nothing on an
+// x86-64 without FMA, and a build that prints a green log while fusing nothing has claimed a
+// discipline it never ran. So measure it and say which.
+//
+// The two probes are deliberately different questions:
+//
+//   is_live               -- one contractible statement against the same arithmetic forced
+//                            through a volatile store. If they ever differ, this target has
+//                            an FMA and this build is permitted to use it.
+//   crosses_statements    -- a PLAIN local store against the volatile one. The language
+//                            rounds a float local, so only a compiler contracting ACROSS the
+//                            statement boundary can make these two disagree. That is the
+//                            -ffp-contract=fast behaviour, and it is not a stricter `on`: it
+//                            is a different mode, in which the frozen oracle in the
+//                            differential below fuses too, every spelling of the arithmetic
+//                            becomes indistinguishable from every other, and STANDARD.md's
+//                            requirement of distinct roundings simply does not hold. This
+//                            library does not support such a build -- CMakeLists.txt pins
+//                            -ffp-contract=off for exactly that reason.
+//
+// crosses_statements has to be DETECTED rather than inferred from the flag, because GCC
+// before 14 mapped -ffp-contract=on onto fast. On such a toolchain, asking for
+// statement-local contraction silently gets the unsupported mode, and the honest report is
+// that the build is unavailable -- not a bit pattern mismatch that reads like a port bug.
+// Anyone transplanting the -ffp-contract=on build to another repo should carry this with it.
+// ---------------------------------------------------------------------------------------
+
+// The three spellings, each in its OWN function and each kept out of line. Out of line is
+// deliberate: written as three expressions in one loop they share the subexpression `a * b`,
+// the optimizer merges it, and a multiply with more than one use is not one the backend will
+// fuse -- so the probe could report "does not fuse" about a build that fuses perfectly well.
+// noinline keeps the three arithmetics from being merged into one and makes the probe a
+// question about the compiler's setting rather than about its common-subexpression pass.
+//
+// One honest limit, measured rather than assumed: at -O0 no contraction setting produces an
+// FMA at all, so an unoptimized build reports "not available" -- which is exactly true of
+// that binary, and is why the report is printed rather than asserted.
+
+#if defined( _MSC_VER )
+#define SERIALIZE_TEST_NOINLINE __declspec(noinline)
+#elif defined( __GNUC__ ) || defined( __clang__ )
+#define SERIALIZE_TEST_NOINLINE __attribute__((noinline))
+#else
+#define SERIALIZE_TEST_NOINLINE
+#endif
+
+// contractible: one expression, so any compiler permitted to contract at all may fuse it
+SERIALIZE_TEST_NOINLINE inline float serialize_test_fp_one_expression( float a, float b, float c )
+{
+    return a * b + c;
+}
+
+// two statements through a plain float local. The language rounds a float local, so only a
+// compiler contracting ACROSS the statement boundary can fuse this -- which is the shape of
+// the compressed float's audited home, and the property under test.
+SERIALIZE_TEST_NOINLINE inline float serialize_test_fp_two_statements( float a, float b, float c )
+{
+    const float product = a * b;
+    return product + c;
+}
+
+// the reference: a volatile store forces the product to memory as float32, so no contraction
+// setting on any compiler can fuse through it. This is what the other two are measured against.
+SERIALIZE_TEST_NOINLINE inline float serialize_test_fp_forced_unfused( float a, float b, float c )
+{
+    volatile float product = a * b;
+    return product + c;
+}
+
+inline bool serialize_test_fp_contraction_is_live()
+{
+    for ( uint32_t code = 1; code < 20000; code++ )
+    {
+        const float norm = (float) code / 20000.0f;
+        const float fused = serialize_test_fp_one_expression( norm, 200.0f, -100.0f );
+        const float unfused = serialize_test_fp_forced_unfused( norm, 200.0f, -100.0f );
+        uint32_t pattern_fused, pattern_unfused;
+        memcpy( &pattern_fused, &fused, 4 );
+        memcpy( &pattern_unfused, &unfused, 4 );
+        if ( pattern_fused != pattern_unfused )
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+inline bool serialize_test_fp_contraction_crosses_statements()
+{
+    for ( uint32_t code = 1; code < 20000; code++ )
+    {
+        const float norm = (float) code / 20000.0f;
+        const float across = serialize_test_fp_two_statements( norm, 200.0f, -100.0f );
+        const float unfused = serialize_test_fp_forced_unfused( norm, 200.0f, -100.0f );
+        uint32_t pattern_across, pattern_unfused;
+        memcpy( &pattern_across, &across, 4 );
+        memcpy( &pattern_unfused, &unfused, 4 );
+        if ( pattern_across != pattern_unfused )
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+// The caption for this build, so the two runs CMake performs are telling apart in a CI log.
+// CMakeLists.txt defines it on the -ffp-contract=on target; the default covers a hand build
+// and says nothing it cannot know.
+
+#if !defined( SERIALIZE_TEST_FP_CONTRACT )
+#define SERIALIZE_TEST_FP_CONTRACT "the default flags"
+#endif // #if !defined( SERIALIZE_TEST_FP_CONTRACT )
+
 // Conformance vector for compressed_float over a range with a NON-ZERO min. Additive: the
 // golden wire test above is untouched and its bytes are pinned forever.
 //
@@ -8237,6 +8356,11 @@ inline void test_compressed_float_conformance_nonzero_min()
         memcpy( &bits_a, &a, 4 );
         memcpy( &bits_b, &b, 4 );
         memcpy( &bits_c, &c, 4 );
+        // These stay pinned unconditionally on every build the library supports. A build that
+        // contracts ACROSS statements would reconstruct the last of them one ulp away by
+        // design -- but such a build never reaches this test: serialize_test() refuses it up
+        // front, by name, rather than letting it fail here with a bit pattern mismatch that
+        // reads like a library bug.
         serialize_check( bits_a == 0x00000000u );
         serialize_check( bits_b == 0xC2C7BD71u );
         serialize_check( bits_c == 0xC2055C2Au );
@@ -8290,6 +8414,7 @@ inline void test_compressed_float_precomputed_conformance()
         memcpy( &bits_a, &a, 4 );
         memcpy( &bits_b, &b, 4 );
         memcpy( &bits_c, &c, 4 );
+        // pinned on the same terms as the derive-per-call vector above: see the note there
         serialize_check( bits_a == 0x00000000u );
         serialize_check( bits_b == 0xC2C7BD71u );
         serialize_check( bits_c == 0xC2055C2Au );
@@ -8406,6 +8531,78 @@ template <typename Stream> bool serialize_compressed_float_precomputed_form( Str
     return true;
 }
 
+// ---------------------------------------------------------------------------------------
+// THE NEGATIVE CONTROLS -- proof that this differential's eyes are open.
+//
+// Every check below compares implementations that are SUPPOSED to agree, and a test where
+// everything agrees cannot distinguish "the split changed nothing" from "the comparison
+// cannot see this class of change". The distinction is not hypothetical here: the whole FMA
+// discipline in the audited home is a pair of stores through float locals, and whether
+// DELETING them is visible depends entirely on the build. Measured on clang 21 / arm64 by
+// folding the reader's two roundings back into one expression in
+// serialize_compressed_float_precomputed_internal and rebuilding:
+//
+//     -ffp-contract=off    the falsified build PASSES  -- no teeth
+//     -ffp-contract=on     the falsified build is RED  -- teeth
+//     -ffp-contract=fast   the falsified build PASSES  -- no teeth
+//
+// The two "safe" settings are blind for opposite reasons: `off` forbids contraction in the
+// frozen oracle too, so the fused spelling and the stored one compute the same thing;
+// `fast` fuses ACROSS statements, so the frozen oracle fuses as well and the two forms stop
+// being distinguishable. The mode that looks strictest has no teeth, and the mode this repo
+// pins for the wire is the other one with no teeth. That is why CMakeLists.txt builds this
+// suite a SECOND time at -ffp-contract=on: `off` is correct for the wire and toothless for
+// this property, and the second build adds back the discrimination it costs.
+//
+// That covers the compiler. The two sentinels below cover the rest, and they do it on EVERY
+// host and under EVERY flag: they are the same one-rounding perturbations spelled in
+// DOUBLE, where no FMA hardware and no contraction setting is required to produce the
+// divergence. Each runs alongside the real path over the whole corpus, and the differential
+// FAILS if either ever stops diverging -- i.e. if a future edit ever leaves the wire bytes
+// or the decoded bit patterns blind to a single-rounding quantization.
+//
+// This is the part that generalises, and it is the reason a control beats a contraction
+// sweep: a sweep is something a person has to remember to run, and it proved this property
+// exactly once. A control that fails when it stops diverging is permanent, and it does not
+// depend on anyone choosing the right flag. It pays for itself immediately: at
+// -ffp-contract=fast the read control drops to ZERO, because the compiler fuses the audited
+// home into exactly the one-rounding sentinel -- so this suite now fails a `fast` build BY
+// ITSELF, naming the reason, instead of passing green while blind.
+//
+// The sentinels are deliberately NOT compared against the frozen oracle for equality. They
+// are supposed to disagree. That is the whole point. The divergence counts are printed, so
+// the mass is visible and not just the verdict.
+// ---------------------------------------------------------------------------------------
+
+static uint64_t compressed_float_sentinel_write_divergences = 0;
+static uint64_t compressed_float_sentinel_read_divergences = 0;
+
+// the writer's quantization with the two float roundings collapsed: the product and the
+// +0.5 both taken in double, rounded once by the floor. the "widened to double"
+// perturbation, permanently on watch.
+inline uint32_t compressed_float_sentinel_write_code_one_rounding( float value, uint32_t max_integer_value, float delta, float min )
+{
+    float normalized = ( value - min ) / delta;
+    if ( !( normalized >= 0.0f ) )
+    {
+        normalized = 0.0f;
+    }
+    else if ( !( normalized <= 1.0f ) )
+    {
+        normalized = 1.0f;
+    }
+    return (uint32_t) floor( (double) normalized * (double) max_integer_value + 0.5 );
+}
+
+// the reader's reconstruction with the multiply and the add collapsed into one rounding --
+// exactly what an FMA contraction produces, spelled in double so it happens on hosts
+// without an FMA instruction too.
+inline float compressed_float_sentinel_read_value_one_rounding( uint32_t integer_value, uint32_t max_integer_value, float delta, float min )
+{
+    const float normalized = integer_value / float(max_integer_value);
+    return (float) ( (double) normalized * (double) delta + (double) min );
+}
+
 static uint64_t compressed_float_differential_check_count = 0;
 
 #define serialize_differential_check( condition )                           \
@@ -8474,6 +8671,22 @@ inline void check_compressed_float_value_agrees( float value, float min, float m
     memcpy( &pattern_precomputed, &decoded_precomputed, 4 );
     serialize_differential_check( pattern_reference == pattern_legacy );
     serialize_differential_check( pattern_reference == pattern_precomputed );
+
+    // the write-side negative control: the one-rounding quantization must still be able to
+    // produce a DIFFERENT wire code than the audited home does, or the byte comparison above
+    // has gone blind. The code is read back off the frozen wire rather than recomputed, so
+    // the control is measured against the bytes the comparison actually made.
+    {
+        serialize::ReadStream sentinelStream( buffer_reference, 8 );
+        uint32_t wire_code = 0;
+        if ( sentinelStream.SerializeBits( wire_code, bits ) )
+        {
+            if ( compressed_float_sentinel_write_code_one_rounding( value, max_integer_value, delta, min ) != wire_code )
+            {
+                compressed_float_sentinel_write_divergences++;
+            }
+        }
+    }
 }
 
 // one wire integer through all three read paths: acceptance must agree (the headroom refusal),
@@ -8510,6 +8723,18 @@ inline void check_compressed_float_code_agrees( uint32_t code, float min, float 
         memcpy( &pattern_precomputed, &decoded_precomputed, 4 );
         serialize_differential_check( pattern_reference == pattern_legacy );
         serialize_differential_check( pattern_reference == pattern_precomputed );
+
+        // the read-side negative control: a one-rounding reconstruction must still be able
+        // to land on a DIFFERENT bit pattern, or the pattern comparison above has gone
+        // blind. The divergence is one ulp, which is exactly why this differential never
+        // compares decoded values with a tolerance.
+        const float sentinel_value = compressed_float_sentinel_read_value_one_rounding( code, max_integer_value, delta, min );
+        uint32_t pattern_sentinel;
+        memcpy( &pattern_sentinel, &sentinel_value, 4 );
+        if ( pattern_sentinel != pattern_reference )
+        {
+            compressed_float_sentinel_read_divergences++;
+        }
     }
 }
 
@@ -8731,6 +8956,17 @@ inline void test_compressed_float_precomputed_differential()
 
     printf( "    (%llu checks, three implementations, %d declarations)\n",
             (unsigned long long) compressed_float_differential_check_count, num_shapes );
+
+    // the negative controls, CHECKED rather than merely reported: if a one-rounding writer
+    // ever stops producing a different wire code, or a one-rounding reader ever stops
+    // producing a different bit pattern, then everything above agrees for a reason that has
+    // nothing to do with the split being correct, and this differential is decoration.
+    serialize_check( compressed_float_sentinel_write_divergences > 0 );
+    serialize_check( compressed_float_sentinel_read_divergences > 0 );
+
+    printf( "    (negative controls diverge on %llu wire codes and %llu decoded patterns -- both must be nonzero, or the comparison cannot see a single-rounding quantization)\n",
+            (unsigned long long) compressed_float_sentinel_write_divergences,
+            (unsigned long long) compressed_float_sentinel_read_divergences );
 }
 
 #undef serialize_differential_check
@@ -9167,6 +9403,64 @@ inline void test_large_buffer()
 
 inline void serialize_test()
 {
+    const bool fp_contraction_live = serialize_test_fp_contraction_is_live();
+    const bool fp_contraction_crosses_statements = serialize_test_fp_contraction_crosses_statements();
+
+#if defined( SERIALIZE_TEST_FP_CONTRACT_REQUESTED_ON )
+    // This binary is CMake's second build of the suite, and it asked for STATEMENT-LOCAL
+    // contraction. GCC before 14 mapped -ffp-contract=on onto =fast and gives cross-statement
+    // contraction instead, which is a different and unsupported thing. That is a fact about
+    // the toolchain, not a defect in the library, so this build stands down rather than
+    // reporting a failure it did not find. The -ffp-contract=off build is still the gate on
+    // such a compiler, and its negative controls still carry the discrimination there.
+    // Anyone transplanting the -ffp-contract=on build to another repo should carry this check.
+    if ( fp_contraction_crosses_statements )
+    {
+        printf( "*** STANDING DOWN: asked for -ffp-contract=on and this compiler produced CROSS-STATEMENT contraction (GCC before 14 maps =on onto =fast), so the discriminating build is not available on this toolchain ***\n\n" );
+        return;
+    }
+#endif // #if defined( SERIALIZE_TEST_FP_CONTRACT_REQUESTED_ON )
+
+    // which build this is, and whether its contraction setting is buying anything on this
+    // target. Reported, never asserted: a host with no FMA instruction cannot fuse however
+    // the flag is set, and that is a fact about the host, not a failure. A green log must
+    // never claim a discipline it did not exercise.
+    printf( "built with %s; fp contraction is %s in this build\n\n",
+            SERIALIZE_TEST_FP_CONTRACT,
+            !fp_contraction_live               ? "NOT AVAILABLE -- this target does not fuse, so the compressed float's float stores are compiled but not exercised"
+            : fp_contraction_crosses_statements ? "LIVE and CROSSING STATEMENTS -- unsupported, refused below"
+                                                : "LIVE and statement-local -- the compressed float's float stores are under test" );
+
+    // A build that contracts ACROSS statement boundaries is refused outright, and this is the
+    // one place the suite fails for a build setting rather than for a defect.
+    //
+    // Under cross-statement contraction the compressed float's audited home -- a pair of
+    // stores through float locals that keep the quantization's two roundings distinct -- is
+    // fused back into one rounding by the compiler, and so is the frozen pre-split oracle the
+    // differential compares it against, and so is every other spelling of the same arithmetic.
+    // The differential then agrees with itself while emitting a wire one ulp away from every
+    // conformant runtime: verified by folding the reader's two roundings into one expression,
+    // which goes RED at -ffp-contract=on and PASSES at =fast. STANDARD.md does not admit such
+    // a build, CMakeLists.txt pins -ffp-contract=off against it, and this check is what stops
+    // it certifying anything: green here would be green and blind.
+    //
+    // The differential's read negative control catches the same case from the other side --
+    // at =fast it drops from tens of thousands of divergences to ZERO, because the compiler
+    // fuses the audited home into exactly the one-rounding sentinel, and it fails by name
+    // (serialize.c#38 reports the same). Both are kept: the control is the flag-independent
+    // instrument and fires wherever the arithmetic actually goes blind, and this refusal is
+    // the one that names the build itself, before a single vector runs.
+    if ( fp_contraction_crosses_statements )
+    {
+        printf( "This build contracts floating point across statement boundaries (-ffp-contract=fast, /fp:fast,\n"
+                "-ffast-math, or a GCC before 14 mapping -ffp-contract=on onto =fast). The compressed float's\n"
+                "quantization requires TWO distinct roundings on write and on read (STANDARD.md); cross-statement\n"
+                "contraction collapses them into one, changes the wire by one ulp, and defeats every differential\n"
+                "in this suite at the same time -- including the frozen pre-split oracle. The wire cannot be\n"
+                "certified from this build. Rebuild with -ffp-contract=off, as CMakeLists.txt does.\n\n" );
+    }
+    serialize_check( !fp_contraction_crosses_statements );
+
     // while ( 1 )
     {
         SERIALIZE_RUN_TEST( test_endian );
