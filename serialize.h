@@ -4322,6 +4322,7 @@ inline void SerializeCheckHandler( const char * condition,
                                    int line )
 {
     printf( "check failed: ( %s ), function %s, file %s, line %d\n", condition, function, file, line );
+    fflush( stdout );       // the trap below skips atexit, so a buffered stdout (any pipe: CI) would lose the line above
 #ifndef NDEBUG
     #if defined( __GNUC__ )
         __builtin_trap();
@@ -8544,6 +8545,11 @@ static const CompressedFloatShape compressed_float_shapes[] =
     { 0.0f,       15.0f,          1.0f,       15,          4  },       // step count exactly fills the wire width: no headroom to refuse
     { 0.0f,       1000000.0f,     1.0f,       1000000,     20 },       // a million steps
     { 0.0f,       10000000000.0f, 1.0f,       4294967040u, 32 },       // values clamps down to the largest float below 2^32
+    // shapes that discriminate the rounding rule itself: a fractional step count BELOW the half step,
+    // where ceil and round disagree. Every row above lands on an integer or within half a step of one,
+    // so all of them derive the same constants under either rule -- the corpus could not see a swap.
+    { 0.0f,       10.0f,          0.3f,       34,          6  },       // 33.333332 steps: ceil 34, round 33 -- same width, different step count
+    { 0.0f,       63.3f,          1.0f,       64,          7  },       // 63.3 steps: ceil 64 (7 bits), round 63 (6 bits) -- straddles a power of two, so the WIRE WIDTH moves
 };
 
 inline void test_compressed_float_precomputed_differential()
