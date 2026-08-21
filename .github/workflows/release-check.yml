@@ -78,9 +78,61 @@ jobs:
             echo "main is exactly at $newest_tag."
             exit 0
           fi
-          wire_log=$(git log --oneline "$newest_tag"..HEAD -- serialize.h STANDARD.md)
+          # serialize.h is a SINGLE-HEADER LIBRARY WITH ITS TEST SUITE INSIDE IT —
+          # the test section is currently larger than the library part. So "this
+          # commit touched serialize.h" is not the same question as "this commit
+          # changed the wire", and asking the first one demands a release for
+          # adding a test.
+          #
+          # That is not a harmless false alarm. A gate that cries wolf on test
+          # commits is a gate people learn to merge past, and this one exists
+          # precisely because a real wire change once shipped unannounced.
+          #
+          # So compare only the part of serialize.h OUTSIDE the test section.
+          # STANDARD.md has no test section and keeps counting whole.
+          #
+          # FAIL CLOSED: if the markers are missing, duplicated, or out of order
+          # we cannot tell library from test, and the safe answer is the old
+          # behaviour — the whole file counts.
+          library_part() {
+            ref="$1"
+            git show "${ref}:serialize.h" > /tmp/_sh_full.h 2>/dev/null || return 1
+            starts=$(grep -c '^#if SERIALIZE_ENABLE_TESTS$' /tmp/_sh_full.h)
+            ends=$(grep -c '^#endif // #if SERIALIZE_ENABLE_TESTS$' /tmp/_sh_full.h)
+            [ "$starts" = "1" ] && [ "$ends" = "1" ] || return 1
+            s=$(grep -n '^#if SERIALIZE_ENABLE_TESTS$' /tmp/_sh_full.h | cut -d: -f1)
+            e=$(grep -n '^#endif // #if SERIALIZE_ENABLE_TESTS$' /tmp/_sh_full.h | cut -d: -f1)
+            [ "$s" -lt "$e" ] || return 1
+            sed -n "1,$((s - 1))p" /tmp/_sh_full.h
+            sed -n "$((e + 1)),\$p" /tmp/_sh_full.h
+          }
+
+          standard_log=$(git log --oneline "$newest_tag"..HEAD -- STANDARD.md)
+          header_log=$(git log --oneline "$newest_tag"..HEAD -- serialize.h)
+
+          header_is_wire=""
+          if [ -n "$header_log" ]; then
+            if library_part "$newest_tag" > /tmp/lib_tag.h && library_part HEAD > /tmp/lib_head.h; then
+              if diff -q /tmp/lib_tag.h /tmp/lib_head.h > /dev/null; then
+                echo "serialize.h changed since $newest_tag, but only inside #if SERIALIZE_ENABLE_TESTS — its $(wc -l < /tmp/lib_tag.h | tr -d ' ') library lines are identical. Not a wire change."
+              else
+                header_is_wire="yes"
+                echo "serialize.h's library section changed since $newest_tag ($(diff /tmp/lib_tag.h /tmp/lib_head.h | grep -c '^[<>]') lines)."
+              fi
+            else
+              header_is_wire="yes"
+              echo "::warning::Could not locate a single '#if SERIALIZE_ENABLE_TESTS' section in serialize.h at $newest_tag or at HEAD — counting the whole file as wire-affecting, which is the safe answer. If those markers were renamed or split, update this job to match."
+            fi
+          fi
+
+          wire_log=""
+          [ -n "$header_is_wire" ] && wire_log="$header_log"
+          if [ -n "$standard_log" ]; then
+            wire_log=$(printf '%s\n%s' "$wire_log" "$standard_log" | grep -v '^$')
+          fi
+
           if [ -z "$wire_log" ]; then
-            echo "main is $total commit(s) past $newest_tag, none touching wire-affecting paths (serialize.h, STANDARD.md). Fine."
+            echo "main is $total commit(s) past $newest_tag, none changing wire-affecting content (serialize.h outside its test section, STANDARD.md). Fine."
             exit 0
           fi
           count=$(printf '%s\n' "$wire_log" | wc -l | tr -d ' ')
