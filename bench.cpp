@@ -293,6 +293,180 @@ void bench_stream()
 
 // ------------------------------------------------------------------------------------------
 
+/*
+    string + wstring rows (mas-bandwidth/schema#64). Measure-first: no string or wstring row
+    existed anywhere in the family's benches, and rows land before/with any string or wstring
+    change — you can't improve what you don't measure.
+
+    Corpus composition, stated per BENCH-STANDARD §1.7 (bulk share by bits, declared in the
+    definition so the audit never has to be re-derived):
+
+      - string row: pinned-length 24 byte UTF-8 payload behind a 6 bit length field.
+        200 wire bits = 25 bytes; 192 of them ride serialize_bytes, so the row is 96% bulk
+        by bits. That is the point of the row — it measures the bulk string path (length
+        dispatch + align + memcpy + the read-side interior-NUL scan and UTF-8 validation) —
+        and per §1.7 it must never lead a headline table without this bulk share captioned.
+
+      - wstring row: pinned-length 24 unit UTF-16 payload behind a 6 bit length field.
+        774 wire bits = 97 bytes; 0% bulk by bits, because the wstring wire format is one
+        32 bit group per UTF-16 code unit, each an individual serialize_bits dispatch, not
+        a bulk byte copy. The row measures that per-unit dispatch plus the read-side
+        validation the wire contract demands (group range, surrogate pairing, interior NUL).
+
+    Lengths are pinned so every variant buffer is byte-identical in size (24 matches the
+    ~24 byte average chat string in the §1.7 audit); content varies per iteration through
+    the same serially dependent LCG as the other rows, so the payload cannot be folded.
+    Additive only per §1.7: no existing row is touched. Iteration counts are sized so each
+    leg exceeds the 200 ms floor (§2.1) on the Apple Silicon reference machine.
+*/
+
+const int StringBufferSize = 64;            // bounds the length field: serialize_int( length, 0, 63 ) = 6 bits
+const int StringPinnedLength = 24;          // bytes (string) or UTF-16 units (wstring), pinned
+
+const int StringNumPackets = 32000000;
+const int WStringNumPackets = 16000000;
+
+struct BenchStringPacket
+{
+    char text[StringBufferSize];
+
+    void Init()
+    {
+        for ( int i = 0; i < StringPinnedLength; i++ )
+            text[i] = (char) ( 'a' + ( i * 7 ) % 26 );
+        text[StringPinnedLength] = '\0';
+    }
+
+    template <typename Stream> bool Serialize( Stream & stream )
+    {
+        serialize_string( stream, text, StringBufferSize );
+        return true;
+    }
+};
+
+inline uint64_t bench_vary_string( BenchStringPacket & packet, uint64_t rng )
+{
+    rng = rng * 6364136223846793005ULL + 1442695040888963407ULL;
+    // four positions per iteration, printable ASCII, so the payload stays valid UTF-8 with no interior NUL
+    packet.text[ ( rng >> 3 ) % StringPinnedLength ] = (char) ( 'a' + ( rng >> 8 ) % 26 );
+    packet.text[ ( rng >> 13 ) % StringPinnedLength ] = (char) ( 'A' + ( rng >> 19 ) % 26 );
+    packet.text[ ( rng >> 27 ) % StringPinnedLength ] = (char) ( '0' + ( rng >> 33 ) % 10 );
+    packet.text[ ( rng >> 41 ) % StringPinnedLength ] = (char) ( 'a' + ( rng >> 47 ) % 26 );
+    return rng;
+}
+
+struct BenchWStringPacket
+{
+    wchar_t text[StringBufferSize];
+
+    void Init()
+    {
+        for ( int i = 0; i < StringPinnedLength; i++ )
+            text[i] = (wchar_t) ( 0x4E00 + i );         // BMP, one code unit each: no surrogates, no NUL
+        text[StringPinnedLength] = L'\0';
+    }
+
+    template <typename Stream> bool Serialize( Stream & stream )
+    {
+        serialize_wstring( stream, text, StringBufferSize );
+        return true;
+    }
+};
+
+inline uint64_t bench_vary_wstring( BenchWStringPacket & packet, uint64_t rng )
+{
+    rng = rng * 6364136223846793005ULL + 1442695040888963407ULL;
+    // four positions per iteration, pinned to the CJK block: BMP code points, one unit each, no surrogates, no NUL
+    packet.text[ ( rng >> 3 ) % StringPinnedLength ] = (wchar_t) ( 0x4E00 + ( ( rng >> 8 ) & 0xFFF ) );
+    packet.text[ ( rng >> 13 ) % StringPinnedLength ] = (wchar_t) ( 0x4E00 + ( ( rng >> 19 ) & 0xFFF ) );
+    packet.text[ ( rng >> 27 ) % StringPinnedLength ] = (wchar_t) ( 0x4E00 + ( ( rng >> 33 ) & 0xFFF ) );
+    packet.text[ ( rng >> 41 ) % StringPinnedLength ] = (wchar_t) ( 0x4E00 + ( ( rng >> 47 ) & 0xFFF ) );
+    return rng;
+}
+
+// Same trial structure, escape barriers and variant-buffer read scheme as bench_stream, so the
+// string rows are comparable with the stream rows above them. Packet provides Init (the pinned
+// content the LCG then perturbs); pinned lengths make every variant the same wire size, which
+// the setup loop verifies rather than assumes.
+
+template <typename Packet> void bench_string_shape( const char * write_label, const char * read_label, int num_packets, uint64_t (*vary)( Packet &, uint64_t ) )
+{
+    uint8_t buffer[256];
+    memset( buffer, 0, sizeof( buffer ) );
+
+    Packet packet;
+    packet.Init();
+
+    uint8_t variant_buffers[NumVariants][256];
+    int bytes_per_packet = 0;
+    {
+        uint64_t rng = 1;
+        for ( int k = 0; k < NumVariants; k++ )
+        {
+            memset( variant_buffers[k], 0, sizeof( variant_buffers[k] ) );
+            rng = vary( packet, rng );
+            serialize::WriteStream stream( variant_buffers[k], (int) sizeof( variant_buffers[k] ) );
+            if ( !packet.Serialize( stream ) )
+                exit( 1 );
+            stream.Flush();
+            if ( bytes_per_packet != 0 && stream.GetBytesProcessed() != bytes_per_packet )
+                exit( 1 );                              // the pinned length must make every variant the same size
+            bytes_per_packet = stream.GetBytesProcessed();
+        }
+    }
+
+    double best_write = 1e30;
+    double best_read = 1e30;
+
+    for ( int trial = 0; trial < NumTrials; trial++ )
+    {
+        uint64_t rng = 1;
+
+        double start = time_now();
+        for ( int i = 0; i < num_packets; i++ )
+        {
+            rng = vary( packet, rng );
+            serialize::WriteStream stream( buffer, (int) sizeof( buffer ) );
+            if ( !packet.Serialize( stream ) )
+                exit( 1 );
+            stream.Flush();
+            bench_escape( buffer );
+            g_sink = g_sink + (uint64_t) stream.GetBytesProcessed();
+        }
+        double time = time_now() - start;
+        if ( time < best_write )
+            best_write = time;
+
+        start = time_now();
+        for ( int i = 0; i < num_packets; i++ )
+        {
+            serialize::ReadStream stream( variant_buffers[i & ( NumVariants - 1 )], bytes_per_packet );
+            Packet read_packet;
+            if ( !read_packet.Serialize( stream ) )
+                exit( 1 );
+            bench_escape( &read_packet );               // every decoded unit is observed, so the full decode + validation must happen
+            g_sink = g_sink + (uint64_t) *(const uint8_t*) &read_packet;
+        }
+        time = time_now() - start;
+        if ( time < best_read )
+            best_read = time;
+    }
+
+    const double total_mb = double( bytes_per_packet ) * num_packets / ( 1024.0 * 1024.0 );
+    const double packets = double( num_packets ) / 1000000.0;
+
+    printf( "%s %8.1f MB/s  (%.1f M packets/s)\n", write_label, total_mb / best_write, packets / best_write );
+    printf( "%s %8.1f MB/s  (%.1f M packets/s)\n", read_label, total_mb / best_read, packets / best_read );
+}
+
+void bench_strings()
+{
+    bench_string_shape<BenchStringPacket>( "string write:    ", "string read:     ", StringNumPackets, bench_vary_string );
+    bench_string_shape<BenchWStringPacket>( "wstring write:   ", "wstring read:    ", WStringNumPackets, bench_vary_wstring );
+}
+
+// ------------------------------------------------------------------------------------------
+
 // Matched pairs: the same packet serialized through the runtime macros and through the compile
 // time parameter surface. Same data, same serially dependent LCG variation pattern, same escape
 // barriers, same trial structure, so any difference is the forms themselves, not the harness.
@@ -573,6 +747,8 @@ int main()
     bench_bitpacker( buffer );
 
     bench_stream();
+
+    bench_strings();
 
     printf( "\n" );
 
