@@ -35,9 +35,9 @@
 /** @file */
 
 #define SERIALIZE_VERSION_MAJOR 1
-#define SERIALIZE_VERSION_MINOR 13
+#define SERIALIZE_VERSION_MINOR 14
 #define SERIALIZE_VERSION_PATCH 0
-#define SERIALIZE_VERSION "1.13.0"
+#define SERIALIZE_VERSION "1.14.0"
 
 #if defined(_MSC_VER)
 #define serialize_restrict __restrict
@@ -4324,7 +4324,21 @@ inline void serialize_copy_wstring( wchar_t * dest, const wchar_t * source, size
 #if SERIALIZE_ENABLE_TESTS
 
 #include <stdio.h>      // printf
-#include <stdlib.h>     // exit
+#include <stdlib.h>     // exit, getenv
+
+/**
+    Under a passing test, the test's name prints and nothing else. The suite's
+    informational narration -- check counts, negative-control statistics, skip
+    reasons, which contraction discipline this build exercised -- is opt-in:
+    set SERIALIZE_TEST_VERBOSE=1 in the environment to restore it. Failures
+    print everything relevant regardless, and no check runs or does not run
+    because of this switch -- it gates narration only.
+ */
+inline bool serialize_test_verbose()
+{
+    const char * value = getenv( "SERIALIZE_TEST_VERBOSE" );
+    return value != NULL && value[0] != '\0' && !( value[0] == '0' && value[1] == '\0' );
+}
 
 inline void SerializeCheckHandler( const char * condition,
                                    const char * function,
@@ -9011,8 +9025,11 @@ inline void test_compressed_float_precomputed_differential()
     // built with, that is a test bug, and it fails here instead of fading quietly
     serialize_check( compressed_float_differential_check_count >= 2000000 );
 
-    printf( "    (%llu checks, three implementations, %d declarations)\n",
-            (unsigned long long) compressed_float_differential_check_count, num_shapes );
+    if ( serialize_test_verbose() )
+    {
+        printf( "    (%llu checks, three implementations, %d declarations)\n",
+                (unsigned long long) compressed_float_differential_check_count, num_shapes );
+    }
 
     // the negative controls, CHECKED rather than merely reported: if a one-rounding writer
     // ever stops producing a different wire code, or a one-rounding reader ever stops
@@ -9021,9 +9038,12 @@ inline void test_compressed_float_precomputed_differential()
     serialize_check( compressed_float_sentinel_write_divergences > 0 );
     serialize_check( compressed_float_sentinel_read_divergences > 0 );
 
-    printf( "    (negative controls diverge on %llu wire codes and %llu decoded patterns -- both must be nonzero, or the comparison cannot see a single-rounding quantization)\n",
-            (unsigned long long) compressed_float_sentinel_write_divergences,
-            (unsigned long long) compressed_float_sentinel_read_divergences );
+    if ( serialize_test_verbose() )
+    {
+        printf( "    (negative controls diverge on %llu wire codes and %llu decoded patterns -- both must be nonzero, or the comparison cannot see a single-rounding quantization)\n",
+                (unsigned long long) compressed_float_sentinel_write_divergences,
+                (unsigned long long) compressed_float_sentinel_read_divergences );
+    }
 }
 
 #undef serialize_differential_check
@@ -9408,7 +9428,10 @@ inline void test_large_buffer()
     uint8_t * buffer = (uint8_t*) malloc( (size_t) bufferSize + 8 );        // + 8: read buffer allocations extend 8 bytes past the data
     if ( !buffer )
     {
-        printf( "(skipped test_large_buffer: could not allocate the buffer)\n" );
+        if ( serialize_test_verbose() )
+        {
+            printf( "(skipped test_large_buffer: could not allocate the buffer)\n" );
+        }
         return;
     }
 
@@ -9479,14 +9502,18 @@ inline void serialize_test()
 #endif // #if defined( SERIALIZE_TEST_FP_CONTRACT_REQUESTED_ON )
 
     // which build this is, and whether its contraction setting is buying anything on this
-    // target. Reported, never asserted: a host with no FMA instruction cannot fuse however
-    // the flag is set, and that is a fact about the host, not a failure. A green log must
-    // never claim a discipline it did not exercise.
-    printf( "built with %s; fp contraction is %s in this build\n\n",
-            SERIALIZE_TEST_FP_CONTRACT,
-            !fp_contraction_live               ? "NOT AVAILABLE -- this target does not fuse, so the compressed float's float stores are compiled but not exercised"
-            : fp_contraction_crosses_statements ? "LIVE and CROSSING STATEMENTS -- unsupported, refused below"
-                                                : "LIVE and statement-local -- the compressed float's float stores are under test" );
+    // target. Reported under SERIALIZE_TEST_VERBOSE, never asserted: a host with no FMA
+    // instruction cannot fuse however the flag is set, and that is a fact about the host,
+    // not a failure. A green log must never claim a discipline it did not exercise — the
+    // claim is on demand now, and the default log claims nothing beyond the names.
+    if ( serialize_test_verbose() )
+    {
+        printf( "built with %s; fp contraction is %s in this build\n\n",
+                SERIALIZE_TEST_FP_CONTRACT,
+                !fp_contraction_live               ? "NOT AVAILABLE -- this target does not fuse, so the compressed float's float stores are compiled but not exercised"
+                : fp_contraction_crosses_statements ? "LIVE and CROSSING STATEMENTS -- unsupported, refused below"
+                                                    : "LIVE and statement-local -- the compressed float's float stores are under test" );
+    }
 
     // A build that contracts ACROSS statement boundaries is refused outright, and this is the
     // one place the suite fails for a build setting rather than for a defect.
