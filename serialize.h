@@ -2552,6 +2552,16 @@ namespace serialize
             // one expression.
             const float scaled = normalizedValue * max_integer_value;
             integerValue = (uint32_t) floor( scaled + 0.5f );
+            // STANDARD.md: the integer clamp is normative (2026-08-23). Once
+            // max_integer_value >= 2^23 the float32 ulp at the top of the range
+            // reaches 1, so the rounded sum can exceed max_integer_value itself:
+            // the writer emits a code its own reader rejects, or one bit wider
+            // than the field. Clamping after the floor closes both; no byte
+            // changes for any declaration outside [2^23, 2^24).
+            if ( integerValue > max_integer_value )
+            {
+                integerValue = (uint32_t) max_integer_value;
+            }
         }
 
         if ( !stream.SerializeBits( integerValue, bits ) )
@@ -8495,6 +8505,12 @@ template <typename Stream> bool serialize_compressed_float_frozen_reference( Str
         }
         const float scaled = normalizedValue * maxIntegerValue;
         integerValue = (uint32_t) floor( scaled + 0.5f );
+        // STANDARD.md: the integer clamp is normative (2026-08-23) -- same
+        // clamp as serialize_compressed_float above, same reason.
+        if ( integerValue > maxIntegerValue )
+        {
+            integerValue = maxIntegerValue;
+        }
     }
 
     if ( !stream.SerializeBits( integerValue, bits ) )
@@ -8775,7 +8791,46 @@ static const CompressedFloatShape compressed_float_shapes[] =
     // so all of them derive the same constants under either rule -- the corpus could not see a swap.
     { 0.0f,       10.0f,          0.3f,       34,          6  },       // 33.333332 steps: ceil 34, round 33 -- same width, different step count
     { 0.0f,       63.3f,          1.0f,       64,          7  },       // 63.3 steps: ceil 64 (7 bits), round 63 (6 bits) -- straddles a power of two, so the WIRE WIDTH moves
+    // shapes in [2^23, 2^24), where the float32 ulp reaches 1 and the +0.5 rounding could
+    // push the code past max_integer_value before the normative clamp (2026-08-23,
+    // schema#109). The corpus was empty in this band, which is how the defect hid.
+    { 0.0f,       8388609.0f,     1.0f,       8388609u,    24 },       // 2^23+1: the reader-rejects witness
+    { 0.0f,       16777215.0f,    1.0f,       16777215u,   24 },       // 2^24-1: the wire-divergence witness
 };
+
+inline void test_compressed_float_top_of_range_clamp()
+{
+    // STANDARD.md's normative integer clamp (2026-08-23, schema#109; ruling: Glenn, live).
+    // In [2^23, 2^24) the float32 ulp is 1, so scaled + 0.5f lands on a tie and
+    // round-to-even can push the code past max_integer_value. Before the clamp,
+    // witness A wrote a top-of-range code its own reader rejected, and witness B
+    // wrote a code one bit wider than the field.
+    {
+        // witness A: [0, 8388609] at resolution 1 -> max_integer_value 2^23+1, 24 bits
+        uint8_t buffer[16 + 8] = { 0 };
+        serialize::WriteStream writeStream( buffer, 16 );
+        float written = 8388609.0f;
+        serialize_check( serialize::serialize_compressed_float_internal( writeStream, written, 0.0f, 8388609.0f, 1.0f ) == true );
+        writeStream.Flush();
+        serialize::ReadStream readStream( buffer, 16 );
+        float value = 0.0f;
+        serialize_check( serialize::serialize_compressed_float_internal( readStream, value, 0.0f, 8388609.0f, 1.0f ) == true );
+        serialize_check( value == 8388609.0f );
+    }
+    {
+        // witness B: [0, 16777215] at resolution 1 -> max_integer_value 2^24-1, 24 bits;
+        // the unclamped code was 2^24, one bit wider than the field
+        uint8_t buffer[16 + 8] = { 0 };
+        serialize::WriteStream writeStream( buffer, 16 );
+        float written = 16777215.0f;
+        serialize_check( serialize::serialize_compressed_float_internal( writeStream, written, 0.0f, 16777215.0f, 1.0f ) == true );
+        writeStream.Flush();
+        serialize::ReadStream readStream( buffer, 16 );
+        float value = 0.0f;
+        serialize_check( serialize::serialize_compressed_float_internal( readStream, value, 0.0f, 16777215.0f, 1.0f ) == true );
+        serialize_check( value == 16777215.0f );
+    }
+}
 
 inline void test_compressed_float_precomputed_differential()
 {
@@ -9484,6 +9539,7 @@ inline void serialize_test()
         SERIALIZE_RUN_TEST( test_wstring_read_validation );
         SERIALIZE_RUN_TEST( test_int_relative_validation );
         SERIALIZE_RUN_TEST( test_compressed_float_validation );
+        SERIALIZE_RUN_TEST( test_compressed_float_top_of_range_clamp );
         SERIALIZE_RUN_TEST( test_compressed_float_non_finite_asserts );
         SERIALIZE_RUN_TEST( test_compressed_float_precomputed_validation );
         SERIALIZE_RUN_TEST( test_compressed_float_precomputed_asserts );
