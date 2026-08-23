@@ -35,9 +35,9 @@
 /** @file */
 
 #define SERIALIZE_VERSION_MAJOR 1
-#define SERIALIZE_VERSION_MINOR 12
+#define SERIALIZE_VERSION_MINOR 13
 #define SERIALIZE_VERSION_PATCH 0
-#define SERIALIZE_VERSION "1.12.0"
+#define SERIALIZE_VERSION "1.13.0"
 
 #if defined(_MSC_VER)
 #define serialize_restrict __restrict
@@ -5704,7 +5704,8 @@ inline void test_compressed_float_non_finite_asserts()
     serialize_check( serialize_test_assert_fires( serialize_test_write_non_finite_declaration ) == true );
     serialize_check( serialize_test_assert_fires( serialize_test_write_non_finite_value ) == true );
 #else
-    printf( "(skipped test_compressed_float_non_finite_asserts: needs an assert-enabled build and fork)\n" );
+    // silently skipped: needs an assert-enabled build and fork. An expected
+    // skip is not information — the suite prints test names and failures only.
 #endif // #if !defined( NDEBUG ) && !defined( _WIN32 )
 }
 
@@ -5719,7 +5720,8 @@ inline void test_compressed_float_precomputed_asserts()
     serialize_check( serialize_test_assert_fires( serialize_test_write_non_finite_value_precomputed ) == true );
     serialize_check( serialize_test_assert_fires( serialize_test_precomputed_inconsistent_bits ) == true );
 #else
-    printf( "(skipped test_compressed_float_precomputed_asserts: needs an assert-enabled build and fork)\n" );
+    // silently skipped: needs an assert-enabled build and fork. An expected
+    // skip is not information — the suite prints test names and failures only.
 #endif // #if !defined( NDEBUG ) && !defined( _WIN32 )
 }
 
