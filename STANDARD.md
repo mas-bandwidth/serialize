@@ -310,8 +310,8 @@ A float quantized to a resolution. Let `delta = max - min` and
     bits              = bits_required( 0, max_integer_value )
 
 The writer clamps `(value - min) / delta` to `[0,1]`, multiplies by
-`max_integer_value`, adds `0.5`, takes the floor, and writes the result in
-`bits` bits. The reader divides by `max_integer_value`, multiplies by `delta`,
+`max_integer_value`, adds `0.5`, takes the floor, **clamps the resulting
+integer to `max_integer_value`**, and writes the result in `bits` bits. The reader divides by `max_integer_value`, multiplies by `delta`,
 and adds `min`.
 
 **This arithmetic is `float32`, and the two roundings are part of the format.**
@@ -325,6 +325,19 @@ one. Specifically, an implementation must not:
   here — in C and C++ by storing the product through a `float` local (or
   `-ffp-contract=off`), in Go by an explicit `float32()` conversion around the
   product. Rust does not fuse unless `mul_add` is called explicitly.
+
+**The integer clamp is normative — added 2026-08-23 (schema#109; ruling:
+Glenn, live).** Once `max_integer_value >= 2^23` the `float32` ulp at the top
+of the range reaches 1, so the rounded sum can exceed `max_integer_value`
+itself. Without the clamp, 2,109,734,656 step counts emit a top-of-range code
+the reader's own `integerValue > max_integer_value` check rejects, and 128
+step counts emit a code one bit wider than the field — where implementations
+historically diverged on the wire (the C++ reference leaked the extra bit into
+the stream; serialize.cs masked it to zero). The clamp closes both classes,
+costs one comparison on a path already doing a floor, and changes no byte for
+any declaration outside `[2^23, 2^24)`. Witnesses every implementation must
+pin, writing `max`: `[0, 8388609]` at resolution `1` (the reader-rejects
+class) and `[0, 16777215]` at resolution `1` (the wire-divergence class).
 
 This is not pedantry; it changes the bytes. Over `[0, 10]` at resolution
 `0.01`, the required arithmetic quantizes `0.005` to `1`, `0.025` to `3`,
