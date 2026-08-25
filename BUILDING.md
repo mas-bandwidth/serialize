@@ -46,6 +46,13 @@ or via `add_subdirectory`, or install it (`cmake --install build`) and use `find
 
 The library version is available as `SERIALIZE_VERSION` (and `SERIALIZE_VERSION_MAJOR/MINOR/PATCH`) after including the header.
 
+## Floating point flags
+
+The compressed float wire format requires exact `float32` rounding (STANDARD.md). The header pins the load-bearing roundings in-source with an optimization barrier, so the wire bytes are identical under every `-ffp-contract` setting — including GCC's default `-ffp-contract=fast` on FMA targets such as arm64 — and the test suite runs and passes at `off`, `on` and `fast` (CI builds all three). Two rules remain:
+
+- `-ffast-math` (and `-Ofast`) are not supported: they license reciprocal approximation and reassociation, which change the wire in ways no barrier can pin. The test suite refuses such a build by name.
+- Building with `-ffp-contract=off` is still the standing policy for the network libraries this header ships in (serialize, netcode, reliable, yojimbo, flow, rocketnet) — belt and braces on top of the in-source barrier, and the certification setting for golden vectors.
+
 ## Debug builds
 
     cmake -B build-debug -DCMAKE_BUILD_TYPE=Debug

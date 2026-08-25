@@ -322,9 +322,16 @@ one. Specifically, an implementation must not:
 - widen any step to `double` (or any wider type) before the floor, and
 - contract the multiply and the add into a fused multiply-add, which rounds
   once instead of twice. Languages that permit contraction must suppress it
-  here — in C and C++ by storing the product through a `float` local (or
-  `-ffp-contract=off`), in Go by an explicit `float32()` conversion around the
-  product. Rust does not fuse unless `mul_add` is called explicitly.
+  here. In C and C++ a plain `float` local is **not** sufficient: it suppresses
+  only statement-local contraction (clang's default `-ffp-contract=on`), and
+  under `-ffp-contract=fast` — GCC's default at every optimization level — the
+  compiler fuses straight through it. The rounding must be pinned by an
+  optimization barrier on the stored product (the reference implementation's
+  `SERIALIZE_FLOAT_FORCE_ROUND`: an empty asm with a register output operand on
+  GCC/clang, a `volatile` store where inline asm is unavailable) or by building
+  with `-ffp-contract=off`. In Go an explicit `float32()` conversion around the
+  product suffices — the spec forbids fusing across it. Rust does not fuse
+  unless `mul_add` is called explicitly.
 
 **The integer clamp is normative — added 2026-08-23 (schema#109; ruling:
 Glenn, live).** Once `max_integer_value >= 2^23` the `float32` ulp at the top
@@ -346,6 +353,18 @@ This is not pedantry; it changes the bytes. Over `[0, 10]` at resolution
 under every variant, so a conformance vector built only from such values will
 pass while the wire is wrong. Vectors must include values that land between
 quanta.
+
+The between-quanta values above discriminate a **widened** writer; a **fused**
+writer is a separate class with its own discriminating band. Where
+`max_integer_value` is below `2^23` the product's ulp is well under the `0.5`
+being added and fusion almost never moves the integer; once
+`max_integer_value` reaches `[2^23, 2^24)` — the integer clamp's band — the
+product's ulp reaches `1` and fusion moves the quantized integer on mass:
+measured exhaustively over `[0, 16777215]` at resolution `1`, a fused writer
+moves 4,194,304 inputs (every even `float` in the top binade), the first being
+`2^23` itself. Conformance vectors must include a value from this band —
+`8388608.0` over that declaration is the reference witness — or a fused writer
+passes every vector below the band while shipping divergent wire above it.
 
 **The reader's arithmetic is pinned the same way.** The decode — divide by
 `max_integer_value`, multiply by `delta`, add `min` — is `float32` with every

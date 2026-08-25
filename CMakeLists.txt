@@ -63,7 +63,12 @@ if(SERIALIZE_BUILD_TESTS OR SERIALIZE_FUZZ)
     #     (there is no /fp:contract in these flags, so contraction stays off).
     # bench builds strict too: a benchmark of arithmetic the format forbids would be a
     # number about some other library. Consumers are unaffected either way — the library
-    # target above is INTERFACE-only and none of these flags leak.
+    # target above is INTERFACE-only and none of these flags leak. The wire itself no
+    # longer depends on any of this: the quantization's roundings are pinned in-source by
+    # SERIALIZE_FLOAT_FORCE_ROUND, and the -ffp-contract=fast test target below proves the
+    # bytes hold at the loosest contraction setting. The strict flags remain the estate's
+    # standing policy for network libraries (belt), and -ffast-math stays unsupported —
+    # reciprocal approximation breaks the vectors and no barrier can repair it.
     if(MSVC)
         # 4127/4244 are opted back in here: the header now push/pops them, and this repo's own
         # executables use the same implicit-narrowing style as the header
@@ -100,45 +105,51 @@ if(SERIALIZE_BUILD_TESTS)
     enable_testing()
     add_test(NAME test COMMAND serialize_test)
 
-    # THE SAME SUITE A SECOND TIME, AT -ffp-contract=on. This is not belt and braces; it is
-    # the only build in which the compressed float's FMA discipline has teeth.
+    # THE SAME SUITE A SECOND TIME AT -ffp-contract=on, AND A THIRD TIME AT
+    # -ffp-contract=fast. This is not belt and braces; these are the only builds in which the
+    # compressed float's FMA discipline has teeth.
     #
-    # That discipline is a pair of stores through float locals that keep the quantization's
-    # two roundings distinct. Whether DELETING them is visible depends entirely on the
-    # contraction setting, measured on clang 21 / arm64 by folding the reader's two roundings
-    # into one expression and rebuilding:
+    # That discipline is a pair of locals pinned by SERIALIZE_FLOAT_FORCE_ROUND, which keep
+    # the quantization's two roundings distinct under EVERY contraction mode -- that is what
+    # makes the wire bits independent of the consumer's compiler flags (issues #92/#95).
+    # Whether DAMAGING the discipline is visible depends entirely on the contraction setting,
+    # measured on clang 21 / arm64 by falsifying the audited home and rebuilding, all four
+    # falsifications, all three modes:
     #
-    #   -ffp-contract=off    the falsified build PASSES -- contraction is forbidden in the
-    #                        frozen oracle too, so the fused spelling and the stored one
-    #                        compute the same thing
-    #   -ffp-contract=on     the falsified build is RED on the decoded bit patterns -- the
-    #                        compiler fuses one form and not the other, which is exactly the
-    #                        one-ulp divergence being guarded
-    #   -ffp-contract=fast   the falsified build PASSES -- `fast` fuses ACROSS statements, so
-    #                        the frozen oracle fuses as well and the two forms stop being
-    #                        distinguishable
+    #                                  =off    =on     =fast
+    #    reader barrier deleted        PASS    PASS    RED (nonzero-min vector)
+    #    reader folded to one stmt     PASS    RED     RED
+    #    writer barrier deleted        PASS    PASS    RED (writer-fusion vector)
+    #    writer folded to one stmt     PASS    RED     RED
     #
-    # The mode that looks strictest is the one with no teeth, and the mode this repo pins for
-    # the wire is the other one with no teeth. So the targets above stay at -ffp-contract=off,
-    # because that is what the wire requires, and this target adds back the discrimination it
-    # costs. mas-bandwidth/schema#82; serialize.c#38 is the same build in the C port.
+    # =off is blind to all four: contraction is forbidden everywhere, so every spelling
+    # computes the same thing. =on sees the one-expression folds and cannot see a deleted
+    # barrier -- statement-local contraction never fuses through any local. =fast sees
+    # everything, because it is the mode in which only the barrier stands between the two
+    # roundings and one. So the targets above stay at -ffp-contract=off, because that is the
+    # certification build, and these two add back every row of the discrimination it costs.
+    # The =fast build is also the consumer reality check: it is GCC's default at every
+    # optimization level, and the exact build in which arm64 consumers shipped divergent
+    # wire before the barrier existed. mas-bandwidth/schema#82; serialize.c#38 is the =on
+    # build in the C port.
     #
-    # -ffp-contract=on comes AFTER ${SERIALIZE_DEV_FLAGS} so it wins over the =off in there,
+    # The contract flag comes AFTER ${SERIALIZE_DEV_FLAGS} so it wins over the =off in there,
     # including when CI overrides CMAKE_CXX_FLAGS wholesale (the sanitizers job does). Nothing
     # new is asked of the compiler: the dev flags already spell -ffp-contract, so any compiler
-    # that can build the suite at all can build this. MSVC is excluded because cl has no such
+    # that can build the suite at all can build these. MSVC is excluded because cl has no such
     # flag -- and needs none: it is the one configuration in the matrix that never receives
     # -ffp-contract=off, so the first build is already the library's default-contraction
     # behaviour executed rather than reasoned about.
     #
     # The binary reports whether contraction is actually LIVE on the target -- x86-64 without
-    # FMA cannot fuse however the flag is set -- so a green log never claims a discipline it
-    # did not exercise. And it detects the one compiler trap here: GCC before 14 mapped
-    # -ffp-contract=on onto =fast, so on gcc 13 asking for statement-local contraction gets
-    # cross-statement contraction, which is the unsupported mode.
+    # FMA cannot fuse however the flag is set, so on such hosts the =fast leg exercises
+    # nothing beyond =off and the real coverage comes from FMA targets (the macos arm64 legs
+    # in CI, and any arm64 or -mfma consumer build). It also detects the one compiler trap
+    # here: GCC before 14 mapped -ffp-contract=on onto =fast, so on gcc 13 asking for
+    # statement-local contraction gets cross-statement contraction instead.
     # SERIALIZE_TEST_FP_CONTRACT_REQUESTED_ON tells the binary this build asked for =on, and
-    # it stands down with a printed reason instead of failing for a toolchain quirk that is
-    # not a defect in the library. Anyone transplanting this target should carry that check.
+    # it stands down with a printed reason instead of certifying a discipline it is not
+    # running; the =fast target carries the cross-statement coverage on such a toolchain.
     if(NOT MSVC)
         add_executable(serialize_test_fp_contract_on test.cpp serialize.h)
         set_target_properties(serialize_test_fp_contract_on PROPERTIES OUTPUT_NAME test-fp-contract-on)
@@ -152,6 +163,18 @@ if(SERIALIZE_BUILD_TESTS)
             $<$<NOT:$<CONFIG:Debug>>:SERIALIZE_RELEASE>
         )
         add_test(NAME test-fp-contract-on COMMAND serialize_test_fp_contract_on)
+
+        add_executable(serialize_test_fp_contract_fast test.cpp serialize.h)
+        set_target_properties(serialize_test_fp_contract_fast PROPERTIES OUTPUT_NAME test-fp-contract-fast)
+        target_link_libraries(serialize_test_fp_contract_fast PRIVATE serialize)
+        target_compile_options(serialize_test_fp_contract_fast PRIVATE ${SERIALIZE_DEV_FLAGS} -ffp-contract=fast)
+        target_compile_definitions(serialize_test_fp_contract_fast PRIVATE
+            SERIALIZE_ENABLE_TESTS=1
+            SERIALIZE_TEST_FP_CONTRACT="-ffp-contract=fast"
+            $<$<CONFIG:Debug>:SERIALIZE_DEBUG>
+            $<$<NOT:$<CONFIG:Debug>>:SERIALIZE_RELEASE>
+        )
+        add_test(NAME test-fp-contract-fast COMMAND serialize_test_fp_contract_fast)
     endif()
 endif()
 

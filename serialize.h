@@ -116,6 +116,42 @@
 #define SERIALIZE_BULK_COPY( dst, src, bytes ) memcpy( ( dst ), ( src ), ( bytes ) )
 #endif // #if defined( __clang__ ) || defined( __GNUC__ )
 
+/*
+    SERIALIZE_FLOAT_FORCE_ROUND( x ) — pins a float intermediate to its rounded float32
+    value, so no floating point contraction setting can fuse it into a neighboring
+    operation. The compressed float quantization requires TWO distinct roundings on write
+    and on read (STANDARD.md): the product must round to float32 before the following add.
+    A plain float local suppresses only STATEMENT-LOCAL contraction (clang's default
+    -ffp-contract=on); under cross-statement contraction (-ffp-contract=fast, which is
+    GCC's default at every optimization level) the compiler fuses straight through the
+    local, rounds once, and moves the wire bits by one ulp on any FMA target — measured
+    on arm64 and on x86-64 with FMA. This macro is what makes the wire bits identical
+    under every contraction mode, so they no longer depend on the consumer's compiler
+    flags.
+
+    The reference pair: on GCC and clang an empty asm with a register output operand makes
+    the stored value opaque to the contraction pass at zero cost — the product and the add
+    compile to separate rounded instructions with no memory traffic ("+w" is an FP/SIMD
+    register on arm64, "+x" an XMM register on x86). Everywhere else — MSVC, and GNU
+    targets whose register class this header does not spell — the same property is
+    emulated with a volatile store, which is correct on every compiler at the cost of a
+    stack round-trip. (MSVC's /fp:precise does not contract, so the volatile slot there is
+    belt on an uncontracted build; /fp:fast builds are held to the rounding by it.)
+*/
+#if ( defined( __GNUC__ ) || defined( __clang__ ) ) && ( defined( __aarch64__ ) || defined( _M_ARM64 ) )
+#define SERIALIZE_FLOAT_FORCE_ROUND( x ) __asm__ ( "" : "+w" ( x ) )
+#elif ( defined( __GNUC__ ) || defined( __clang__ ) ) && ( defined( __x86_64__ ) || defined( __i386__ ) )
+#define SERIALIZE_FLOAT_FORCE_ROUND( x ) __asm__ ( "" : "+x" ( x ) )
+#else
+#define SERIALIZE_FLOAT_FORCE_ROUND( x )                                                    \
+    do                                                                                      \
+    {                                                                                       \
+        volatile float serialize_float_force_round_slot = ( x );                            \
+        ( x ) = serialize_float_force_round_slot;                                           \
+    }                                                                                       \
+    while ( 0 )
+#endif
+
 #ifndef serialize_assert
 #include <assert.h>
 #define serialize_assert assert
@@ -2540,17 +2576,26 @@ namespace serialize
                 normalizedValue = 1.0f;
             }
             // STANDARD.md pins this to float32 with TWO roundings: the product
-            // rounds before 0.5 is added. Storing it through this local is what
-            // forces that, and it is not optional. Written as one expression,
-            // a compiler permitted to contract (clang's default is
+            // rounds before 0.5 is added. The local plus the barrier are what
+            // force that, and neither is optional. Written as one expression, a
+            // compiler permitted to contract (clang's default is
             // -ffp-contract=on) emits a single FMA and rounds ONCE -- and that
             // changes the wire. On arm64 at -O2 this quantized 0.005 over
             // [0, 10] at resolution 0.01 to 0 where every conformant runtime
             // writes 1; on x86-64 the same source did not contract and wrote 1,
             // so the goldens (generated on x86) and CI stayed green while
-            // Apple Silicon emitted different bytes. Do not fold this back into
-            // one expression.
-            const float scaled = normalizedValue * max_integer_value;
+            // Apple Silicon emitted different bytes. The local alone is not
+            // enough: under cross-statement contraction (-ffp-contract=fast,
+            // GCC's default) the compiler fuses straight through a plain float
+            // local, which is how a consumer building this header at ordinary
+            // -O2 defaults shipped divergent arm64 wire (issue #92). The
+            // barrier closes that: the wire bits are identical under every
+            // contraction mode. Do not fold this back into one expression, and
+            // do not remove the barrier -- the -ffp-contract=fast test build
+            // and the write-side negative control both go red if either
+            // rounding is ever lost.
+            float scaled = normalizedValue * max_integer_value;
+            SERIALIZE_FLOAT_FORCE_ROUND( scaled );
             integerValue = (uint32_t) floor( scaled + 0.5f );
             // STANDARD.md: the integer clamp is normative (2026-08-23). Once
             // max_integer_value >= 2^23 the float32 ulp at the top of the range
@@ -2577,17 +2622,25 @@ namespace serialize
             }
             const float normalizedValue = integerValue / float(max_integer_value);
             // The reader rounds twice for the same reason the writer above does:
-            // the product must round to float32 BEFORE min is added, and storing
-            // it through this local is what forces that. Written as one
+            // the product must round to float32 BEFORE min is added, and the
+            // local plus the barrier are what force that. Written as one
             // expression, a compiler permitted to contract (clang's default
             // -ffp-contract=on is enough — no -ffast-math required) fuses the
             // multiply and add into a single FMA on arm64 and rounds ONCE. That
             // decodes a float one ulp away from every conformant runtime whenever
             // min is non-zero, so a value read on arm64 and re-encoded produces
-            // different wire. The conformance vector with min = -100 pins the
-            // decoded bit pattern exactly and goes red if this is ever folded
-            // back into one expression.
-            const float scaledValue = normalizedValue * delta;
+            // different wire. The local alone is not enough: under
+            // cross-statement contraction (-ffp-contract=fast, GCC's default at
+            // every -O level) the compiler fuses straight through it — measured
+            // on arm64: 6666/20000 * 200 - 100 fused decodes 0xC2055C29 where
+            // every conformant runtime decodes 0xC2055C2A (issues #92/#95). The
+            // barrier closes that: the decoded bit patterns are identical under
+            // every contraction mode. The conformance vector with min = -100
+            // pins them exactly, and the -ffp-contract=fast test build and the
+            // read-side negative control both go red if this is ever folded
+            // back into one expression or the barrier removed.
+            float scaledValue = normalizedValue * delta;
+            SERIALIZE_FLOAT_FORCE_ROUND( scaledValue );
             value = scaledValue + min;
         }
 
@@ -8208,7 +8261,7 @@ inline void test_past_end_poison()
 // x86-64 without FMA, and a build that prints a green log while fusing nothing has claimed a
 // discipline it never ran. So measure it and say which.
 //
-// The two probes are deliberately different questions:
+// The three probes are deliberately different questions:
 //
 //   is_live               -- one contractible statement against the same arithmetic forced
 //                            through a volatile store. If they ever differ, this target has
@@ -8216,19 +8269,27 @@ inline void test_past_end_poison()
 //   crosses_statements    -- a PLAIN local store against the volatile one. The language
 //                            rounds a float local, so only a compiler contracting ACROSS the
 //                            statement boundary can make these two disagree. That is the
-//                            -ffp-contract=fast behaviour, and it is not a stricter `on`: it
-//                            is a different mode, in which the frozen oracle in the
-//                            differential below fuses too, every spelling of the arithmetic
-//                            becomes indistinguishable from every other, and STANDARD.md's
-//                            requirement of distinct roundings simply does not hold. This
-//                            library does not support such a build -- CMakeLists.txt pins
-//                            -ffp-contract=off for exactly that reason.
+//                            -ffp-contract=fast behaviour (GCC's default at every -O level),
+//                            and it is not a stricter `on`: it is a different mode, in which
+//                            a plain float local suppresses nothing. The WIRE is safe in
+//                            such a build -- the audited home pins both roundings with
+//                            SERIALIZE_FLOAT_FORCE_ROUND, which no contraction mode fuses
+//                            through -- but the frozen pre-split oracle in the differential
+//                            below is a verbatim copy of code that predates the barrier, so
+//                            it fuses, computes one-rounding values, and its comparisons
+//                            stand down on such a build (the negative-control sentinels
+//                            keep their teeth everywhere; see the differential).
+//   barrier_holds         -- the audited home's shape, a store pinned by
+//                            SERIALIZE_FLOAT_FORCE_ROUND, against the volatile reference.
+//                            These must NEVER disagree: the barrier is what the wire's
+//                            contraction invariance rests on, so a toolchain that fuses
+//                            through it is refused by name before a single vector runs.
 //
 // crosses_statements has to be DETECTED rather than inferred from the flag, because GCC
 // before 14 mapped -ffp-contract=on onto fast. On such a toolchain, asking for
-// statement-local contraction silently gets the unsupported mode, and the honest report is
-// that the build is unavailable -- not a bit pattern mismatch that reads like a port bug.
-// Anyone transplanting the -ffp-contract=on build to another repo should carry this with it.
+// statement-local contraction silently gets cross-statement contraction instead, and the
+// honest report says which mode is actually live -- not a bit pattern mismatch that reads
+// like a port bug.
 // ---------------------------------------------------------------------------------------
 
 // The three spellings, each in its OWN function and each kept out of line. Out of line is
@@ -8266,10 +8327,19 @@ SERIALIZE_TEST_NOINLINE inline float serialize_test_fp_two_statements( float a, 
 }
 
 // the reference: a volatile store forces the product to memory as float32, so no contraction
-// setting on any compiler can fuse through it. This is what the other two are measured against.
+// setting on any compiler can fuse through it. This is what the other three are measured against.
 SERIALIZE_TEST_NOINLINE inline float serialize_test_fp_forced_unfused( float a, float b, float c )
 {
     volatile float product = a * b;
+    return product + c;
+}
+
+// the audited home's shape: a local pinned by SERIALIZE_FLOAT_FORCE_ROUND. This is the
+// mechanism the wire's contraction invariance rests on, probed directly.
+SERIALIZE_TEST_NOINLINE inline float serialize_test_fp_two_statements_barriered( float a, float b, float c )
+{
+    float product = a * b;
+    SERIALIZE_FLOAT_FORCE_ROUND( product );
     return product + c;
 }
 
@@ -8307,6 +8377,24 @@ inline bool serialize_test_fp_contraction_crosses_statements()
         }
     }
     return false;
+}
+
+inline bool serialize_test_fp_barrier_holds()
+{
+    for ( uint32_t code = 1; code < 20000; code++ )
+    {
+        const float norm = (float) code / 20000.0f;
+        const float barriered = serialize_test_fp_two_statements_barriered( norm, 200.0f, -100.0f );
+        const float unfused = serialize_test_fp_forced_unfused( norm, 200.0f, -100.0f );
+        uint32_t pattern_barriered, pattern_unfused;
+        memcpy( &pattern_barriered, &barriered, 4 );
+        memcpy( &pattern_unfused, &unfused, 4 );
+        if ( pattern_barriered != pattern_unfused )
+        {
+            return false;
+        }
+    }
+    return true;
 }
 
 // The caption for this build, so the two runs CMake performs are telling apart in a CI log.
@@ -8382,14 +8470,89 @@ inline void test_compressed_float_conformance_nonzero_min()
         memcpy( &bits_a, &a, 4 );
         memcpy( &bits_b, &b, 4 );
         memcpy( &bits_c, &c, 4 );
-        // These stay pinned unconditionally on every build the library supports. A build that
-        // contracts ACROSS statements would reconstruct the last of them one ulp away by
-        // design -- but such a build never reaches this test: serialize_test() refuses it up
-        // front, by name, rather than letting it fail here with a bit pattern mismatch that
-        // reads like a library bug.
+        // These stay pinned unconditionally on every build the library supports, under every
+        // contraction mode including -ffp-contract=fast: the reader's two roundings are
+        // pinned by SERIALIZE_FLOAT_FORCE_ROUND, which no contraction setting fuses through.
+        // Before the barrier, a consumer building this header at gcc's arm64 defaults
+        // reconstructed the last of these as 0xC2055C29 -- one ulp off every conformant
+        // runtime -- and this check is the one that caught it (issue #95).
         serialize_check( bits_a == 0x00000000u );
         serialize_check( bits_b == 0xC2C7BD71u );
         serialize_check( bits_c == 0xC2055C2Au );
+    }
+}
+
+// Conformance vector for the WRITER's fusion class. Additive: every earlier vector is
+// untouched. The nonzero-min vector above discriminates READER fusion (its write rows do not
+// move under a fused writer -- measured), so a deleted writer barrier was invisible to the
+// whole family. This one pins wire BYTES a fused writer cannot produce.
+//
+// The discriminating band is [2^23, 2^24) step counts -- the same band the normative integer
+// clamp lives in (STANDARD.md, schema#109) -- because that is where the float32 ulp of the
+// scaled product reaches 1 and the product's rounding decides the integer directly. Over
+// [0, 16777215] at resolution 1 (max_integer_value = 2^24 - 1, 24 bits per value), measured
+// exhaustively over every float in range on arm64: a writer whose product and +0.5 are fused
+// into one FMA moves the quantized integer on 4,194,304 inputs -- every even float in the
+// top binade -- and the first of them is 2^23 itself:
+//
+//   written value   pinned code   what a fused writer produces
+//   8388608.0       8388608       8388609 -- one code up, different wire bytes
+//   11184811.0      11184812      on-quantum-adjacent sanity row, agrees everywhere
+//   16777215.0      16777215      the top code: the normative clamp's witness row
+//
+// The decoded BIT PATTERNS are pinned too. min is 0, so this vector is structurally blind to
+// reader fusion -- that is the nonzero-min vector's job; the two vectors together cover both
+// sides. serialize_test() runs on every supported build, including -ffp-contract=fast, so
+// this is the vector that goes red if the writer's barrier is ever deleted.
+
+template <typename Stream> bool CompressedFloatWriterFusionSerialize( Stream & stream, float & a, float & b, float & c )
+{
+    serialize_compressed_float( stream, a, 0.0f, 16777215.0f, 1.0f );
+    serialize_compressed_float( stream, b, 0.0f, 16777215.0f, 1.0f );
+    serialize_compressed_float( stream, c, 0.0f, 16777215.0f, 1.0f );
+    serialize_align( stream );
+    return true;
+}
+
+inline void test_compressed_float_conformance_writer_fusion()
+{
+    static const uint8_t pinned_bytes[9] = { 0x00, 0x00, 0x80, 0xAC, 0xAA, 0xAA, 0xFF, 0xFF, 0xFF };
+
+    // write side: the strict two-rounding quantization must produce exactly these bytes.
+    // 8388608.0f is the row a fused writer moves; the pinned bytes are unreachable from a
+    // build whose writer rounds once.
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        serialize::WriteStream stream( buffer, (int) sizeof( buffer ) );
+        float a = 8388608.0f;
+        float b = 11184811.0f;
+        float c = 16777215.0f;
+        serialize_check( CompressedFloatWriterFusionSerialize( stream, a, b, c ) == true );
+        stream.Flush();
+        serialize_check( stream.GetBytesProcessed() == (int) sizeof( pinned_bytes ) );
+        serialize_check( memcmp( buffer, pinned_bytes, sizeof( pinned_bytes ) ) == 0 );
+    }
+
+    // read side: the decoded floats are pinned bit-exactly, same terms as every conformance
+    // vector -- the divergences this family detects are single ulps, and tolerance would
+    // hide them.
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        memcpy( buffer, pinned_bytes, sizeof( pinned_bytes ) );
+        serialize::ReadStream stream( buffer, (int) sizeof( pinned_bytes ) );
+        float a = -1.0f;
+        float b = -1.0f;
+        float c = -1.0f;
+        serialize_check( CompressedFloatWriterFusionSerialize( stream, a, b, c ) == true );
+        uint32_t bits_a, bits_b, bits_c;
+        memcpy( &bits_a, &a, 4 );
+        memcpy( &bits_b, &b, 4 );
+        memcpy( &bits_c, &c, 4 );
+        serialize_check( bits_a == 0x4B000000u );       // 8388608.0
+        serialize_check( bits_b == 0x4B2AAAACu );       // 11184812.0
+        serialize_check( bits_c == 0x4B7FFFFFu );       // 16777215.0
     }
 }
 
@@ -8609,6 +8772,15 @@ template <typename Stream> bool serialize_compressed_float_precomputed_form( Str
 static uint64_t compressed_float_sentinel_write_divergences = 0;
 static uint64_t compressed_float_sentinel_read_divergences = 0;
 
+// Whether the frozen pre-split oracle computes conformant values in THIS build. The frozen
+// reference is a verbatim copy of code that predates SERIALIZE_FLOAT_FORCE_ROUND, so under
+// cross-statement contraction (-ffp-contract=fast, GCC's default) it fuses its two roundings
+// into one while the barriered audited home does not. On such a build its comparisons assert
+// the wrong thing and stand down; the sentinels above and the conformance vectors carry the
+// teeth there. Set from the measured probe at the top of the differential -- detected, never
+// inferred from flags.
+static bool compressed_float_frozen_oracle_conformant = true;
+
 // the writer's quantization with the two float roundings collapsed: the product and the
 // +0.5 both taken in double, rounded once by the floor. the "widened to double"
 // perturbation, permanently on watch.
@@ -8683,17 +8855,21 @@ inline void check_compressed_float_value_agrees( float value, float min, float m
 
     serialize_differential_check( writeReference.GetBitsProcessed() == writeLegacy.GetBitsProcessed() );
     serialize_differential_check( writeReference.GetBitsProcessed() == writePrecomputed.GetBitsProcessed() );
-    serialize_differential_check( memcmp( buffer_reference, buffer_legacy, 8 ) == 0 );
-    serialize_differential_check( memcmp( buffer_reference, buffer_precomputed, 8 ) == 0 );
+    serialize_differential_check( memcmp( buffer_legacy, buffer_precomputed, 8 ) == 0 );
+    if ( compressed_float_frozen_oracle_conformant )
+    {
+        serialize_differential_check( memcmp( buffer_reference, buffer_legacy, 8 ) == 0 );
+        serialize_differential_check( memcmp( buffer_reference, buffer_precomputed, 8 ) == 0 );
+    }
 
     // read: decoded BIT PATTERNS agree exactly — one ulp of divergence must fail
-    serialize::ReadStream readReference( buffer_reference, 8 );
+    serialize::ReadStream readReference( buffer_precomputed, 8 );
     float decoded_reference = 0.0f;
     serialize_differential_check( serialize_compressed_float_frozen_reference( readReference, decoded_reference, min, max, res ) == true );
-    serialize::ReadStream readLegacy( buffer_reference, 8 );
+    serialize::ReadStream readLegacy( buffer_precomputed, 8 );
     float decoded_legacy = 0.0f;
     serialize_differential_check( serialize_compressed_float_legacy_form( readLegacy, decoded_legacy, min, max, res ) == true );
-    serialize::ReadStream readPrecomputed( buffer_reference, 8 );
+    serialize::ReadStream readPrecomputed( buffer_precomputed, 8 );
     float decoded_precomputed = 0.0f;
     serialize_differential_check( serialize_compressed_float_precomputed_form( readPrecomputed, decoded_precomputed, max_integer_value, bits, delta, min ) == true );
 
@@ -8701,15 +8877,21 @@ inline void check_compressed_float_value_agrees( float value, float min, float m
     memcpy( &pattern_reference, &decoded_reference, 4 );
     memcpy( &pattern_legacy, &decoded_legacy, 4 );
     memcpy( &pattern_precomputed, &decoded_precomputed, 4 );
-    serialize_differential_check( pattern_reference == pattern_legacy );
-    serialize_differential_check( pattern_reference == pattern_precomputed );
+    serialize_differential_check( pattern_legacy == pattern_precomputed );
+    if ( compressed_float_frozen_oracle_conformant )
+    {
+        serialize_differential_check( pattern_reference == pattern_legacy );
+        serialize_differential_check( pattern_reference == pattern_precomputed );
+    }
 
     // the write-side negative control: the one-rounding quantization must still be able to
     // produce a DIFFERENT wire code than the audited home does, or the byte comparison above
-    // has gone blind. The code is read back off the frozen wire rather than recomputed, so
-    // the control is measured against the bytes the comparison actually made.
+    // has gone blind. The code is read back off the audited home's own wire rather than
+    // recomputed, so the control is measured against the bytes the SHIPPED path actually
+    // made — which keeps its teeth on every build, including one whose frozen oracle has
+    // stood down.
     {
-        serialize::ReadStream sentinelStream( buffer_reference, 8 );
+        serialize::ReadStream sentinelStream( buffer_precomputed, 8 );
         uint32_t wire_code = 0;
         if ( sentinelStream.SerializeBits( wire_code, bits ) )
         {
@@ -8753,17 +8935,25 @@ inline void check_compressed_float_code_agrees( uint32_t code, float min, float 
         memcpy( &pattern_reference, &decoded_reference, 4 );
         memcpy( &pattern_legacy, &decoded_legacy, 4 );
         memcpy( &pattern_precomputed, &decoded_precomputed, 4 );
-        serialize_differential_check( pattern_reference == pattern_legacy );
-        serialize_differential_check( pattern_reference == pattern_precomputed );
+        serialize_differential_check( pattern_legacy == pattern_precomputed );
+        if ( compressed_float_frozen_oracle_conformant )
+        {
+            serialize_differential_check( pattern_reference == pattern_legacy );
+            serialize_differential_check( pattern_reference == pattern_precomputed );
+        }
 
         // the read-side negative control: a one-rounding reconstruction must still be able
         // to land on a DIFFERENT bit pattern, or the pattern comparison above has gone
         // blind. The divergence is one ulp, which is exactly why this differential never
-        // compares decoded values with a tolerance.
+        // compares decoded values with a tolerance. Measured against the SHIPPED path's
+        // decode, so it keeps its teeth on every build: if the audited home's two roundings
+        // are ever fused -- a deleted barrier under -ffp-contract=fast is exactly this --
+        // the home decodes what the sentinel decodes, the divergences drop to zero, and the
+        // nonzero assertion below the corpus fails by name.
         const float sentinel_value = compressed_float_sentinel_read_value_one_rounding( code, max_integer_value, delta, min );
         uint32_t pattern_sentinel;
         memcpy( &pattern_sentinel, &sentinel_value, 4 );
-        if ( pattern_sentinel != pattern_reference )
+        if ( pattern_sentinel != pattern_precomputed )
         {
             compressed_float_sentinel_read_divergences++;
         }
@@ -8850,6 +9040,10 @@ inline void test_compressed_float_top_of_range_clamp()
 
 inline void test_compressed_float_precomputed_differential()
 {
+    // the frozen oracle predates the barrier: under cross-statement contraction it fuses,
+    // so its comparisons stand down on such a build (see the declaration above)
+    compressed_float_frozen_oracle_conformant = !serialize_test_fp_contraction_crosses_statements();
+
     const float float_max = 3.402823466e+38f;               // FLT_MAX, spelled so the header needs no float.h
 
     uint64_t lcg = 0xC0FFEE1234567890ULL;                   // fixed seed: failures reproduce
@@ -9022,8 +9216,10 @@ inline void test_compressed_float_precomputed_differential()
     #undef serialize_differential_next_lcg
 
     // the coverage floor: if the differential ever silently shrinks below the mass it was
-    // built with, that is a test bug, and it fails here instead of fading quietly
-    serialize_check( compressed_float_differential_check_count >= 2000000 );
+    // built with, that is a test bug, and it fails here instead of fading quietly. A build
+    // whose frozen oracle stood down runs fewer comparisons, so it is held to its own
+    // measured floor rather than the full one.
+    serialize_check( compressed_float_differential_check_count >= ( compressed_float_frozen_oracle_conformant ? 2000000 : 1600000 ) );
 
     if ( serialize_test_verbose() )
     {
@@ -9510,40 +9706,44 @@ inline void serialize_test()
     {
         printf( "built with %s; fp contraction is %s in this build\n\n",
                 SERIALIZE_TEST_FP_CONTRACT,
-                !fp_contraction_live               ? "NOT AVAILABLE -- this target does not fuse, so the compressed float's float stores are compiled but not exercised"
-                : fp_contraction_crosses_statements ? "LIVE and CROSSING STATEMENTS -- unsupported, refused below"
-                                                    : "LIVE and statement-local -- the compressed float's float stores are under test" );
+                !fp_contraction_live               ? "NOT AVAILABLE -- this target does not fuse, so the compressed float's rounding barriers are compiled but not exercised"
+                : fp_contraction_crosses_statements ? "LIVE and CROSSING STATEMENTS -- the wire path is barriered against it; the frozen pre-split oracle fuses in this build, so its comparisons stand down"
+                                                    : "LIVE and statement-local -- the compressed float's rounding barriers are under test" );
     }
 
-    // A build that contracts ACROSS statement boundaries is refused outright, and this is the
-    // one place the suite fails for a build setting rather than for a defect.
-    //
-    // Under cross-statement contraction the compressed float's audited home -- a pair of
-    // stores through float locals that keep the quantization's two roundings distinct -- is
-    // fused back into one rounding by the compiler, and so is the frozen pre-split oracle the
-    // differential compares it against, and so is every other spelling of the same arithmetic.
-    // The differential then agrees with itself while emitting a wire one ulp away from every
-    // conformant runtime: verified by folding the reader's two roundings into one expression,
-    // which goes RED at -ffp-contract=on and PASSES at =fast. STANDARD.md does not admit such
-    // a build, CMakeLists.txt pins -ffp-contract=off against it, and this check is what stops
-    // it certifying anything: green here would be green and blind.
-    //
-    // The differential's read negative control catches the same case from the other side --
-    // at =fast it drops from tens of thousands of divergences to ZERO, because the compiler
-    // fuses the audited home into exactly the one-rounding sentinel, and it fails by name
-    // (serialize.c#38 reports the same). Both are kept: the control is the flag-independent
-    // instrument and fires wherever the arithmetic actually goes blind, and this refusal is
-    // the one that names the build itself, before a single vector runs.
-    if ( fp_contraction_crosses_statements )
+#if defined( __FAST_MATH__ )
+    // -ffast-math is refused by name, before a single vector runs. Contraction is not the
+    // problem there -- the barriers hold under fast-math too -- the unsafe transformations
+    // are: reciprocal approximation of the reader's division decodes 0xB6298800 where every
+    // conformant runtime decodes 0x00000000, and no barrier on the product can repair a
+    // quotient that was never correctly rounded. A -ffast-math build cannot produce a
+    // conformant wire, so the honest report is this one, not a bit pattern mismatch that
+    // reads like a library bug.
+    printf( "This build uses -ffast-math (or -Ofast), which licenses reciprocal approximation and\n"
+            "reassociation in the exact arithmetic the compressed float conformance vectors pin.\n"
+            "The wire cannot be conformant from this build. Rebuild without -ffast-math.\n\n" );
+    serialize_check( false );
+#endif // #if defined( __FAST_MATH__ )
+
+    // The barrier is what the wire's contraction invariance rests on: the audited home pins
+    // the quantization's two roundings with SERIALIZE_FLOAT_FORCE_ROUND, so the wire bits do
+    // not depend on the consumer's contraction flag -- a build at GCC's default
+    // -ffp-contract=fast produces the same bytes and the same decoded bit patterns as one at
+    // -ffp-contract=off (issues #92/#95; the conformance vectors hold this bit-exactly on
+    // every build below). A toolchain that fuses THROUGH the barrier would take that
+    // property back, so it is probed directly and refused by name, before a single vector
+    // runs. The differential's negative controls guard the same property flag-independently
+    // from the other side: if the audited home's roundings are ever fused, its decode
+    // collapses onto the one-rounding sentinel, the divergence count drops to zero, and the
+    // differential fails.
+    if ( !serialize_test_fp_barrier_holds() )
     {
-        printf( "This build contracts floating point across statement boundaries (-ffp-contract=fast, /fp:fast,\n"
-                "-ffast-math, or a GCC before 14 mapping -ffp-contract=on onto =fast). The compressed float's\n"
-                "quantization requires TWO distinct roundings on write and on read (STANDARD.md); cross-statement\n"
-                "contraction collapses them into one, changes the wire by one ulp, and defeats every differential\n"
-                "in this suite at the same time -- including the frozen pre-split oracle. The wire cannot be\n"
-                "certified from this build. Rebuild with -ffp-contract=off, as CMakeLists.txt does.\n\n" );
+        printf( "This toolchain contracts floating point THROUGH SERIALIZE_FLOAT_FORCE_ROUND. The compressed\n"
+                "float's quantization requires TWO distinct roundings on write and on read (STANDARD.md), and\n"
+                "the barrier is what pins them under every contraction mode. On this build it does not hold, so\n"
+                "the wire cannot be conformant. Rebuild with -ffp-contract=off.\n\n" );
+        serialize_check( !"SERIALIZE_FLOAT_FORCE_ROUND does not hold on this toolchain" );
     }
-    serialize_check( !fp_contraction_crosses_statements );
 
     // while ( 1 )
     {
@@ -9600,6 +9800,7 @@ inline void serialize_test()
         SERIALIZE_RUN_TEST( test_trailing_bits );
         SERIALIZE_RUN_TEST( test_past_end_poison );
         SERIALIZE_RUN_TEST( test_compressed_float_conformance_nonzero_min );
+        SERIALIZE_RUN_TEST( test_compressed_float_conformance_writer_fusion );
         SERIALIZE_RUN_TEST( test_compressed_float_precomputed_conformance );
         SERIALIZE_RUN_TEST( test_compressed_float_precomputed_differential );
         SERIALIZE_RUN_TEST( test_golden_float_bit_transparency );
