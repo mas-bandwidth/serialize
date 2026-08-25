@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(serialize VERSION 1.14.0 LANGUAGES CXX)
+project(serialize VERSION 1.15.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
