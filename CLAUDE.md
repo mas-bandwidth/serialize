@@ -148,10 +148,6 @@ performance work here must not relearn:
   counts throughout, which removes the old 256 MB buffer limit
   (test_large_buffer round trips across the old 2^31-bit boundary); the
   wire format is unchanged.
-- Throughput ([bench.cpp](bench.cpp), Release, Apple Silicon reference):
-  bitpacker write ~5.8 GB/s, read ~8.1 GB/s; stream write ~47M packets/s,
-  read ~140M packets/s. (Reads got ~4x faster in 1.4.0 with the branchless
-  reader; writes ~25% faster in 1.4.2 with the 64-bit flush.)
 
 ### What's genuinely good
 
@@ -254,12 +250,4 @@ reproducers as artifacts on failure.
   GitHub release "Stable Release" marked latest, covering everything
   since v1.2.5 (CMake switch, CI/sanitizers/fuzzing/golden wire test,
   writer alignment guarantee, `serialize_int64`, header hygiene).
-- ~~GCC stream benchmark numbers are inflated~~ — fixed, in two parts:
-  a `bench_escape` barrier (empty asm + memory clobber) stops dead-store
-  elimination of the output buffer, and an LCG varies most packet fields
-  per iteration so GCC can no longer constant-fold the loop-invariant
-  fields' scratch words at compile time. GCC still reports notably higher
-  stream numbers than MSVC (~92M vs ~33M packets/s) — that residual gap is
-  legitimate codegen (static field offsets merge adjacent writes), not
-  elimination.
 

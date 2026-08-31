@@ -20,7 +20,6 @@ Testing/
 /bin/
 /test
 /example
-/bench
 /fuzz
 *.o
 *.obj

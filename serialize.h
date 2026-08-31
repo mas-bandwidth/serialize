@@ -1220,8 +1220,8 @@ namespace serialize
         // m_bitsWritten from memory after every word flushed to the buffer, because the flush store could have
         // modified them. Restricting 'this' promises the buffer never overlaps the writer object itself
         // (asserted in the constructor in debug builds), which lets member state stay in registers across
-        // consecutive writes. Measured on Apple Silicon (Apple clang 21, -O3): +38% stream write throughput
-        // in bench.cpp, +38% to +152% on schema-generated write paths, zero change where serialize functions
+        // consecutive writes. Measured on Apple Silicon (Apple clang 21, -O3): +38% stream write throughput,
+        // +38% to +152% on schema-generated write paths, zero change where serialize functions
         // fully inline (the raw bitpacker loop compiles to identical code). The read path does not need this:
         // the branchless reader stores nothing through m_data, so it already keeps its state in registers.
 
