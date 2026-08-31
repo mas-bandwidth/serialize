@@ -62,8 +62,8 @@ if(SERIALIZE_BUILD_TESTS OR SERIALIZE_FUZZ)
     #   - MSVC: /fp:precise. Since VS 2022 this no longer implies contraction
     #     (there is no /fp:contract in these flags, so contraction stays off).
     # Consumers are unaffected either way — the library target above is INTERFACE-only
-    # and none of these flags leak. The wire itself no longer depends on any of this: the quantization's roundings are pinned in-source by
-    # SERIALIZE_FLOAT_FORCE_ROUND, and the -ffp-contract=fast test target below proves the
+    # and none of these flags leak. The wire itself no longer depends on any of this:
+    # the quantization's roundings are pinned in-source by SERIALIZE_FLOAT_FORCE_ROUND, and the -ffp-contract=fast test target below proves the
     # bytes hold at the loosest contraction setting. The strict flags remain the estate's
     # standing policy for network libraries (belt), and -ffast-math stays unsupported —
     # reciprocal approximation breaks the vectors and no barrier can repair it.
