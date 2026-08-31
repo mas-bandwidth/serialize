@@ -11,7 +11,7 @@ else()
     set(SERIALIZE_TOP_LEVEL FALSE)
 endif()
 
-option(SERIALIZE_BUILD_TESTS "Build serialize tests, example and benchmark" ${SERIALIZE_TOP_LEVEL})
+option(SERIALIZE_BUILD_TESTS "Build serialize tests and example" ${SERIALIZE_TOP_LEVEL})
 option(SERIALIZE_INSTALL "Generate serialize install rules" ${SERIALIZE_TOP_LEVEL})
 option(SERIALIZE_FUZZ "Build the libFuzzer harness (requires clang)" OFF)
 
@@ -61,9 +61,7 @@ if(SERIALIZE_BUILD_TESTS OR SERIALIZE_FUZZ)
     #     -ffp-contract=fast, and clang's default =on still fuses single expressions.
     #   - MSVC: /fp:precise. Since VS 2022 this no longer implies contraction
     #     (there is no /fp:contract in these flags, so contraction stays off).
-    # bench builds strict too: a benchmark of arithmetic the format forbids would be a
-    # number about some other library. Consumers are unaffected either way — the library
-    # target above is INTERFACE-only and none of these flags leak. The wire itself no
+    # Consumers are unaffected either way — the library target above is INTERFACE-only and none of these flags leak. The wire itself no
     # longer depends on any of this: the quantization's roundings are pinned in-source by
     # SERIALIZE_FLOAT_FORCE_ROUND, and the -ffp-contract=fast test target below proves the
     # bytes hold at the loosest contraction setting. The strict flags remain the estate's
@@ -91,9 +89,7 @@ if(SERIALIZE_BUILD_TESTS)
 
     add_executable(example example.cpp serialize.h)
 
-    add_executable(bench bench.cpp serialize.h)
-
-    foreach(target serialize_test example bench)
+    foreach(target serialize_test example)
         target_link_libraries(${target} PRIVATE serialize)
         target_compile_options(${target} PRIVATE ${SERIALIZE_DEV_FLAGS})
         target_compile_definitions(${target} PRIVATE

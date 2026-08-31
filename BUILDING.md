@@ -42,7 +42,7 @@ If you use CMake, you can consume it as a target instead — via FetchContent:
     FetchContent_MakeAvailable(serialize)
     target_link_libraries(your_target PRIVATE serialize::serialize)
 
-or via `add_subdirectory`, or install it (`cmake --install build`) and use `find_package(serialize CONFIG REQUIRED)`. In all cases the `serialize::serialize` target carries only the include path: none of this repo's warning or fast-math flags leak into your build, and the test/example/benchmark targets are only built when serialize is the top level project.
+or via `add_subdirectory`, or install it (`cmake --install build`) and use `find_package(serialize CONFIG REQUIRED)`. In all cases the `serialize::serialize` target carries only the include path: none of this repo's warning or fast-math flags leak into your build, and the test and example targets are only built when serialize is the top level project.
 
 The library version is available as `SERIALIZE_VERSION` (and `SERIALIZE_VERSION_MAJOR/MINOR/PATCH`) after including the header.
 
@@ -61,14 +61,7 @@ The compressed float wire format requires exact `float32` rounding (STANDARD.md)
 
 Debug builds define `SERIALIZE_DEBUG`, which enables asserts and extra bounds checking. Release builds define `SERIALIZE_RELEASE`.
 
-## Benchmarking
-
-A throughput benchmark for the bitpacker and the stream/macro path builds as part of the normal build:
-
-    cmake -B build && cmake --build build --config Release
-    ./build/bin/bench
-
-Only release build numbers are meaningful (the binary warns if you run a debug build). CI runs the benchmark on the release jobs for each platform — treat those numbers as indicative only, since shared runners are noisy.
+Benchmarking for the serialize family lives in [mas-bandwidth/schema](https://github.com/mas-bandwidth/schema)'s data-driven bench, which measures the generated codecs across every language on one corpus.
 
 ## Fuzzing
 
