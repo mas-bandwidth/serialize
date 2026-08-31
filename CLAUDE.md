@@ -167,13 +167,12 @@ performance work here must not relearn:
 - **The core design is sound and well understood.** Writer: 64-bit scratch,
   64-bit flush — the scratch stores as a qword when it fills and the bits
   that spilled past 64 carry into the next scratch, so the flush branch runs
-  half as often as a dword design (~+25% write throughput, measured); each
-  word is stored via `memcpy` so the buffer needs no particular alignment.
+  half as often as a dword design; each word is stored via `memcpy` so the
+  buffer needs no particular alignment.
   Reader: branchless —
   each read loads a 64-bit window at the current byte position and shifts by
   the bit remainder, carrying no state between reads except the bit index.
-  This made reads ~4x faster than the previous word-at-a-time reader
-  (measured; see throughput above) at the cost of the 8-bytes-past
+  This replaced a word-at-a-time reader, at the cost of the 8-bytes-past
   allocation contract below. Little-endian wire format with byte-swap on
   big-endian hosts; identical wire bytes to the old reader/writer, pinned by
   the golden test. `test_unaligned_writer` locks the no-alignment guarantee
