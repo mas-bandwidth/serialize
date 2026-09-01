@@ -107,6 +107,34 @@ jobs:
             sed -n "$((e + 1)),\$p" /tmp/_sh_full.h
           }
 
+          # The test-section exclusion above turns "did serialize.h change" into
+          # "did the LIBRARY change". This answers the next question in the same
+          # series: a comment cannot change the wire either. Without it the gate
+          # fails main for editing a sentence — which is exactly what happened
+          # when bench.cpp was removed and a comment stopped referring to it, and
+          # a gate that cries wolf is a gate people learn to merge past. That is
+          # the reason the test section is excluded, applied once more.
+          #
+          # DELIBERATELY NARROW. It can only ever err toward calling something a
+          # wire change:
+          #   - a changed line counts as a comment ONLY if it begins with // after
+          #     leading whitespace. In C++ such a line is a comment unconditionally,
+          #     the one exception being a raw string literal, which is guarded below.
+          #   - everything else counts as wire, including trailing comments on code
+          #     lines and /* */ continuation lines — serialize.h's license header is
+          #     that style, so editing the license still announces a release is owed.
+          #     Those are false alarms in the safe direction, and they are rare.
+          #
+          # FAIL CLOSED: a raw string literal in either version means a leading //
+          # can no longer be promised to be a comment, so the whole diff counts.
+          comment_only() {
+            if grep -q 'R"' "$1" || grep -q 'R"' "$2"; then return 1; fi
+            changed=$(diff "$1" "$2" | grep '^[<>]' | sed 's/^[<>] //' || true)
+            [ -n "$changed" ] || return 1
+            noncomment=$(printf '%s\n' "$changed" | sed 's/^[[:space:]]*//' | grep -cv '^//' || true)
+            [ "$noncomment" -eq 0 ]
+          }
+
           standard_log=$(git log --oneline "$newest_tag"..HEAD -- STANDARD.md)
           header_log=$(git log --oneline "$newest_tag"..HEAD -- serialize.h)
 
@@ -115,6 +143,8 @@ jobs:
             if library_part "$newest_tag" > /tmp/lib_tag.h && library_part HEAD > /tmp/lib_head.h; then
               if diff -q /tmp/lib_tag.h /tmp/lib_head.h > /dev/null; then
                 echo "serialize.h changed since $newest_tag, but only inside #if SERIALIZE_ENABLE_TESTS — its $(wc -l < /tmp/lib_tag.h | tr -d ' ') library lines are identical. Not a wire change."
+              elif comment_only /tmp/lib_tag.h /tmp/lib_head.h; then
+                echo "serialize.h's library section changed since $newest_tag, but every changed line is a // comment. Not a wire change."
               else
                 header_is_wire="yes"
                 echo "serialize.h's library section changed since $newest_tag ($(diff /tmp/lib_tag.h /tmp/lib_head.h | grep -c '^[<>]') lines)."
