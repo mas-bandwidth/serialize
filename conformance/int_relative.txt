@@ -1,0 +1,121 @@
+# serialize conformance vectors: serialize_int_relative
+#
+# The format is specified in STANDARD.md, "The vector format". Records are
+# separated by blank lines. `consumed` appears on accepted reads only, because
+# after a refusal the stream position is not part of the contract.
+#
+# Every refusal here is the domain rule: STANDARD.md, "int_relative", where the
+# domain is 0 to 2^31 - 1 inclusive and reconstruction is checked in every
+# tier. Each refusal has an accept twin one step inside the domain, sharing its
+# bytes, so a reader that refuses on the bytes rather than on the reconstructed
+# value fails the twin.
+
+operation int_relative
+name one-bit-refuse-past-domain
+param previous = 2147483647
+bytes 01
+expect refused
+
+operation int_relative
+name one-bit-accept-at-domain-top
+param previous = 2147483646
+bytes 01
+expect value = 2147483647
+consumed 1
+
+operation int_relative
+name bounded-3-refuse-past-domain
+param previous = 2147483647
+bytes 02
+expect refused
+
+operation int_relative
+name bounded-3-accept-at-domain-top
+param previous = 2147483645
+bytes 02
+expect value = 2147483647
+consumed 5
+
+operation int_relative
+name bounded-5-refuse-past-domain
+param previous = 2147483647
+bytes 04
+expect refused
+
+operation int_relative
+name bounded-5-accept-at-domain-top
+param previous = 2147483640
+bytes 04
+expect value = 2147483647
+consumed 8
+
+operation int_relative
+name bounded-9-refuse-past-domain
+param previous = 2147483647
+bytes 08 00
+expect refused
+
+operation int_relative
+name bounded-9-accept-at-domain-top
+param previous = 2147483623
+bytes 08 00
+expect value = 2147483647
+consumed 13
+
+operation int_relative
+name bounded-13-refuse-past-domain
+param previous = 2147483647
+bytes 10 00 00
+expect refused
+
+operation int_relative
+name bounded-13-accept-at-domain-top
+param previous = 2147483366
+bytes 10 00 00
+expect value = 2147483647
+consumed 18
+
+operation int_relative
+name bounded-17-refuse-past-domain
+param previous = 2147483647
+bytes 20 00 00
+expect refused
+
+operation int_relative
+name bounded-17-accept-at-domain-top
+param previous = 2147479269
+bytes 20 00 00
+expect value = 2147483647
+consumed 23
+
+operation int_relative
+name absolute-refuse-not-increasing
+param previous = 2147483647
+bytes C0 FF FF FF 1F
+expect refused
+
+operation int_relative
+name absolute-accept-one-above-previous
+param previous = 2147483646
+bytes C0 FF FF FF 1F
+expect value = 2147483647
+consumed 38
+
+operation int_relative
+name absolute-refuse-top-bit-set
+param previous = 100
+bytes 00 00 00 00 20
+expect refused
+
+operation int_relative
+name absolute-refuse-all-bits-set
+param previous = 100
+bytes C0 FF FF FF 3F
+expect refused
+
+operation int_relative
+name absolute-accept-domain-maximum
+param previous = 100
+bytes C0 FF FF FF 1F
+expect value = 2147483647
+consumed 38
