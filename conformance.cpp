@@ -197,7 +197,14 @@ static bool parse_number( const char * text, serialize::int128_t & out )
     {
         return false;
     }
-    serialize::int128_t value = 0;
+
+    // The accumulation runs in the UNSIGNED domain and the sign is applied there too. The corpus
+    // states 128 bit bounds at both extremes -- the full signed range's minimum, and the unsigned
+    // maximum as a decimal -- and accumulating either of those in a signed type overflows, which
+    // is undefined behaviour rather than the wrap the value needs. Unsigned arithmetic wraps by
+    // definition, so the digits land where they should and the two's complement reading happens
+    // once, at the end.
+    serialize::uint128_t value = 0;
     if ( text[0] == '0' && ( text[1] == 'x' || text[1] == 'X' ) )
     {
         text += 2;
@@ -212,7 +219,7 @@ static bool parse_number( const char * text, serialize::int128_t & out )
             {
                 return false;
             }
-            value = value * 16 + serialize::int128_t( digit );
+            value = value * serialize::uint128_t( 16 ) + serialize::uint128_t( digit );
         }
     }
     else
@@ -223,10 +230,14 @@ static bool parse_number( const char * text, serialize::int128_t & out )
             {
                 return false;
             }
-            value = value * 10 + serialize::int128_t( *text - '0' );
+            value = value * serialize::uint128_t( 10 ) + serialize::uint128_t( *text - '0' );
         }
     }
-    out = negative ? -value : value;
+    if ( negative )
+    {
+        value = serialize::uint128_t( 0 ) - value;
+    }
+    out = serialize::int128_t( value );
     return true;
 }
 
@@ -749,7 +760,7 @@ static bool step_value_is_a_number( StepKind kind )
     the steps directly, so what the vectors exercise is the composition the macro performs.
 */
 
-template <typename Stream> static bool run_steps( Stream & stream, Step * steps, int count );
+template <typename Stream> static bool run_steps( Stream & stream, Step * steps, int count, int * stoppedAt = NULL );
 
 static Step * g_failedStep = NULL;      // the step a run stopped on, for the destination check
 
@@ -781,7 +792,7 @@ static int step_span( const Step * steps, int index )
     return 1;
 }
 
-template <typename Stream> static bool run_steps( Stream & stream, Step * steps, int count )
+template <typename Stream> static bool run_steps( Stream & stream, Step * steps, int count, int * stoppedAt )
 {
     for ( int i = 0; i < count; i += step_span( steps, i ) )
     {
@@ -792,6 +803,7 @@ template <typename Stream> static bool run_steps( Stream & stream, Step * steps,
             object.count = (int) steps[i].width;
             if ( !run_nested_object( stream, object ) )
             {
+                if ( stoppedAt ) *stoppedAt = i;
                 return false;
             }
             continue;
@@ -799,6 +811,7 @@ template <typename Stream> static bool run_steps( Stream & stream, Step * steps,
         if ( !run_step( stream, steps[i] ) )
         {
             g_failedStep = &steps[i];
+            if ( stoppedAt ) *stoppedAt = i;
             return false;
         }
     }
@@ -1291,7 +1304,8 @@ static void run_reader( const Vector & vector, Step * steps, int numSteps )
     }
 
     g_failedStep = NULL;
-    const bool accepted = run_steps( stream, steps, numSteps );
+    int stoppedAt = -1;
+    const bool accepted = run_steps( stream, steps, numSteps, &stoppedAt );
 
     if ( vector.expectKind == EXPECT_REFUSED )
     {
@@ -1317,8 +1331,25 @@ static void run_reader( const Vector & vector, Step * steps, int numSteps )
             }
         }
 
-        // failure is terminal: a further read on the same stream must fail too, consuming no
-        // bits and writing no destination, however many readable bits the stream still holds
+        // Failure is terminal, and a sequence states its own successors: every step after the
+        // failing one must fail too, however many readable bits the stream still holds. The
+        // vectors are built so a reader without the latch passes the successor, and one of them
+        // makes the successor a DEGENERATE RANGE — a read that consumes no bits and would
+        // otherwise always succeed, which is the case an implementation checking the length
+        // before the width gets wrong.
+        for ( int i = stoppedAt + step_span( steps, stoppedAt ); i < numSteps; i += step_span( steps, i ) )
+        {
+            if ( run_steps( stream, steps + i, step_span( steps, i ) ) )
+            {
+                printf( "  FAIL %s: step %d succeeded after step %d was refused; failure must be terminal [%s]\n",
+                        vector.name, i + 1, stoppedAt + 1, vector.file );
+                failures++;
+                return;
+            }
+        }
+
+        // and the same rule against a read the vector does not name, so every refused vector
+        // carries the terminality check and not only the sequences that spell a successor
         fail_unless_stream_is_terminal( vector, stream );
         return;
     }
