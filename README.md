@@ -19,6 +19,16 @@ It has the following features:
 * Alignment support so you can align your bitstream to a byte boundary whenever you want
 * Optional template-based serialization so you can write one function that handles both read and write
 
+# Installing
+
+serialize is in `homebrew/core`, so no tap is needed:
+
+```
+brew install serialize
+```
+
+That installs `serialize.h` and the CMake package config, so both `#include <serialize.h>` and `find_package(serialize CONFIG)` work. It is a single header, so copying `serialize.h` into your project works just as well. [BUILDING.md](BUILDING.md) covers building the tests, CMake consumption and the version claims.
+
 # Usage
 
 You can use the bitpacker directly:
