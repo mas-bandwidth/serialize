@@ -146,12 +146,18 @@ performance work here must not relearn:
 - The version lives in two files and a CI job compares them: `project(serialize VERSION ...)`
   in CMakeLists.txt and `SERIALIZE_VERSION` plus its MAJOR/MINOR/PATCH triple in serialize.h.
   Bump both together.
-- The shared conformance corpus is `conformance/`, one file per operation, and
+- The shared conformance corpus is `conformance/`, one file per covered operation, and
   [conformance.cpp](conformance.cpp) runs every vector in it through this library's reader as the
-  ctest target `conformance` (the vector files are globbed at cmake configure time and passed on
-  the command line — a directory walk is not portable across the matrix). It is deliberately not
-  generated from this code: a suite that regenerates its own expectations proves only that the
-  library agrees with itself.
+  ctest target `conformance`. The runner discovers the directory rather than naming files, which
+  STANDARD.md requires of every runner in the family: here the glob is at cmake configure time,
+  with CONFIGURE_DEPENDS so an added or removed file re-runs it, and an empty directory is a
+  configure error. It is deliberately not generated from this code: a suite that regenerates its
+  own expectations proves only that the library agrees with itself.
+- The write side debug assertions are tested by [asserts.cpp](asserts.cpp), the ctest target
+  `asserts`. It defines `serialize_assert` itself, so an assertion firing is an observable result
+  rather than a process death and the target runs in Release too. A macro that narrows the
+  caller's value must assert on the caller's original expression first: an assertion after a
+  narrowing sees a value the narrowing already made legal.
 
 ### What's genuinely good
 

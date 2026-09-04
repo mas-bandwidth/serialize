@@ -25,7 +25,7 @@
 /*
     Runs the shared conformance corpus through this library's reader.
 
-    The corpus is the conformance/ directory: one file per operation, holding the accepted and
+    The corpus is the conformance/ directory: one file per covered operation, holding the accepted and
     refused vectors STANDARD.md's rules require. It is the conformance instrument every
     implementation in the family runs, and it is deliberately not generated from this code — a
     suite that regenerates its own expectations proves only that a port agrees with itself.
@@ -33,11 +33,15 @@
     Each vector states an operation, its parameters, the stream bytes, and either the value a
     conforming reader decodes together with the bits it consumes, or the word `refused`. An
     accepted vector must yield exactly that value and consume exactly that many bits; a refused
-    vector must be refused, and must leave the caller's scalar destination unwritten, which is the
-    obligation Reader Obligations states for every refusal.
+    vector must be refused, must leave the caller's scalar destination unwritten, and must leave
+    the stream terminal, which are the obligations Reader Obligations states for every refusal.
+    Terminality is checked by behavior rather than by an accessor, so the check ports to every
+    implementation in the family: a further read on the same stream must also fail, consume no
+    bits and write nothing.
 
-    The vector files are named on the command line. STANDARD.md, "The vector format", specifies
-    the syntax.
+    The vector files are named on the command line, and CMake discovers them: the glob is in
+    CMakeLists.txt, with CONFIGURE_DEPENDS so a vendored file that no one named still runs.
+    STANDARD.md, "The vector format", specifies the syntax.
 */
 
 #include "serialize.h"
@@ -199,6 +203,30 @@ static void fail( const Vector & vector, const char * detail )
     failures++;
 }
 
+// Failure is terminal (STANDARD.md, Reader Obligations), and a refused vector is where that
+// rule is testable: the stream is checked by behavior rather than by an accessor, so the same
+// check ports to every implementation in the family. A further read must fail, consume no bits
+// and leave its destination alone.
+static void fail_unless_stream_is_terminal( const Vector & vector, serialize::ReadStream & stream )
+{
+    uint32_t after = 0xFFFFFFFF;
+    const int64_t bitsBefore = stream.GetBitsProcessed();
+    if ( stream.SerializeBits( after, 8 ) )
+    {
+        fail( vector, "the stream accepted a read after the refusal: failure is not terminal" );
+        return;
+    }
+    if ( after != 0xFFFFFFFF )
+    {
+        fail( vector, "the read after the refusal wrote to its destination" );
+        return;
+    }
+    if ( stream.GetBitsProcessed() != bitsBefore )
+    {
+        fail( vector, "the read after the refusal consumed bits" );
+    }
+}
+
 // consumed is stated on accepted reads only: after a refusal the stream position is not part of
 // the contract, so no vector states it and no implementation is judged on it
 
@@ -246,6 +274,10 @@ static void run_int_relative( const Vector & vector )
         else if ( current != sentinel )
         {
             fail( vector, "the refused read wrote to the destination" );
+        }
+        else
+        {
+            fail_unless_stream_is_terminal( vector, stream );
         }
         return;
     }
@@ -296,6 +328,10 @@ static void run_int128( const Vector & vector )
         else if ( !( value == sentinel ) )
         {
             fail( vector, "the refused read wrote to the destination" );
+        }
+        else
+        {
+            fail_unless_stream_is_terminal( vector, stream );
         }
         return;
     }

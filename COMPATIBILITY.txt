@@ -1,0 +1,93 @@
+# The serialize family compatibility matrix, machine readable.
+#
+# This file is the matrix. COMPATIBILITY.md renders the same rows for people, and the
+# `family matrix` job in .github/workflows/family-matrix.yml proves both: for every runtime
+# row it checks out that repository at the row's release, diffs the STANDARD.md and
+# conformance/ that release vendors against the pinned commit of this repository, and checks
+# that the release's version file carries the release's version. Any row that fails makes
+# the job red, on every push to main and nightly, so a port that drifts after release is
+# caught rather than assumed.
+#
+# The pins name a commit, never a branch: main moves, and a proof against a moving target
+# proves nothing. standard_commit and corpus_commit are the commit of this repository whose
+# STANDARD.md and conformance/ every listed release vendors. They move when the family
+# re-syncs, which is a deliberate act with a release behind it, not a side effect of a
+# commit landing here.
+#
+# The format is the conformance corpus's, deliberately: `#` begins a comment, blank lines
+# separate records, and each line is a key and its value.
+
+format_version 1.1
+standard_commit 7e42c0fda9c734a323af5c5f79efab82191ca294
+corpus_commit 7e42c0fda9c734a323af5c5f79efab82191ca294
+
+# The C++ implementation is this repository, so it vendors nothing: it is where STANDARD.md
+# and conformance/ live. Its row is checked against the working checkout rather than against
+# a tag, which is also what lets a release's own version bump be checked before it is tagged.
+
+runtime serialize
+language C++
+repository mas-bandwidth/serialize
+release v1.16.1
+version_file CMakeLists.txt
+version_pattern project(serialize VERSION 1.16.1 LANGUAGES CXX)
+
+runtime serialize.c
+language C
+repository mas-bandwidth/serialize.c
+release v1.9.1
+version_file serialize.h
+version_pattern #define SERIALIZE_VERSION "1.9.1"
+
+runtime serialize.cs
+language C#
+repository mas-bandwidth/serialize.cs
+release v1.9.0
+version_file src/Serialize.csproj
+version_pattern <Version>1.9.0</Version>
+
+# serialize.go carries no version string: a Go module's version is its tag, and duplicating
+# it in a file would only create a second place for it to be wrong. The row's release is
+# still checked out and its vendored copies still diffed.
+
+runtime serialize.go
+language Go
+repository mas-bandwidth/serialize.go
+release v1.15.0
+version_file -
+version_pattern -
+
+runtime serialize.rs
+language Rust
+repository mas-bandwidth/serialize.rs
+release v2.3.0
+version_file Cargo.toml
+version_pattern version = "2.3.0"
+
+runtime serialize.js
+language JavaScript
+repository mas-bandwidth/serialize.js
+release v1.4.0
+version_file package.json
+version_pattern "version": "1.4.0"
+
+runtime serialize.dart
+language Dart
+repository mas-bandwidth/serialize.dart
+release v1.1.0
+version_file pubspec.yaml
+version_pattern version: 1.1.0
+
+runtime serialize.java
+language Java
+repository mas-bandwidth/serialize.java
+release v1.1.0
+version_file src/serialize/SerializeUtil.java
+version_pattern public static final String VERSION = "1.1.0";
+
+runtime serialize.elixir
+language Elixir
+repository mas-bandwidth/serialize.elixir
+release v1.1.0
+version_file mix.exs
+version_pattern version: "1.1.0"

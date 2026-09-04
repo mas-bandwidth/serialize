@@ -149,6 +149,8 @@ Packets come off the network, so the read path validates in release builds and d
 
 The wire format itself is specified in [STANDARD.md](STANDARD.md), and the vectors every implementation in the family must agree on live in [conformance/](conformance). The test suite runs all of them.
 
+serialize is one of nine implementations of that format, in C, C++, C#, Dart, Elixir, Go, Java, JavaScript and Rust. Two endpoints interoperate when they run releases carrying the same format version, and [COMPATIBILITY.md](COMPATIBILITY.md) lists the release of each implementation that carries the current one.
+
 # Limitations
 
 * Write buffer sizes must be a multiple of 8 bytes, because the bit writer flushes qwords to memory. Bytes past the end of the written data are only ever written as zeros. Buffers do not need any particular alignment: all memory access goes through memcpy.

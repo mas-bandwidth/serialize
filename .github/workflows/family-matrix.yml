@@ -1,0 +1,217 @@
+name: Family Matrix
+
+# The compatibility matrix is a gate, not a page. COMPATIBILITY.txt claims that nine
+# releases carry format version 1.1 and vendor one pinned commit of this repository's
+# standard and corpus. This job proves every row of that claim against the actual
+# repositories, rather than against the claim itself.
+#
+# Nightly as well as on push, because a row can go wrong with nothing landing here: a port
+# can move a release tag, retag, or amend a vendored file after the fact. A gate that runs
+# only when this repository changes cannot see any of that.
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  schedule:
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  family-matrix:
+    name: family matrix
+    runs-on: ubuntu-24.04
+    steps:
+      # pinned by commit, not by tag: this job's whole subject is the difference between a
+      # pin and a moving target, and a workflow that pins its own actions by tag is not in
+      # a position to make that argument
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7
+        with:
+          fetch-depth: 0        # the pinned commit is read out of this repository's history
+
+      - name: Prove every row
+        run: |
+          set -u
+
+          fail=0
+          rows=0
+          : > /tmp/summary.md
+
+          note() {
+            echo "$1"
+            printf '%s\n' "$1" >> /tmp/summary.md
+          }
+
+          bad() {
+            echo "::error::$1"
+            printf 'FAILED: %s\n' "$1" >> /tmp/summary.md
+            fail=1
+          }
+
+          # the value of key $2 in the COMPATIBILITY.txt record that starts at line $1
+          field() {
+            awk -v start="$1" -v key="$2" '
+              NR < start { next }
+              /^[[:space:]]*$/ { if ( seen ) exit; next }
+              /^#/ { next }
+              {
+                seen = 1
+                if ( $1 == key )
+                {
+                  line = $0
+                  sub( /^[^[:space:]]+[[:space:]]+/, "", line )
+                  print line
+                  exit
+                }
+              }
+            ' COMPATIBILITY.txt
+          }
+
+          # ---------------------------------------------------------------------------
+          # the pins
+          # ---------------------------------------------------------------------------
+
+          format_version=$(sed -nE 's/^format_version[[:space:]]+(.+)$/\1/p' COMPATIBILITY.txt)
+          standard_commit=$(sed -nE 's/^standard_commit[[:space:]]+([0-9a-f]{40})$/\1/p' COMPATIBILITY.txt)
+          corpus_commit=$(sed -nE 's/^corpus_commit[[:space:]]+([0-9a-f]{40})$/\1/p' COMPATIBILITY.txt)
+
+          if [ -z "$format_version" ] || [ -z "$standard_commit" ] || [ -z "$corpus_commit" ]; then
+            echo "::error::COMPATIBILITY.txt is missing format_version, standard_commit or corpus_commit. Both pins must be a full 40 character sha: an abbreviation is not a pin."
+            exit 1
+          fi
+          note "format version $format_version"
+          note "standard pinned at $standard_commit"
+          note "corpus pinned at $corpus_commit"
+
+          if ! grep -Fq "**The format version is ${format_version}.**" STANDARD.md; then
+            bad "STANDARD.md does not state format version ${format_version}, which COMPATIBILITY.txt claims"
+          fi
+          if ! grep -Fq "Format version ${format_version}" COMPATIBILITY.md; then
+            bad "COMPATIBILITY.md does not state format version ${format_version}"
+          fi
+          for pin in "$standard_commit" "$corpus_commit"; do
+            if ! grep -Fq "$pin" COMPATIBILITY.md; then
+              bad "COMPATIBILITY.md does not carry the pinned commit $pin"
+            fi
+          done
+
+          rm -rf /tmp/pinned && mkdir -p /tmp/pinned
+          git cat-file -e "${standard_commit}^{commit}" 2>/dev/null || git fetch --quiet origin "$standard_commit" 2>/dev/null || true
+          git cat-file -e "${corpus_commit}^{commit}" 2>/dev/null || git fetch --quiet origin "$corpus_commit" 2>/dev/null || true
+          if ! git show "${standard_commit}:STANDARD.md" > /tmp/pinned/STANDARD.md 2>/dev/null; then
+            echo "::error::the pinned standard commit $standard_commit is not in this repository"
+            exit 1
+          fi
+          if ! git archive "$corpus_commit" conformance > /tmp/corpus.tar 2>/dev/null; then
+            echo "::error::the pinned corpus commit $corpus_commit is not in this repository"
+            exit 1
+          fi
+          tar -x -C /tmp/pinned -f /tmp/corpus.tar
+          note "pinned corpus: $(ls /tmp/pinned/conformance | tr '\n' ' ')"
+
+          # ---------------------------------------------------------------------------
+          # the rows
+          # ---------------------------------------------------------------------------
+
+          for start in $(grep -n '^runtime ' COMPATIBILITY.txt | cut -d: -f1); do
+            rows=$(( rows + 1 ))
+            runtime=$(field "$start" runtime)
+            language=$(field "$start" language)
+            repository=$(field "$start" repository)
+            release=$(field "$start" release)
+            version_file=$(field "$start" version_file)
+            version_pattern=$(field "$start" version_pattern)
+
+            note ""
+            note "### $runtime ($language) $release"
+
+            if [ -z "$runtime" ] || [ -z "$language" ] || [ -z "$repository" ] || [ -z "$release" ] || [ -z "$version_file" ] || [ -z "$version_pattern" ]; then
+              bad "$runtime: the row is missing a field. runtime, language, repository, release, version_file and version_pattern are all required, and the two version fields are - where the release carries no version file."
+              continue
+            fi
+
+            version="${release#v}"
+
+            # the page must carry the same row, or the page and the gate are two matrices
+            needle=$(printf '`%s`' "$release")
+            if ! grep -F "$runtime" COMPATIBILITY.md | grep -Fq "$needle"; then
+              bad "$runtime: COMPATIBILITY.md does not list $runtime at $release"
+            fi
+
+            # the pattern that proves the version must itself contain the release's version,
+            # or a row could pin a pattern that matches whatever the file happens to say
+            if [ "$version_file" = "-" ]; then
+              note "no version file: the release tag is the version"
+            elif ! printf '%s' "$version_pattern" | grep -Fq "$version"; then
+              bad "$runtime: version_pattern does not contain $version, so it cannot prove the release's version"
+              continue
+            fi
+
+            if [ "$repository" = "$GITHUB_REPOSITORY" ]; then
+              # this repository: checked against the working checkout rather than against the
+              # tag, because the release this row names is cut FROM the checkout, so a tag
+              # check would fail for every commit between the version bump and the release
+              checkout="."
+              note "checked against this checkout, which is where the release is cut from"
+            else
+              checkout="/tmp/family/$runtime"
+              rm -rf "$checkout"
+              if ! git clone --quiet --depth 1 --branch "$release" "https://github.com/${repository}.git" "$checkout"; then
+                bad "$runtime: could not clone $repository at $release"
+                continue
+              fi
+            fi
+
+            if [ "$version_file" != "-" ]; then
+              if [ ! -f "$checkout/$version_file" ]; then
+                bad "$runtime: $version_file does not exist at $release"
+              elif ! grep -Fq "$version_pattern" "$checkout/$version_file"; then
+                bad "$runtime: $version_file at $release does not carry '$version_pattern'. The release and its version file disagree."
+              else
+                note "$version_file carries $version"
+              fi
+            fi
+
+            # the standard and the corpus live in this repository, so this repository has
+            # nothing vendored to diff against the pin
+            if [ "$repository" = "$GITHUB_REPOSITORY" ]; then
+              continue
+            fi
+
+            if diff -u /tmp/pinned/STANDARD.md "$checkout/STANDARD.md" > /tmp/std.diff 2>&1; then
+              note "vendored STANDARD.md matches the pin"
+            else
+              bad "$runtime: the STANDARD.md vendored at $release differs from the pinned commit"
+              head -40 /tmp/std.diff
+            fi
+
+            if diff -ru /tmp/pinned/conformance "$checkout/conformance" > /tmp/corpus.diff 2>&1; then
+              note "vendored conformance/ matches the pin ($(ls "$checkout/conformance" | wc -l | tr -d ' ') files)"
+            else
+              bad "$runtime: the conformance corpus vendored at $release differs from the pinned commit"
+              head -40 /tmp/corpus.diff
+            fi
+          done
+
+          if [ "$rows" -eq 0 ]; then
+            echo "::error::COMPATIBILITY.txt holds no runtime rows. An empty matrix is a broken file, not a pass."
+            exit 1
+          fi
+
+          {
+            echo "## Family matrix"
+            echo ""
+            echo "$rows row(s) checked against format version $format_version."
+            echo ""
+            cat /tmp/summary.md
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::the compatibility matrix does not hold. Every failing row is annotated above."
+            exit 1
+          fi
+
+          echo "every row holds."
