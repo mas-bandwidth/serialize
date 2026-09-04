@@ -1501,9 +1501,13 @@ static void run_vector( const Vector & vector )
         return;
     }
 
+    const int failuresBefore = failures;
     run_reader( vector, steps, numSteps );
 
-    if ( vector.expectKind != EXPECT_REFUSED )
+    // the writer and the measure are handed the values the reader decoded, so running them after
+    // a reader failure reports a second failure about a value that was never decoded. One vector,
+    // one diagnosis.
+    if ( vector.expectKind != EXPECT_REFUSED && failures == failuresBefore )
     {
         // the reader leg leaves the decoded values in the steps, which is what the writer and
         // the measure are handed: a canonical vector's round trip is decode then re-emit
