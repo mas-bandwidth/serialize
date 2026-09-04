@@ -125,6 +125,16 @@ jobs:
           clang++ -std=c++03 -DSERIALIZE_ENABLE_TESTS=1 -DSERIALIZE_DEBUG -U__SIZEOF_INT128__ -Wall -Wextra -ffp-contract=off -fno-rtti test.cpp -o test_cxx03_no_int128
           ./test_cxx03_no_int128
 
+      # The shared corpus at the same floor. The int128 vector is the reason it belongs here as
+      # well as in the cmake matrix: the second build makes the emulated pair the real storage
+      # type, which is the configuration a degenerate 128 bit range last diverged in.
+      - name: Run the conformance corpus at -std=c++03
+        run: |
+          clang++ -std=c++03 -DSERIALIZE_DEBUG -Wall -Wextra -ffp-contract=off -fno-rtti conformance.cpp -o conformance_cxx03
+          ./conformance_cxx03 conformance/*.txt
+          clang++ -std=c++03 -DSERIALIZE_DEBUG -U__SIZEOF_INT128__ -Wall -Wextra -ffp-contract=off -fno-rtti conformance.cpp -o conformance_cxx03_no_int128
+          ./conformance_cxx03_no_int128 conformance/*.txt
+
   conformance:
     name: STANDARD.md conformance
     runs-on: ubuntu-24.04

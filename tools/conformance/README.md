@@ -10,6 +10,15 @@ byte for byte **and refuses everything the document says must be refused**.
 
     cd tools/conformance && go run .
 
+This is one of the two conformance instruments in this repository, and they ask
+different questions. This tool asks whether STANDARD.md, read on its own,
+describes the bytes the implementations actually emit — it decodes pinned real
+emissions with a decoder written from the document. The shared corpus in
+`conformance/` asks the other half: whether this implementation's reader accepts
+and refuses exactly what the document says every implementation in the family
+must, vector for vector. [conformance.cpp](../../conformance.cpp) runs the corpus
+as the ctest target `conformance`. Neither replaces the other.
+
 Standard-library Go only, no compiler for the C++ needed: `golden_wire_bytes`,
 `golden_uint128_bytes`, `golden_int128_bytes`, `pinned_bytes` and the expected
 values are read out of `serialize.h` as data. Exit 0 means the document and the

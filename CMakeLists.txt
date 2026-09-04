@@ -11,7 +11,7 @@ if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
     set(CMAKE_TARGET_MESSAGES OFF)
 endif()
 
-project(serialize VERSION 1.15.0 LANGUAGES CXX)
+project(serialize VERSION 1.16.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
@@ -104,7 +104,19 @@ if(SERIALIZE_BUILD_TESTS)
 
     add_executable(example example.cpp serialize.h)
 
-    foreach(target serialize_test example)
+    # The shared conformance corpus, run through this library's reader. The vector files are named
+    # on the command line rather than discovered at run time, because a directory walk is not
+    # portable across this repo's three platforms and the glob belongs at configure time anyway.
+    # GLOB so a new operation's file is picked up by re-running cmake; CONFIGURE_DEPENDS so an
+    # added or removed file re-runs it on the next build.
+    file(GLOB SERIALIZE_CONFORMANCE_VECTORS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/conformance/*.txt)
+    if(NOT SERIALIZE_CONFORMANCE_VECTORS)
+        message(FATAL_ERROR "conformance/ holds no vector files. The corpus is the conformance instrument; an empty one is a broken checkout, not a pass.")
+    endif()
+    add_executable(serialize_conformance conformance.cpp serialize.h)
+    set_target_properties(serialize_conformance PROPERTIES OUTPUT_NAME conformance)
+
+    foreach(target serialize_test example serialize_conformance)
         target_link_libraries(${target} PRIVATE serialize)
         target_compile_options(${target} PRIVATE ${SERIALIZE_DEV_FLAGS})
         target_compile_definitions(${target} PRIVATE
@@ -115,6 +127,7 @@ if(SERIALIZE_BUILD_TESTS)
 
     enable_testing()
     add_test(NAME test COMMAND serialize_test)
+    add_test(NAME conformance COMMAND serialize_conformance ${SERIALIZE_CONFORMANCE_VECTORS})
 
     # THE SAME SUITE A SECOND TIME AT -ffp-contract=on, AND A THIRD TIME AT
     # -ffp-contract=fast. This is not belt and braces; these are the only builds in which the

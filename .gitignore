@@ -40,6 +40,9 @@ Testing/
 *.vcxproj.*
 *.xcodeproj/
 
+# the conformance checker, when it is built rather than run with `go run .`
+/tools/conformance/conformance
+
 # libfuzzer artifacts
 crash-*
 oom-*

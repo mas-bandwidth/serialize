@@ -172,6 +172,25 @@ func decodeCompressedFloat(r *BitReader, min, max, res float32) (float32, error)
 	return scaled + min, nil
 }
 
+// relativeMax is the top of int_relative's domain: STANDARD.md states the
+// domain as 0 to 2^31 - 1 inclusive, for `previous` as well as `current`.
+const relativeMax = 1<<31 - 1
+
+// relativeAccept applies the reconstruction rule STANDARD.md states for EVERY tier:
+// reconstruct in a width that cannot wrap, then compare the result against the
+// domain and against previous, and refuse the read unless it lies in the
+// domain and is strictly greater than previous. int64 is the width that cannot
+// wrap here, because both operands come from a 32-bit domain.
+func relativeAccept(current, prev int64) (int64, error) {
+	if current < 0 || current > relativeMax {
+		return 0, fmt.Errorf("reconstructed current=%d is outside the domain [0,%d]", current, relativeMax)
+	}
+	if current <= prev {
+		return 0, fmt.Errorf("reconstructed current=%d, not greater than previous=%d", current, prev)
+	}
+	return current, nil
+}
+
 // relative decodes STANDARD.md's int_relative: a SIX-tier flag ladder, then an
 // absolute form.
 //
@@ -193,7 +212,7 @@ func relative(r *BitReader, prev int64) (int64, error) {
 		return 0, err
 	}
 	if flag == 1 {
-		return prev + 1, nil
+		return relativeAccept(prev+1, prev)
 	}
 	for _, t := range tiers {
 		flag, err = r.bits(1)
@@ -205,20 +224,20 @@ func relative(r *BitReader, prev int64) (int64, error) {
 			if err != nil {
 				return 0, err
 			}
-			return prev + d, nil
+			return relativeAccept(prev+d, prev)
 		}
 	}
+	// The absolute tier transmits current, not the difference, and its 32 raw
+	// bits are UNSIGNED: a value with the top bit set is outside the domain,
+	// and a reader that takes the group into a signed sequence type first has
+	// already left the domain — the two readings disagree about the same byte
+	// sequence. Reading into int64 keeps the group unsigned and lets the
+	// domain check do the refusing.
 	cur, err := r.bits(32)
 	if err != nil {
 		return 0, err
 	}
-	current := int64(cur)
-	// The absolute form carries no ordering guarantee of its own, so the
-	// reader must check it — STANDARD.md says so in as many words.
-	if current <= prev {
-		return 0, fmt.Errorf("absolute tier decoded current=%d, not greater than previous=%d", current, prev)
-	}
-	return current, nil
+	return relativeAccept(int64(cur), prev)
 }
 
 // fixed decodes STANDARD.md's fixed point: an offset encoding over the raw
@@ -663,23 +682,19 @@ func main() {
 	// refused." Until now this tool exercised only the first half (issue
 	// #55). Each stream below is one a conforming reader MUST refuse, decoded
 	// by the document's own rules — a decode that SUCCEEDS is the failure.
-	//
-	// Two refusal classes are deliberately absent, because each turns on a
-	// ruling PR #60 leaves open, and a vector here would pre-decide it:
-	//   - trailing bits after the final operation: the draft says they cannot
-	//     invalidate (no operation reads them); the alternative ruling would
-	//     require readers to check them zero, and only then would a refusal
-	//     vector exist. Awaiting PR #60.
-	//   - reads past the end of the caller's buffer: the draft rules the two
-	//     caller memory contracts (over-allocate vs priced window) both
-	//     conforming, so there is no single behavior to pin. Awaiting PR #60.
-
 	refuse := func(name string, err error) {
 		c.n++
 		if err == nil {
 			c.fails = append(c.fails, fmt.Sprintf("%s: decode succeeded, the document requires refusal", name))
 		}
 	}
+
+	// reading past the end: an operation that would consume more bits than
+	// remain fails the read. It must not produce a partial value, zero-fill
+	// the missing bits, or wrap. A ranged int over [0,1000] is 10 bits, and
+	// one byte is not enough for it.
+	_, err = sint(NewBitReader([]byte{0xFF}), 0, 1000)
+	refuse("ranged int with only 8 of its 10 bits present", err)
 
 	// ranged int: [0,10] is 4 bits, so offsets 11..15 are expressible and
 	// must be refused — reject, never clamp. 10 is the accept boundary.
@@ -698,23 +713,30 @@ func main() {
 		refuse("align with non-zero padding", rp.align())
 	}
 
-	// int_relative: the absolute form carries no ordering guarantee of its
-	// own, so the reader must check current > previous and fail otherwise.
-	// Both streams are the absolute form against previous = 100: one equal,
-	// one less.
+	// int_relative: every tier's reconstruction is checked against the domain
+	// (0 to 2^31 - 1) and against previous. The first two streams are the
+	// absolute form against previous = 100, one equal and one less; the third
+	// is the absolute form with the top bit set, which is outside the domain
+	// and is the vector a reader that takes the group into a signed sequence
+	// type accepts as negative; the last is the one-bit tier against a
+	// previous at the top of the domain, where the reconstruction runs past
+	// it and a reader that wraps in 32 bits accepts.
 	for _, tc := range []struct {
 		stream string
+		prev   int64
 		note   string
 	}{
-		{"0019000000", "absolute current == previous"},
-		{"800c000000", "absolute current < previous"},
+		{"0019000000", 100, "absolute current == previous"},
+		{"800c000000", 100, "absolute current < previous"},
+		{"0000000020", 100, "absolute top bit set, outside the domain"},
+		{"01", relativeMax, "one-bit tier reconstructing past the top of the domain"},
 	} {
 		raw := make([]byte, len(tc.stream)/2)
 		for i := range raw {
 			b, _ := strconv.ParseUint(tc.stream[i*2:i*2+2], 16, 8)
 			raw[i] = byte(b)
 		}
-		_, err := relative(NewBitReader(raw), 100)
+		_, err := relative(NewBitReader(raw), tc.prev)
 		refuse(fmt.Sprintf("int_relative %s", tc.note), err)
 	}
 
