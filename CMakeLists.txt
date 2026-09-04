@@ -161,7 +161,7 @@ if(SERIALIZE_BUILD_TESTS)
     # quietly stopped sabotaging anything is worse than no control at all. conformance.cpp is
     # copied alongside the sabotaged header because it includes "serialize.h" with quotes, which
     # resolves against the including file's own directory first.
-    set(SERIALIZE_CONTROL_NAMES align-padding ranged-reconstruction ranged-range)
+    set(SERIALIZE_CONTROL_NAMES align-padding ranged-reconstruction ranged-range fixed-degenerate-terminal)
     set(SERIALIZE_CONTROL_NEEDLE_align-padding
         "                if ( value != 0 )")
     set(SERIALIZE_CONTROL_RULE_align-padding
@@ -178,6 +178,14 @@ if(SERIALIZE_BUILD_TESTS)
         "            if ( unsigned_value > uint32_t(max) - uint32_t(min) )")
     set(SERIALIZE_CONTROL_RULE_ranged-range
         "a ranged int whose offset is past the span is refused")
+    # The degenerate fixed point field, which consumes no bits and would otherwise always
+    # succeed. The needle appears in both FixedPointSerializer specializations and both are
+    # sabotaged, which is what the rule needs: a zero bit field is zero bits whatever operation
+    # declares it and whatever storage width carries it.
+    set(SERIALIZE_CONTROL_NEEDLE_fixed-degenerate-terminal
+        "                if ( !stream.SerializeInteger( degenerate, 0, 0 ) )")
+    set(SERIALIZE_CONTROL_RULE_fixed-degenerate-terminal
+        "every read consults the failure state, zero bit reads included")
     # each replacement keeps the sabotaged line compiling warning-free: the padding is at most
     # seven bits, so comparing it against 0xFFFFFFFF is a condition that never holds while still
     # reading the variable the deleted rule read
@@ -189,6 +197,10 @@ if(SERIALIZE_BUILD_TESTS)
     # the sabotaged condition never holds while still reading every variable the deleted rule read
     set(SERIALIZE_CONTROL_PATCH_ranged-range
         "            if ( uint64_t(unsigned_value) > uint64_t( uint32_t(max) - uint32_t(min) ) + 0xFFFFFFFFull ) // NEGATIVE CONTROL: this rule is deleted on purpose")
+    # a refused read leaves its destination unwritten, so the added conjunct is false exactly
+    # when the deleted rule would have fired, and the sabotaged line still reads both operands
+    set(SERIALIZE_CONTROL_PATCH_fixed-degenerate-terminal
+        "                if ( !stream.SerializeInteger( degenerate, 0, 0 ) && degenerate != 0 ) // NEGATIVE CONTROL: this rule is deleted on purpose")
 
     file(READ ${CMAKE_CURRENT_SOURCE_DIR}/serialize.h SERIALIZE_HEADER_TEXT)
     foreach(control ${SERIALIZE_CONTROL_NAMES})

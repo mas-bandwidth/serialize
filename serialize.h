@@ -3584,7 +3584,13 @@ namespace serialize
 
             if ( MinUnits == MaxUnits )
             {
-                // degenerate range: the value IS the range, nothing to send (STANDARD.md: min == max costs zero bits, on every storage width)
+                // degenerate range: the value IS the range, nothing to send (STANDARD.md: min == max costs zero bits, on every storage width).
+                // the zero bit field still goes through the stream, as a degenerate ranged integer, because every read consults the failure state before it does anything else: a fixed point field on a stream that has already failed must refuse, exactly as a degenerate serialize_int does. On write and on measure this costs nothing and emits nothing
+                int32_t degenerate = 0;
+                if ( !stream.SerializeInteger( degenerate, 0, 0 ) )
+                {
+                    return false;
+                }
                 if ( Stream::IsWriting )
                 {
                     serialize_assert( uint64_t( value ) == raw_min );       // all checking is performed by debug asserts on write
@@ -3681,7 +3687,13 @@ namespace serialize
             {
                 // degenerate range: the value IS the range, nothing to send. the wide path must agree
                 // with the narrow path here — FractionalBits of zeros is NOT a degenerate encoding
-                // (STANDARD.md: min == max costs zero bits, on every storage width)
+                // (STANDARD.md: min == max costs zero bits, on every storage width) — and it must
+                // consult the failure state through the stream for the same reason the narrow path does
+                int32_t degenerate = 0;
+                if ( !stream.SerializeInteger( degenerate, 0, 0 ) )
+                {
+                    return false;
+                }
                 if ( Stream::IsWriting )
                 {
                     serialize_assert( Unsigned( value ) == raw_min );       // all checking is performed by debug asserts on write

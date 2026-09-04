@@ -156,12 +156,13 @@ performance work here must not relearn:
 - Three ctest targets are NEGATIVE CONTROLS, inverted with `WILL_FAIL`, and they exist because a
   gate nobody has seen go red is a claim rather than a measurement:
   `conformance-control-unknown-operation` proves the runner fails a vector whose operation it
-  cannot drive, and `conformance-control-align-padding` and the two
-  `conformance-control-ranged-*` targets build a scratch copy of the header with one line of a
-  refusal rule deleted and require the corpus to go red on exactly the vectors that pin it. A
-  needle that stops matching is a configure error, never a silent no-op. A rule guarded twice
-  cannot be controlled this way, which is why the read side range rule lives in exactly one
-  place at each width.
+  cannot drive, and the four `conformance-control-*` sabotage targets each build a scratch copy
+  of the header with one line of a refusal rule deleted and require the corpus to go red on
+  exactly the vectors that pin it: the align zero-padding check, the ranged int's
+  reconstruction, the ranged int's range check, and the failure state consult in the degenerate
+  fixed point field. A needle that stops matching is a configure error, never a silent no-op. A
+  rule guarded twice cannot be controlled this way, which is why the read side range rule lives
+  in exactly one place at each width.
 - The whole 112-byte golden message is printed in STANDARD.md and carried in
   `conformance/message.txt`. Its bytes come from the corpus encoder in `tools/conformance`,
   which is written from the document, and the same tool requires that encoder, the page's byte

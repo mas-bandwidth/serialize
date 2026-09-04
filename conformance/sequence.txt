@@ -195,6 +195,20 @@ param step = int 7 7
 bytes FF
 expect refused
 
+# The same vector with a degenerate FIXED POINT field as the successor. The two
+# are twins on purpose: a zero-bit field is zero bits whatever operation
+# declares it, so an implementation whose ranged int consults the failure state
+# before its degenerate case while its fixed point path returns early passes
+# the vector above and fails this one. Every read consults the failure state
+# before it does anything else, zero-bit reads included.
+
+operation sequence
+name sequence-refusal-is-terminal-before-a-zero-bit-fixed-field
+param step = bits 16
+param step = fixed 16 16 7 7
+bytes FF
+expect refused
+
 # Terminal failure inside a composite: the string's payload runs past the end,
 # and the wstring after it must refuse rather than resynchronize.
 

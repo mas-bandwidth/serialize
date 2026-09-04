@@ -1089,7 +1089,7 @@ operations are:
 | `string.txt` | `string` | valid UTF-8 accepted, and invalid UTF-8, an interior NUL and an out-of-range length refused |
 | `wstring.txt` | `wstring` | no alignment anywhere, a surrogate pair accepted, and an unpaired surrogate, a group above `0xFFFF` and a zero group refused |
 | `object.txt` | `object` | that it adds no bytes of its own, each vector twinned with the same operations unnested |
-| `sequence.txt` | sequences of operations | alignment after an odd width, a zero-bit field between wide ones, terminal failure, and the measure floor |
+| `sequence.txt` | sequences of operations | alignment after an odd width, a zero-bit field between wide ones, terminal failure before a zero-bit ranged field and before a zero-bit fixed point one, and the measure floor |
 | `message.txt` | the Worked Example's message | three operations across an alignment boundary, and the whole 112-byte golden message, byte for byte |
 
 Adding a file here is how a rule becomes a family obligation, and the table
