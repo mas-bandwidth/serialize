@@ -1,0 +1,231 @@
+# The consumer path: the library as an outside user actually gets it.
+#
+# Every other job in this repository builds the working tree. That proves the
+# code is right and proves nothing about distribution, which is what a consumer
+# depends on. A formula can sit at a version behind the newest tag, install a
+# header that says it is something else, or stop resolving through
+# find_package, with every in-repo check still green.
+#
+# So this job never builds the working tree. It installs serialize from
+# homebrew/core, then configures a fresh CMake project in a temporary directory
+# outside the checkout that finds the installed package the documented way,
+# encodes a three field message, decodes it, and checks the bytes against a
+# literal written here rather than recomputed by the code under test.
+#
+# The byte literal is the family's, not this implementation's: the same three
+# values encode to the same four bytes in every port, so a change to it is a
+# wire change and belongs in STANDARD.md first.
+name: consumer
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  schedule:
+    # nightly, because homebrew/core can move without a push to this
+    # repository: a formula bump shows up here the following morning
+    - cron: "41 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  consumer:
+    name: consumer
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      HOMEBREW_NO_ANALYTICS: 1
+      HOMEBREW_NO_ENV_HINTS: 1
+      HOMEBREW_NO_INSTALL_CLEANUP: 1
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Consume the published formula
+        run: |
+          set -u
+          status=0
+
+          if ! command -v brew >/dev/null 2>&1; then
+            if [ -x /home/linuxbrew/.linuxbrew/bin/brew ]; then
+              eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+            else
+              echo "::error::Homebrew is not available on this runner, so the consumer path cannot be checked"
+              exit 1
+            fi
+          fi
+
+          # the version this repository claims, from the header that ships
+          repo=$(sed -n 's/^#define SERIALIZE_VERSION "\(.*\)"/\1/p' serialize.h | head -1)
+          if [ -z "$repo" ]; then
+            echo "::error::could not read SERIALIZE_VERSION out of serialize.h"
+            exit 1
+          fi
+
+          # the version homebrew/core actually serves, from the index rather
+          # than from whatever tap the runner image happens to carry
+          published=$(curl -fsS https://formulae.brew.sh/api/formula/serialize.json \
+            | jq -r '.versions.stable')
+
+          echo "repository: $repo"
+          echo "formula:    ${published:-none}"
+
+          if [ -z "$published" ] || [ "$published" = "null" ]; then
+            echo "::error::homebrew/core serves no version of serialize. There is no consumer path to check"
+            exit 1
+          fi
+
+          brew update --quiet
+          brew install serialize
+          installed=$(brew list --versions serialize | awk '{print $2}')
+          prefix=$(brew --prefix serialize)
+          echo "installed:  $installed at $prefix"
+
+          if [ "$installed" != "$published" ]; then
+            echo "::error::this runner's Homebrew installed $installed while homebrew/core serves $published. The tap on the image is behind the index"
+            status=1
+          fi
+
+          # a fresh consumer, outside the checkout, finding the installed
+          # package the way BUILDING.md tells a user to
+          consumer="$RUNNER_TEMP/consumer"
+          rm -rf "$consumer"
+          mkdir -p "$consumer"
+
+          cat > "$consumer/CMakeLists.txt" <<'CMAKE'
+          cmake_minimum_required(VERSION 3.16)
+          project(consumer LANGUAGES CXX)
+          find_package(serialize CONFIG REQUIRED)
+          add_executable(consumer main.cpp)
+          target_link_libraries(consumer PRIVATE serialize::serialize)
+          CMAKE
+
+          cat > "$consumer/main.cpp" <<'CPP'
+          // A consumer of the published formula: the include and the CMake target
+          // are the ones BUILDING.md documents, and nothing here comes from the
+          // repository this job checked out.
+          #include <serialize.h>
+
+          #include <cstdio>
+          #include <cstring>
+
+          struct Message
+          {
+              bool alive;
+              int health;
+              uint16_t sequence;
+
+              // three fields, one function, read and write from the same source
+              template <typename Stream> bool Serialize( Stream & stream )
+              {
+                  serialize_bool( stream, alive );
+                  serialize_int( stream, health, 0, 1000 );
+                  serialize_uint16( stream, sequence );
+                  return true;
+              }
+          };
+
+          int main()
+          {
+              // 1 bit + 10 bits + 16 bits = 27 bits, four bytes on the wire
+              const uint8_t want[4] = { 121, 149, 132, 0 };
+
+              printf( "SERIALIZE_VERSION %s\n", SERIALIZE_VERSION );
+
+              uint8_t buffer[64];
+              memset( buffer, 0, sizeof( buffer ) );
+
+              Message input;
+              input.alive = true;
+              input.health = 700;
+              input.sequence = 4242;
+
+              serialize::WriteStream writeStream( buffer, sizeof( buffer ) );
+              if ( !input.Serialize( writeStream ) )
+              {
+                  printf( "write failed\n" );
+                  return 1;
+              }
+              writeStream.Flush();
+
+              const int bytesWritten = (int) writeStream.GetBytesProcessed();
+              printf( "encoded %d bytes:", bytesWritten );
+              for ( int i = 0; i < bytesWritten; i++ )
+              {
+                  printf( " %d", buffer[i] );
+              }
+              printf( "\n" );
+
+              if ( bytesWritten != 4 || memcmp( buffer, want, 4 ) != 0 )
+              {
+                  printf( "wrong bytes: want %d %d %d %d\n", want[0], want[1], want[2], want[3] );
+                  return 1;
+              }
+
+              Message output;
+              memset( &output, 0, sizeof( output ) );
+              serialize::ReadStream readStream( buffer, bytesWritten );
+              if ( !output.Serialize( readStream ) )
+              {
+                  printf( "read failed\n" );
+                  return 1;
+              }
+              if ( !output.alive || output.health != 700 || output.sequence != 4242 )
+              {
+                  printf( "wrong values: %d %d %d\n", (int) output.alive, output.health, (int) output.sequence );
+                  return 1;
+              }
+              printf( "decoded %d %d %d\n", (int) output.alive, output.health, (int) output.sequence );
+              return 0;
+          }
+          CPP
+
+          cmake -S "$consumer" -B "$consumer/build" -DCMAKE_PREFIX_PATH="$prefix" \
+            -DCMAKE_BUILD_TYPE=Release > "$consumer/configure.log" 2>&1 || {
+              echo "::error::find_package(serialize CONFIG REQUIRED) failed against the installed formula"
+              cat "$consumer/configure.log"
+              exit 1
+            }
+          cmake --build "$consumer/build" --config Release
+
+          if "$consumer/build/consumer" | tee "$consumer/run.log"; then
+            :
+          else
+            echo "::error::the consumer program failed against the formula at $installed"
+            status=1
+          fi
+
+          # the compatibility check. The formula installs serialize.h and the
+          # CMake package config, so the version the package states is the
+          # constant in the header a consumer actually compiles against
+          package_version=$(sed -n 's/^SERIALIZE_VERSION \(.*\)$/\1/p' "$consumer/run.log" | head -1)
+          echo "version constant in the installed header: ${package_version:-unknown}"
+          if [ -n "$package_version" ] && [ "$package_version" != "$repo" ]; then
+            echo "::error::version mismatch: the installed serialize.h states $package_version and this repository states $repo"
+            status=1
+          fi
+
+          {
+            echo "## Consumer path"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| formula | \`homebrew/core/serialize\` |"
+            echo "| version here | \`$repo\` |"
+            echo "| version in homebrew/core | \`$published\` |"
+            echo "| version installed on this runner | \`$installed\` |"
+            echo "| version constant in the installed header | \`${package_version:-unknown}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # the drift gate. A repository ahead of the formula is a release that
+          # exists here and nowhere a consumer can reach
+          if [ "$repo" != "$published" ] && \
+             [ "$(printf '%s\n%s\n' "$published" "$repo" | sort -V | tail -n1)" = "$repo" ]; then
+            echo "::error::published version drift: this repository is at $repo and homebrew/core serves $published. Bump the formula before the consumer path can be checked against $repo"
+            status=1
+          fi
+
+          exit "$status"
