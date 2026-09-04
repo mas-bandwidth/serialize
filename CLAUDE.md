@@ -21,7 +21,14 @@ DECISIONS THAT READ AS BUGS (they are not — do not "fix" them)
   loads 64-bit windows at byte granularity; bytes past the end are loaded but never
   interpreted). These contracts are what make the qword-flush writer and the branchless
   reader possible. Do not remove them or add tail handling to avoid them.
-- `serialize_int_relative` requires strictly increasing values.
+- `serialize_int_relative` requires strictly increasing values over the domain 0 to 2^31 - 1,
+  for `previous` as well as `current`, and there are no wrap semantics. A `previous` outside the
+  domain is caller error (debug asserted); a `current` off the wire outside it is refused, in
+  every tier, reconstructed in a width that cannot wrap.
+- **A refused read leaves a scalar destination unwritten, and fails the stream for good.** The
+  first refusal poisons `BitReader`'s position past the end, so the past-end check every read
+  already performs refuses every later read — the latch costs the read path nothing. `Initialize`
+  clears it. Refusals decided outside the stream route through `serialize::serialize_fail`.
 - `wstring` is 32 bits per character on the wire, for portability across 2/4-byte platforms.
 - **The `__restrict`-qualified `this` on BitWriter::WriteBits/WriteBytes/FlushBits is a
   measured optimization (writes up to +152% in generated code), not decoration** — and the
@@ -127,7 +134,7 @@ performance work here must not relearn:
 
 - All tests pass in Debug and Release on Linux x64, macOS Apple Silicon,
   Windows x64, and big-endian s390x (GCC cross-compile under QEMU), on
-  every push.
+  every push, and the conformance corpus runs with them.
 - The golden wire-format test proves all four platforms — including big
   endian — produce and decode byte-identical wire data.
 - All tests pass under ASan + UBSan including the alignment sanitizer.
@@ -136,18 +143,15 @@ performance work here must not relearn:
 - Compiles clean with `-Wall -Wextra -Wpedantic`. `-Wconversion -Wshadow`
   produces ~80 warnings — implicit narrowing is a deliberate style here
   (the header disables MSVC C4244 for the same reason).
-- Header and CMake version is 1.4.3 (`SERIALIZE_VERSION`), matching the
-  v1.4.3 tag and GitHub release (latest, July 2026; v1.4.1 was skipped).
-  1.4.3 tightens the write buffer contract to multiple-of-8 sizes (docs
-  and debug assert; no behavior change for conforming buffers). 1.4.2
-  carries the qword-flush writer (~25% faster writes), the
-  symmetric write-side allocation contract, and the README limitations
-  fixes. 1.4.0 carries the branchless
-  reader and its breaking allocation contract change (read buffers must
-  extend 8 bytes past the data, previously round-up-to-4), plus 64-bit bit
-  counts throughout, which removes the old 256 MB buffer limit
-  (test_large_buffer round trips across the old 2^31-bit boundary); the
-  wire format is unchanged.
+- The version lives in two files and a CI job compares them: `project(serialize VERSION ...)`
+  in CMakeLists.txt and `SERIALIZE_VERSION` plus its MAJOR/MINOR/PATCH triple in serialize.h.
+  Bump both together.
+- The shared conformance corpus is `conformance/`, one file per operation, and
+  [conformance.cpp](conformance.cpp) runs every vector in it through this library's reader as the
+  ctest target `conformance` (the vector files are globbed at cmake configure time and passed on
+  the command line — a directory walk is not portable across the matrix). It is deliberately not
+  generated from this code: a suite that regenerates its own expectations proves only that the
+  library agrees with itself.
 
 ### What's genuinely good
 
@@ -225,7 +229,12 @@ confirmed as intentional design:
   qword-flush writer and the branchless reader possible. Documented on
   the constructors. Do not propose removing these contracts or adding
   tail handling to avoid them.
-- `serialize_int_relative` requires strictly increasing values.
+- `serialize_int_relative` requires strictly increasing values over the domain
+  0 to 2^31 - 1, and has no wrap semantics.
+- **A refused read leaves a scalar destination unwritten, and failure is
+  terminal**: the stream refuses every later read until it is re-initialized.
+  A read into a caller-owned buffer (`bytes`, `string`, `wstring`) leaves that
+  buffer unspecified, and the copy paths are not restructured for it.
 - `wstring` wire format is 32 bits per character — portable across 2/4-byte
   `wchar_t` platforms, but wasteful.
 - `MeasureStream` is conservative: every align counts as 7 bits.
@@ -242,11 +251,4 @@ fix around them (CI, sanitizers, fuzzing, doc drift) has been done. Fuzz coverag
 push, plus a nightly 1-hour run (.github/workflows/nightly-fuzz.yml) whose
 corpus accumulates across runs via the actions cache and which uploads crash
 reproducers as artifacts on failure.
-
-### Open items
-
-- ~~The v1.3.0 tag is not pushed~~ — released July 2026: tag v1.3.0,
-  GitHub release "Stable Release" marked latest, covering everything
-  since v1.2.5 (CMake switch, CI/sanitizers/fuzzing/golden wire test,
-  writer alignment guarantee, `serialize_int64`, header hygiene).
 

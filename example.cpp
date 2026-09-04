@@ -255,7 +255,9 @@ struct PacketC
     template <typename Stream> bool Serialize( Stream & stream )
     {
         serialize_int( stream, numProperties, 0, MaxProperties );
-        int lastPropertyIndex = -1;
+        // serialize_int_relative's domain is 0 to 2^31 - 1 for the previous value as well as the
+        // current one, so the walk starts at the floor of the domain and the indices start above it
+        int lastPropertyIndex = 0;
         for ( int i = 0; i < numProperties; i++ )
         {
             serialize_int_relative( stream, lastPropertyIndex, propertyIndex[i] );
@@ -474,7 +476,7 @@ int main()
             {
                 input.c.numProperties = rand() % ( MaxProperties + 1 );
 
-                int propertyIndex = 0;
+                int propertyIndex = 1;              // strictly greater than the walk's starting value of 0
 
                 for ( int j = 0; j < input.c.numProperties; j++ )
                 {

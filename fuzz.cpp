@@ -227,7 +227,7 @@ template <typename Stream> bool FuzzRead( Stream & stream, const uint8_t * ops, 
 
             case 13:
             {
-                int previous = param * 1000 - 8000;
+                int previous = param * 1000;                    // int_relative's domain starts at 0: a negative previous is caller error
                 int current = 0;
                 serialize_int_relative( stream, previous, current );
             }
@@ -547,7 +547,7 @@ template <typename Stream> bool FuzzRoundTrip( Stream & stream, const uint8_t * 
 
             case 13:
             {
-                const int previous = param * 1000 - 8000;
+                const int previous = param * 1000;              // int_relative's domain starts at 0: a negative previous is caller error
                 const int expected = previous + 1 + int( pool.NextUint32() % 1000000 );         // strictly greater than previous
                 int value = Stream::IsWriting ? expected : 0;
                 serialize_int_relative( stream, previous, value );
