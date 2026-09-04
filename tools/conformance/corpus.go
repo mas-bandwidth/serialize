@@ -27,7 +27,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"unicode/utf16"
 	"unicode/utf8"
 )
 
@@ -445,8 +444,7 @@ func encodeStep(w *BitWriter, s *step) error {
 		writeGroups(w, s.bits, 64)
 	case stepCompressedFloat:
 		f := math.Float32frombits(uint32(s.bits.Uint64()))
-		maxIntegerValue, n := compressedFloatParams(s.fmin, s.fmax, s.fres)
-		_ = maxIntegerValue
+		_, n := compressedFloatParams(s.fmin, s.fmax, s.fres)
 		w.bits(quantizeCompressedFloat(f, s.fmin, s.fmax, s.fres), n)
 	case stepBytes:
 		w.writeBytes(s.data)
@@ -688,7 +686,7 @@ func parseNumber(text string) (*big.Int, bool) {
 // ---------------------------------------------------------------------------
 // building steps
 
-func buildStep(spec string, v *vector) (*step, error) {
+func buildStep(spec string) (*step, error) {
 	words := strings.Fields(spec)
 	if len(words) == 0 {
 		return nil, fmt.Errorf("empty step")
@@ -726,7 +724,6 @@ func buildStep(spec string, v *vector) (*step, error) {
 	default:
 		return nil, fmt.Errorf("no runner for step %q", spec)
 	}
-	_ = v
 	return s, nil
 }
 
@@ -734,7 +731,7 @@ func buildSteps(v *vector) ([]*step, error) {
 	if v.operation == "sequence" {
 		var out []*step
 		for _, spec := range v.stepText {
-			s, err := buildStep(spec, v)
+			s, err := buildStep(spec)
 			if err != nil {
 				return nil, err
 			}
@@ -1065,9 +1062,3 @@ func runCorpusFiles(c *checker, files []string) {
 		}
 	}
 }
-
-// utf16 is imported for the boundary conversion an implementation with a 4 byte
-// wide character performs; the checker keeps the units it read, so the helper is
-// referenced here to state that the conversion is the platform's and not the
-// wire's.
-var _ = utf16.IsSurrogate
