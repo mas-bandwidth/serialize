@@ -153,6 +153,20 @@ performance work here must not relearn:
   with CONFIGURE_DEPENDS so an added or removed file re-runs it, and an empty directory is a
   configure error. It is deliberately not generated from this code: a suite that regenerates its
   own expectations proves only that the library agrees with itself.
+- Three ctest targets are NEGATIVE CONTROLS, inverted with `WILL_FAIL`, and they exist because a
+  gate nobody has seen go red is a claim rather than a measurement:
+  `conformance-control-unknown-operation` proves the runner fails a vector whose operation it
+  cannot drive, and `conformance-control-align-padding` and the two
+  `conformance-control-ranged-*` targets build a scratch copy of the header with one line of a
+  refusal rule deleted and require the corpus to go red on exactly the vectors that pin it. A
+  needle that stops matching is a configure error, never a silent no-op. A rule guarded twice
+  cannot be controlled this way, which is why the read side range rule lives in exactly one
+  place at each width.
+- The whole 112-byte golden message is printed in STANDARD.md and carried in
+  `conformance/message.txt`. Its bytes come from the corpus encoder in `tools/conformance`,
+  which is written from the document, and the same tool requires that encoder, the page's byte
+  block and `golden_wire_bytes` to agree byte for byte. An implementation's output never
+  becomes the page's or the corpus's source.
 - The write side debug assertions are tested by [asserts.cpp](asserts.cpp), the ctest target
   `asserts`. It defines `serialize_assert` itself, so an assertion firing is an observable result
   rather than a process death and the target runs in Release too. A macro that narrows the

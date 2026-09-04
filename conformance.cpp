@@ -82,7 +82,7 @@ const int MaxBytes = 256;
 const int MaxSlack = 8;                 // the buffer contract: at least 8 bytes past the data
 const uint8_t SlackFill = 0xA5;         // non-zero, so a read that strays past the end is visible
 const int MaxParams = 8;
-const int MaxSteps = 8;
+const int MaxSteps = 48;                // the golden message is 28 operations long
 
 enum ExpectKind
 {
@@ -455,13 +455,17 @@ enum FixedDeclaration
     FIXED_Q32_0_0_5,
     FIXED_Q16_16_7_7,
     FIXED_Q16_16_M32768_32767,
+    FIXED_Q16_16_M2000_2000,
+    FIXED_Q16_16_0_30000,
     FIXED_Q48_16_0_131072,
+    FIXED_Q48_16_M100000_100000,
     FIXED_Q112_16_M9_M9,
     FIXED_Q112_16_0_2P58,
     FIXED_Q112_16_M2P57_2P57,
     FIXED_Q64_64_0_0,
     FIXED_Q64_64_3_3,
-    FIXED_Q64_64_0_INT64MAX
+    FIXED_Q64_64_0_INT64MAX,
+    FIXED_Q64_64_FULL_INT64
 };
 
 static FixedDeclaration fixed_declaration( int64_t integerBits, int64_t fractionBits, serialize::int128_t min, serialize::int128_t max )
@@ -473,13 +477,17 @@ static FixedDeclaration fixed_declaration( int64_t integerBits, int64_t fraction
     if ( integerBits == 32  && fractionBits == 0  && min == 0    && max == 5 )       return FIXED_Q32_0_0_5;
     if ( integerBits == 16  && fractionBits == 16 && min == 7    && max == 7 )       return FIXED_Q16_16_7_7;
     if ( integerBits == 16  && fractionBits == 16 && min == -32768 && max == 32767 ) return FIXED_Q16_16_M32768_32767;
+    if ( integerBits == 16  && fractionBits == 16 && min == -2000 && max == 2000 )   return FIXED_Q16_16_M2000_2000;
+    if ( integerBits == 16  && fractionBits == 16 && min == 0    && max == 30000 )   return FIXED_Q16_16_0_30000;
     if ( integerBits == 48  && fractionBits == 16 && min == 0    && max == 131072 )  return FIXED_Q48_16_0_131072;
+    if ( integerBits == 48  && fractionBits == 16 && min == -100000 && max == 100000 ) return FIXED_Q48_16_M100000_100000;
     if ( integerBits == 112 && fractionBits == 16 && min == -9   && max == -9 )      return FIXED_Q112_16_M9_M9;
     if ( integerBits == 112 && fractionBits == 16 && min == 0    && max == two58 )   return FIXED_Q112_16_0_2P58;
     if ( integerBits == 112 && fractionBits == 16 && min == -two57 && max == two57 ) return FIXED_Q112_16_M2P57_2P57;
     if ( integerBits == 64  && fractionBits == 64 && min == 0    && max == 0 )       return FIXED_Q64_64_0_0;
     if ( integerBits == 64  && fractionBits == 64 && min == 3    && max == 3 )       return FIXED_Q64_64_3_3;
     if ( integerBits == 64  && fractionBits == 64 && min == 0    && max == serialize::int128_t( 9223372036854775807LL ) ) return FIXED_Q64_64_0_INT64MAX;
+    if ( integerBits == 64  && fractionBits == 64 && min == serialize::int128_t( INT64_MIN ) && max == serialize::int128_t( 9223372036854775807LL ) ) return FIXED_Q64_64_FULL_INT64;
     return FIXED_NONE;
 }
 
@@ -526,10 +534,31 @@ static bool run_fixed_declaration( Stream & stream, FixedDeclaration declaration
             raw = serialize::int128_t( (int64_t) value );
             return true;
         }
+        case FIXED_Q16_16_M2000_2000:
+        {
+            int32_t value = (int32_t) (int64_t) raw;
+            if ( !op_fixed<16, 16, -2000, 2000, int32_t>( stream, value ) ) return false;
+            raw = serialize::int128_t( (int64_t) value );
+            return true;
+        }
+        case FIXED_Q16_16_0_30000:
+        {
+            int32_t value = (int32_t) (int64_t) raw;
+            if ( !op_fixed<16, 16, 0, 30000, int32_t>( stream, value ) ) return false;
+            raw = serialize::int128_t( (int64_t) value );
+            return true;
+        }
         case FIXED_Q48_16_0_131072:
         {
             int64_t value = (int64_t) raw;
             if ( !op_fixed<48, 16, 0, 131072, int64_t>( stream, value ) ) return false;
+            raw = serialize::int128_t( value );
+            return true;
+        }
+        case FIXED_Q48_16_M100000_100000:
+        {
+            int64_t value = (int64_t) raw;
+            if ( !op_fixed<48, 16, -100000, 100000, int64_t>( stream, value ) ) return false;
             raw = serialize::int128_t( value );
             return true;
         }
@@ -572,6 +601,13 @@ static bool run_fixed_declaration( Stream & stream, FixedDeclaration declaration
         {
             serialize::int128_t value = raw;
             if ( !op_fixed<64, 64, 0, 9223372036854775807LL, serialize::int128_t>( stream, value ) ) return false;
+            raw = value;
+            return true;
+        }
+        case FIXED_Q64_64_FULL_INT64:
+        {
+            serialize::int128_t value = raw;
+            if ( !op_fixed<64, 64, INT64_MIN, 9223372036854775807LL, serialize::int128_t>( stream, value ) ) return false;
             raw = value;
             return true;
         }
@@ -876,6 +912,34 @@ static bool step_from_words( const Vector & vector, const char * text, Step & st
         step.kind = STEP_FLOAT;
         return true;
     }
+    if ( strcmp( words[0], "double" ) == 0 && numWords == 1 )
+    {
+        step.kind = STEP_DOUBLE;
+        return true;
+    }
+    if ( strcmp( words[0], "uint128" ) == 0 && numWords == 1 )
+    {
+        step.kind = STEP_UINT128;
+        return true;
+    }
+    if ( strcmp( words[0], "int_relative" ) == 0 && numWords == 2 && parse_number( words[1], a ) )
+    {
+        step.kind = STEP_INT_RELATIVE;
+        step.previous = (int32_t) (int64_t) a;
+        return true;
+    }
+    if ( strcmp( words[0], "compressed_float" ) == 0 && numWords == 4 )
+    {
+        char * end = NULL;
+        step.fmin = (float) strtod( words[1], &end );
+        if ( end == words[1] || *end != '\0' ) return false;
+        step.fmax = (float) strtod( words[2], &end );
+        if ( end == words[2] || *end != '\0' ) return false;
+        step.fres = (float) strtod( words[3], &end );
+        if ( end == words[3] || *end != '\0' ) return false;
+        step.kind = STEP_COMPRESSED_FLOAT;
+        return true;
+    }
     if ( strcmp( words[0], "bytes" ) == 0 && numWords == 2 && parse_number( words[1], a ) )
     {
         step.kind = STEP_BYTES;
@@ -894,9 +958,10 @@ static bool step_from_words( const Vector & vector, const char * text, Step & st
         step.width = (int64_t) a;
         return true;
     }
-    if ( strcmp( words[0], "int" ) == 0 && numWords == 3 && parse_number( words[1], a ) && parse_number( words[2], b ) )
+    if ( ( strcmp( words[0], "int" ) == 0 || strcmp( words[0], "int64" ) == 0 || strcmp( words[0], "int128" ) == 0 )
+         && numWords == 3 && parse_number( words[1], a ) && parse_number( words[2], b ) )
     {
-        step.kind = STEP_INT;
+        step.kind = strcmp( words[0], "int" ) == 0 ? STEP_INT : ( strcmp( words[0], "int64" ) == 0 ? STEP_INT64 : STEP_INT128 );
         step.min = a;
         step.max = b;
         return true;

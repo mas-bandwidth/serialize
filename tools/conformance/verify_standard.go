@@ -512,6 +512,10 @@ func main() {
 	// checked: a check that cannot fail is not a check.)
 	c.eq("golden_wire_bytes trailing bits are zero (writer obligation)", trailingBits(data, r.i), uint8(0))
 
+	// The whole 112 bytes, encoded from the document's rules and compared against both the
+	// pinned emission and the block STANDARD.md prints. See golden_message.go.
+	checkGoldenMessage(c, filepath.Join(filepath.Dir(header), "STANDARD.md"), data)
+
 	// STANDARD.md, 'uint128': 128 raw bits, low 64-bit half first, each half as
 	// serialize_bits( half, 64 ). Verified against the library's additive pin.
 	if ub, err := hexArray(header, "golden_uint128_bytes"); !c.err("golden_uint128_bytes", err) {

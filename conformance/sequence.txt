@@ -16,9 +16,16 @@
 #
 #     bits <n>                                       bool
 #     align                                          float
-#     bytes <count>                                  int <min> <max>
-#     string <buffer_size>                           wstring <buffer_size>
+#     bytes <count>                                  double
+#     string <buffer_size>                           uint128
+#     wstring <buffer_size>                          int <min> <max>
+#     int64 <min> <max>                              int128 <min> <max>
+#     int_relative <previous>
+#     compressed_float <min> <max> <res>
 #     fixed <integer_bits> <fraction_bits> <min> <max>
+#
+# There is one spelling per operation, so any message this format can carry can
+# be written as a sequence, the golden message in message.txt included.
 #
 # `expect value` lists one entry per step in order, separated by ` | `, with
 # `-` for a step that produces no value of its own. `consumed` is the total

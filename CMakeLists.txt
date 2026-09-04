@@ -11,7 +11,7 @@ if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
     set(CMAKE_TARGET_MESSAGES OFF)
 endif()
 
-project(serialize VERSION 1.16.1 LANGUAGES CXX)
+project(serialize VERSION 1.16.2 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
@@ -161,21 +161,23 @@ if(SERIALIZE_BUILD_TESTS)
     # quietly stopped sabotaging anything is worse than no control at all. conformance.cpp is
     # copied alongside the sabotaged header because it includes "serialize.h" with quotes, which
     # resolves against the including file's own directory first.
-    set(SERIALIZE_CONTROL_NAMES align-padding ranged-reconstruction)
+    set(SERIALIZE_CONTROL_NAMES align-padding ranged-reconstruction ranged-range)
     set(SERIALIZE_CONTROL_NEEDLE_align-padding
         "                if ( value != 0 )")
     set(SERIALIZE_CONTROL_RULE_align-padding
         "readers must verify that the alignment padding bits are zero")
-    # Deliberately the RECONSTRUCTION and not the range check beside it. The ranged int's range
-    # rule is guarded twice — once in ReadStream::SerializeInteger against the offset, and again
-    # in the serialize_int macro against the decoded value — so deleting either guard alone
-    # changes no verdict and no vector can see it. A control aimed there would report green while
-    # proving nothing, which is the failure these controls exist to prevent. Dropping min from the
-    # reconstruction is a single line with no second guard behind it.
+    # Two controls over the ranged int, one per rule, because the two rules fail differently: the
+    # reconstruction decides what an accepted offset means, and the range check decides which
+    # offsets are accepted at all. Each is a single line with no second guard behind it, so
+    # deleting it changes the verdict on exactly the vectors that pin it.
     set(SERIALIZE_CONTROL_NEEDLE_ranged-reconstruction
         "            value = int32_t( unsigned_value + uint32_t(min) );")
     set(SERIALIZE_CONTROL_RULE_ranged-reconstruction
         "a ranged int decodes to its offset plus min")
+    set(SERIALIZE_CONTROL_NEEDLE_ranged-range
+        "            if ( unsigned_value > uint32_t(max) - uint32_t(min) )")
+    set(SERIALIZE_CONTROL_RULE_ranged-range
+        "a ranged int whose offset is past the span is refused")
     # each replacement keeps the sabotaged line compiling warning-free: the padding is at most
     # seven bits, so comparing it against 0xFFFFFFFF is a condition that never holds while still
     # reading the variable the deleted rule read
@@ -183,6 +185,10 @@ if(SERIALIZE_BUILD_TESTS)
         "                if ( value == 0xFFFFFFFF ) // NEGATIVE CONTROL: this rule is deleted on purpose")
     set(SERIALIZE_CONTROL_PATCH_ranged-reconstruction
         "            value = int32_t( unsigned_value ); // NEGATIVE CONTROL: min is dropped on purpose")
+    # the widened right hand side is at least 0xFFFFFFFF and the offset is at most 0xFFFFFFFF, so
+    # the sabotaged condition never holds while still reading every variable the deleted rule read
+    set(SERIALIZE_CONTROL_PATCH_ranged-range
+        "            if ( uint64_t(unsigned_value) > uint64_t( uint32_t(max) - uint32_t(min) ) + 0xFFFFFFFFull ) // NEGATIVE CONTROL: this rule is deleted on purpose")
 
     file(READ ${CMAKE_CURRENT_SOURCE_DIR}/serialize.h SERIALIZE_HEADER_TEXT)
     foreach(control ${SERIALIZE_CONTROL_NAMES})

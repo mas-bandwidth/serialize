@@ -15,7 +15,7 @@ jobs:
     name: version consistency
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7
 
       - name: Check versions
         run: |
@@ -61,7 +61,7 @@ jobs:
     if: github.event_name != 'pull_request' && startsWith(github.ref, 'refs/heads/')
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7
         with:
           fetch-depth: 0          # tags and full history: the whole job is a comparison against the newest tag
 

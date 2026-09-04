@@ -22,7 +22,7 @@ jobs:
           - os: windows-2025
             cmake_args: -A x64
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7
 
       - name: Configure
         run: cmake -B build -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} ${{ matrix.cmake_args }}
@@ -43,7 +43,7 @@ jobs:
       matrix:
         build_type: [Debug, Release]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7
 
       - name: Install s390x cross toolchain and qemu
         run: |
@@ -71,7 +71,7 @@ jobs:
     name: fuzz (libFuzzer)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7
 
       - name: Configure
         run: cmake -B build -DCMAKE_BUILD_TYPE=Debug -DSERIALIZE_FUZZ=ON -DCMAKE_CXX_COMPILER=clang++
@@ -86,7 +86,7 @@ jobs:
     name: asan + ubsan
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7
 
       - name: Configure
         run: cmake -B build -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer"
@@ -110,7 +110,7 @@ jobs:
     name: pre-C++11 consumer (clang -std=c++03)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7
 
       # -ffp-contract=off, not -ffast-math: this binary runs the golden and conformance
       # vectors, and those pin exact bytes and decoded bit patterns. Same rationale as
@@ -139,7 +139,7 @@ jobs:
     name: STANDARD.md conformance
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7
 
       # Checks the wire-format specification against the implementation. The
       # checker parses artifacts the real library produces using ONLY what

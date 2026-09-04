@@ -36,8 +36,8 @@
 
 #define SERIALIZE_VERSION_MAJOR 1
 #define SERIALIZE_VERSION_MINOR 16
-#define SERIALIZE_VERSION_PATCH 1
-#define SERIALIZE_VERSION "1.16.1"
+#define SERIALIZE_VERSION_PATCH 2
+#define SERIALIZE_VERSION "1.16.2"
 
 #if defined(_MSC_VER)
 #define serialize_restrict __restrict
@@ -1977,6 +1977,7 @@ namespace serialize
                 return true;
             }
             uint32_t unsigned_value = m_reader.ReadBits( bits );
+            // the read side range rule, and the ONLY place it lives at this width: the offset is compared against the span in the unsigned domain, which cannot overflow on hostile input, and the value formed from an accepted offset is in [min,max] by construction. A second check on the decoded value behind this one is unreachable, and a rule guarded twice is a rule no negative control can measure
             if ( unsigned_value > uint32_t(max) - uint32_t(min) )
                 return Fail();
             // add in the unsigned domain: unsigned_value + min overflows signed arithmetic when the range is wider than 2^31
@@ -2016,6 +2017,7 @@ namespace serialize
                 const uint32_t hi = m_reader.ReadBits( bits - 32 );
                 unsigned_value = ( uint64_t(hi) << 32 ) | lo;
             }
+            // the read side range rule at this width, and the only place it lives. See SerializeInteger
             if ( unsigned_value > uint64_t(max) - uint64_t(min) )
                 return Fail();
             // add in the unsigned domain: unsigned_value + min overflows signed arithmetic when the range is wider than 2^63
@@ -2071,6 +2073,7 @@ namespace serialize
                 group3 = m_reader.ReadBits( bits - 96 );
             }
             const uint128_t unsigned_value = ( uint128_t( group3 ) << 96 ) | ( uint128_t( group2 ) << 64 ) | ( uint128_t( group1 ) << 32 ) | uint128_t( group0 );
+            // the read side range rule at this width, and the only place it lives. See SerializeInteger
             if ( unsigned_value > uint128_t(max) - uint128_t(min) )
                 return Fail();
             // add in the unsigned domain: unsigned_value + min overflows signed arithmetic when the range is wider than 2^127
@@ -2384,11 +2387,6 @@ namespace serialize
             }                                                           \
             if ( Stream::IsReading )                                    \
             {                                                           \
-                if ( int64_t(int32_value) < int64_t(min) ||             \
-                     int64_t(int32_value) > int64_t(max) )              \
-                {                                                       \
-                    return serialize::serialize_fail( stream );         \
-                }                                                       \
                 value = int32_value;                                    \
                 serialize_assert( int64_t(value) == int32_value );      \
             }                                                           \
@@ -2423,11 +2421,6 @@ namespace serialize
             }                                                           \
             if ( Stream::IsReading )                                    \
             {                                                           \
-                if ( int64_value < int64_t(min) ||                      \
-                     int64_value > int64_t(max) )                       \
-                {                                                       \
-                    return serialize::serialize_fail( stream );         \
-                }                                                       \
                 value = int64_value;                                    \
                 serialize_assert( int64_t(value) == int64_value );      \
             }                                                           \
@@ -2465,11 +2458,6 @@ namespace serialize
             }                                                                                       \
             if ( Stream::IsReading )                                                                \
             {                                                                                       \
-                if ( int128_value < serialize::int128_t(min) ||                                     \
-                     int128_value > serialize::int128_t(max) )                                      \
-                {                                                                                   \
-                    return serialize::serialize_fail( stream );                                     \
-                }                                                                                   \
                 value = int128_value;                                                               \
                 serialize_assert( serialize::int128_t(value) == int128_value );                     \
             }                                                                                       \
@@ -3883,10 +3871,6 @@ namespace serialize
             {                                                                               \
                 return false;                                                               \
             }                                                                               \
-            if ( int32_value < int32_t(min) || int32_value > int32_t(max) )                 \
-            {                                                                               \
-                return serialize::serialize_fail( stream );                                 \
-            }                                                                               \
             value = int32_value;                                                            \
             serialize_assert( int64_t(value) == int64_t(int32_value) );                     \
         } while (0)
@@ -3900,10 +3884,6 @@ namespace serialize
             {                                                                               \
                 return false;                                                               \
             }                                                                               \
-            if ( int64_value < int64_t(min) || int64_value > int64_t(max) )                 \
-            {                                                                               \
-                return serialize::serialize_fail( stream );                                 \
-            }                                                                               \
             value = int64_value;                                                            \
             serialize_assert( int64_t(value) == int64_value );                              \
         } while (0)
@@ -3916,11 +3896,6 @@ namespace serialize
             if ( !stream.SerializeInteger128( int128_value, min, max ) )                    \
             {                                                                               \
                 return false;                                                               \
-            }                                                                               \
-            if ( int128_value < serialize::int128_t(min) ||                                 \
-                 int128_value > serialize::int128_t(max) )                                  \
-            {                                                                               \
-                return serialize::serialize_fail( stream );                                 \
             }                                                                               \
             value = int128_value;                                                           \
             serialize_assert( serialize::int128_t(value) == int128_value );                 \
