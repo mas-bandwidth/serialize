@@ -21,15 +21,15 @@ Or run the binaries directly:
 
 On Windows the binaries are under `build\bin\Release`, and you can open the generated `build\serialize.sln` in Visual Studio if you prefer to work there.
 
-## Installing with Homebrew (macOS)
+## Installing with Homebrew
+
+serialize is in `homebrew/core`, so no tap is needed:
 
 ```
-brew tap mas-bandwidth/tap
-brew trust mas-bandwidth/tap      # one time, Homebrew 6 and newer
 brew install serialize
 ```
 
-This installs `serialize.h` and the CMake package config, so both `#include <serialize.h>` and `find_package(serialize CONFIG)` work out of the box.
+The published formula is at version 1.16.0. It installs `serialize.h` and the CMake package config, so both `#include <serialize.h>` and `find_package(serialize CONFIG)` work out of the box.
 
 ## Using serialize in your project
 
@@ -38,7 +38,7 @@ serialize is a single header. The simplest thing is to copy `serialize.h` into y
 If you use CMake, you can consume it as a target instead — via FetchContent:
 
     include(FetchContent)
-    FetchContent_Declare(serialize GIT_REPOSITORY https://github.com/mas-bandwidth/serialize.git GIT_TAG v1.15.0)
+    FetchContent_Declare(serialize GIT_REPOSITORY https://github.com/mas-bandwidth/serialize.git GIT_TAG v1.16.0)
     FetchContent_MakeAvailable(serialize)
     target_link_libraries(your_target PRIVATE serialize::serialize)
 
