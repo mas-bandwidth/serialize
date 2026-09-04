@@ -25,6 +25,9 @@ written:
 * **2026-09-04.** `int_relative` carries the non-negative int32 domain, and
   every tier's reconstruction is refused outside it.
 
+Every ruling in this list is part of format version 1.1, the 2026-09-04
+refusal ruling included, and none of them moves the version again.
+
 ## Architecture
 
 serialize is a **bit packer**. Values are written as variable numbers of bits
@@ -90,6 +93,11 @@ Writes the low `bits` bits of `value`, where `bits` is in `[1,64]`.
 * For `bits > 32` the value is split: the **low 32 bits are written first as a
   32-bit group**, then the remaining `bits - 32` high bits as a second group.
 
+The bound `value < 2^bits` holds at every width in `[1,64]` and not only at 32
+or fewer. A `bits` call of width zero is caller error rather than a zero-bit
+field, and the ranged operations below branch around this primitive when the
+range is degenerate.
+
 Fixed-width helpers are aliases for exactly this, and carry no range
 information of their own:
 
@@ -143,6 +151,17 @@ entirely by the range:
 
     bits_required( min, max ) = ( min == max ) ? 0 : 32 - count_leading_zeros( max - min )
 
+The arithmetic is unsigned and wrapping: `max - min` and `value - min` are
+computed in the unsigned domain of the operation's width, `uint32` for `int`,
+`uint64` for `int64` and `uint128` for `int128`, and the leading zero count is
+taken at that same width, so a range as wide as `[INT32_MIN, INT32_MAX]` is
+exact rather than overflowing.
+
+The wider widths carry the same rule under their own names.
+`bits_required64( min, max )` is zero when `min == max` and otherwise
+`64 - count_leading_zeros64( max - min )` over the unsigned 64-bit difference,
+and `bits_required128` is that rule again at 128 bits.
+
 `value - min` is written in that many bits. Note the consequences:
 
 * a range of `[0,7]` costs 3 bits;
@@ -162,7 +181,10 @@ but quantizes across them, and a zero `delta` has no quantization to define, so
 it requires `min < max` and a checked build asserts that.
 
 Readers must check that the decoded value lies within `[min,max]` and fail
-otherwise.
+otherwise. The check is stated in offset form for `int`, `int64` and `fixed`
+alike: the reader compares the decoded offset against `max - min` in the
+unsigned domain before it forms the value, which cannot overflow on hostile
+input and is equivalent to the value form.
 
 The range must be identical on both sides. The format carries no
 self-description: a stream is only interpretable by a reader that performs the
@@ -180,6 +202,9 @@ bits are written first, followed by the remaining `bits - 32` high bits.
 **Do not confuse this with `serialize_uint64`**, which is not ranged — it is
 `serialize_bits( value, 64 )` and always costs a full 64 bits. The names are
 similar and the encodings are not.
+
+Readers must check that the decoded value lies within `[min,max]` and fail
+otherwise, in the offset form stated under `serialize_int`.
 
 ### int128 (ranged)
 
@@ -226,11 +251,23 @@ value scaled by `2^fraction_bits`. `min` and `max` are bounds in **whole real
 units**, and all four parameters are compile-time constants of the call site —
 they are part of the format, exactly like a ranged integer's bounds.
 
+The legal storage widths are 8, 16, 32, 64 and 128 bits, always signed, and
+`integer_bits` is at least 1 because the sign bit counts toward it.
+"Compile-time constants" describes the C++ call site rather than the wire, so a
+language whose generics cannot take integer parameters passes the four
+parameters at runtime and produces the same bytes. `value` is a raw backed
+fixed point value of the storage type rather than a floating point number, so
+the operation performs no conversion of its own.
+
 The encoding is an offset encoding over the **raw** (scaled) bounds:
 
     raw_min = min << fraction_bits
     raw_max = max << fraction_bits
     bits    = bit length of ( raw_max - raw_min )    — bits_required, at whatever width the range needs
+
+The raw range lives in the unsigned domain of the storage width, exactly as
+`int128`'s bounds do, so a Q64.64 field over the full `int64` unit range has an
+exact raw range of `2^128 - 2^64` rather than an overflowing one.
 
 `raw_value - raw_min` is written in `bits` bits, split into 32-bit groups from
 least significant upward exactly as `serialize_bits` splits wide values:
@@ -268,7 +305,9 @@ for `raw >= 0`, `-( ( -raw + half ) >> drop )` for `raw < 0`, with
 negative raw rounds ties toward +infinity and diverges by exactly one raw
 step, on exact ties of negative raws only. A rounding rule is not wire shape —
 no protocol identifier can see the divergence — so a conformance vector must
-pin a negative tie value that distinguishes the two rules.
+pin a negative tie value that distinguishes the two rules. The rule binds every
+conversion between floating point and fixed point that a runtime chooses to
+expose, and never a byte on the wire.
 
 ### int_relative
 
@@ -290,6 +329,11 @@ each answering "does it fit in this tier?":
 
 The tier names are this document's, and the conformance vectors use them. The
 five `bounded-*` tiers are named for their payload width.
+
+**The writer takes the first tier the difference fits, and that encoding is the
+canonical one.** The reader accepts any tier whose payload decodes within the
+rules, so a stream carrying a difference in a wider tier than a writer would
+have chosen is a valid stream rather than a refused one.
 
 A difference of 1 — the common case for sequence numbers — costs a single bit.
 
@@ -314,7 +358,9 @@ operation, not of the caller's storage type: a 64-bit or unsigned `previous` of
 `2^31` is caller error everywhere, exactly as a negative one is. `previous` is
 the caller's own state and never arrives off the wire, so a `previous` outside
 the domain is caller error, asserted in checked builds, and this document
-defines no wire meaning for it.
+defines no wire meaning for it. The operation's API type is the signed 32-bit
+integer, and the domain binds whatever wider or unsigned storage a caller keeps
+its sequence in.
 
 **Every tier's reconstruction must be checked.** The reader must reconstruct
 `current` in a width that cannot wrap, then compare the result against the
@@ -376,6 +422,10 @@ The writer clamps `(value - min) / delta` to `[0,1]`, multiplies by
 integer to `max_integer_value`**, and writes the result in `bits` bits. The reader divides by `max_integer_value`, multiplies by `delta`,
 and adds `min`.
 
+`delta`, the quotient `delta / res` and the clamp are computed in `float32`
+like the rest of this operation. A `res` of zero or below is caller error,
+asserted in checked builds, and this document defines no wire meaning for it.
+
 **This arithmetic is `float32`, and the two roundings are part of the format.**
 The product `normalized * max_integer_value` rounds to `float32` BEFORE `0.5`
 is added, and that sum rounds to `float32` before the floor. Two roundings, not
@@ -394,6 +444,12 @@ one. Specifically, an implementation must not:
   with `-ffp-contract=off`. In Go an explicit `float32()` conversion around the
   product suffices — the spec forbids fusing across it. Rust does not fuse
   unless `mul_add` is called explicitly.
+
+The rule is a property of the arithmetic rather than a list of languages: no
+fused multiply-add across the expressions named here, in any language, and
+every runtime documents the barrier it uses to hold that. The witness value
+`8388608.0` and the two witness ranges named below are corpus vectors, carried
+in `conformance/` like every other pinned vector.
 
 **The integer clamp is normative — added 2026-08-23 (schema#109; ruling:
 Glenn, live).** Once `max_integer_value >= 2^23` the `float32` ulp at the top
@@ -502,6 +558,9 @@ The terminator is not transmitted; the reader appends it.
 
 Because `buffer_size` is an operand rather than a transmitted value, the same
 string serialized against different buffer sizes produces different bytes.
+`buffer_size` is a wire operand that bounds the length field and describes no
+destination, the destination is the language's own string type, and `length`
+counts bytes.
 
 **`string` payloads are well-formed UTF-8 by contract** *(adopted 2026-08-15
 from the schema enactment, writer-trusted per the doctrine above)*. The wire
@@ -521,7 +580,9 @@ in this document:
 * **Invalid UTF-8 fails the read.** The payload the contract above promises is
   the payload the reader insists on: a stream carrying malformed UTF-8 was not
   produced by a conforming writer, and the reader refuses it rather than
-  handing it to the application.
+  handing it to the application. Invalid means not well formed under Unicode
+  Table 3-7, so overlong forms, encoded surrogates, code points above
+  `10FFFF` and truncated sequences are all refused.
 * **An interior NUL fails the read** — a zero byte anywhere among the `length`
   transmitted bytes. A conforming writer derives `length` from `strlen`, so no
   zero byte can reach the wire from conformance; a stream carrying one gives
@@ -544,7 +605,9 @@ carry.)*
     serialize_wstring( stream, string, buffer_size )
 
 A null-terminated wide string. `buffer_size` counts **wide characters, not
-bytes**.
+bytes**. `wstring` is a required operation in every implementation, its
+destination is the language's own string type, and a runtime whose strings are
+not UTF-16 recombines surrogate pairs into code points on read.
 
 1. The length, as `serialize_int( length, 0, buffer_size - 1 )`.
 2. Each character as a **32-bit group**, in order.
@@ -637,6 +700,10 @@ exist for convenience and to avoid a branch, not to encode anything
 differently. This document therefore specifies each operation once, under its
 `serialize_` name.
 
+The API surface is not constrained. A single stream abstraction with a read, a
+write and a measure conformer carries every operation in this document, and
+these variants are one implementation's convenience rather than an obligation.
+
 ## The Measure Stream
 
 Until 2026-08-15 this document disclaimed the measure stream in its third
@@ -695,7 +762,8 @@ specified here because all nine implementations ship it and had already begun
 to disagree, not because it is expected to survive into entropy-coded
 encodings.
 
-**Testable**: for every message in the conformance corpus,
+**The measure stream is a required operation**, and every implementation ships
+it. **Testable**: for every sequence vector in the shared corpus,
 `measure >= bits written`, at every starting bit position; and the worked
 example discriminates — a conservative measure reports 23 bits for
 `{ bits(8); align; bits(8) }` where an exact-from-zero measure reports 16.
@@ -710,7 +778,15 @@ surface.
 **Reading past the end must fail.** An operation that would consume more bits
 than remain in the stream fails the read. It must not produce a partial value,
 zero-fill the missing bits, or wrap. The failure is terminal under the rule
-below.
+below. A stream's length is a count of bytes, so the test an operation performs
+is `bit_index + n > 8 * bytes`, and `align` can never run past the end because
+it never crosses a byte boundary.
+
+**A trap, a crash or an abort on malformed input is non-conforming.** Refusal
+is the only conforming answer to a stream this document says must be refused,
+and a runtime whose integer arithmetic traps on overflow unconditionally uses
+wrapping operations on the read path, so that no input can turn a refusal into
+a trap.
 
 **A refused primitive read must leave its destination unwritten.** The rule is
 per primitive read: when a read of a scalar fails, the caller's value must be
@@ -740,6 +816,16 @@ enforces that rather than the caller's discipline. Two shapes satisfy it:
   stream, and a reader that throws, satisfy the rule as written, because
   neither hands the caller a stream to continue on.
 
+Both shapes conform, and the speed rule does not forbid a language's own idiom
+for failure, so a runtime that reports failure by throwing conforms where
+throwing is that idiom, with the poisoned position remaining the recommended
+latch.
+
+Every read consults the failure state before it does anything else, zero-bit
+reads included, so a degenerate ranged read, an `align` on an already aligned
+stream, a `bytes` call of zero count and `object` all refuse on a stream that
+has already failed.
+
 A failure persists until the stream is **re-initialized**, which is the
 operation that points a stream at a new buffer, or until the stream is
 discarded. An implementation with no re-initialization discards.
@@ -760,6 +846,12 @@ accept/reject decision, and that an implementation state which
 allocation contract its caller is under — a caller holding the wrong contract
 is reading out of bounds, and that is a property of the implementation's
 documentation, not of the wire.
+
+The eight-byte slack contract is the fast path, and every runtime states that
+its callers are under it. A copying entry point that takes an exact-length
+input and copies it into a slack backed buffer is admitted as a convenience, as
+the C implementation's padded wrapper is, because it prices the copy once at
+the boundary rather than per operation in the hot path.
 
 **Trailing bits: writers must write zero; readers must not look; tools may
 judge.** *(Adopted 2026-08-15; the ruling verbatim: "Yes, I am OK with
@@ -812,7 +904,9 @@ because it is the nearest working example is how inventions travel disguised as
 specification; every port-to-port inheritance in the audit was carrying one. If
 the standard lacks the information needed to implement correctly and fast,
 **the standard is too loose: tighten it here, upstream — never improvise in a
-port.**
+port.** Every sentence that sends a reader to the C++ implementation for a rule
+is owed a rule in this document and a vector in the corpus, and what those
+sentences still cover is listed as the remaining silences under Provenance.
 
 **The check model.** The caller is responsible for well-formed writes. Where
 the language has checked builds, write-side contract validation uses them and
@@ -846,7 +940,9 @@ than the C++ implementation for any reason other than a documented language
 necessity is defective, and the deviation and its necessity must be documented
 where the divergence lives. Performance parity is part of conformance in
 spirit: C and C++ at total parity; systems languages within a few percent,
-with every residual attributed to a named language mechanism.
+with every residual attributed to a named language mechanism. Swift is a
+systems language for that parity class, and ARC traffic and bounds checks are
+nameable residuals once they are measured and attributed.
 
 ## Compatibility Notes
 
@@ -871,7 +967,10 @@ verifying every claim against its golden test vector.
 disagree, the implementation is a bug.** Where this document is silent, the
 behavior of the C++ implementation (`mas-bandwidth/serialize`) breaks the tie,
 and it holds that standing only until this document is amended to state the
-rule itself. A port never copies an implementation over the text of this
+rule itself. That tie-break is a marker over a silence rather than a source:
+what it still covers is listed as the remaining silences below, each owed a
+rule here and a vector in the corpus, and this sentence goes when that list is
+empty. A port never copies an implementation over the text of this
 document. `serialize.h` is one implementation among nine: C, C++, C#, Dart,
 Elixir, Go, Java, JavaScript and Rust. It was the first, which is a fact about
 history and not about standing.
@@ -903,6 +1002,25 @@ reimplementation against itself. A suite that regenerates its own expectations
 proves only that a port agrees with itself, which is how one wrong reading of
 this document travels to nine implementations under green results.
 
+**The remaining silences.** These are the rules a reader can get today only by
+reading an implementation, each named by the section that owes it and by what a
+vector would pin. The tie-break sentence above stands until this list is empty.
+
+| section | what a vector would pin |
+|---|---|
+| `bits`, `bool`, `uint128` | the 32-bit group split above 32 bits, and the low half first at 128 |
+| `align` and `bytes` | non-zero padding refused, and a zero count that still aligns |
+| `int` and `int64` | a decoded value outside `[min,max]` refused, and a degenerate range that consumes nothing |
+| `fixed` | a negative tie value, which separates half away from zero from an arithmetic shift |
+| `float` and `double` | NaN payloads, a signaling NaN, negative zero and a denormal, compared as bit patterns |
+| `compressed_float` | the clamp witnesses `[0, 8388609]` and `[0, 16777215]` at resolution `1`, the fusion witness `8388608.0` in that band, and a non-zero `min` decode pinned bit exactly |
+| `object` | a nested sequence, which adds no bytes of its own |
+| `string` | valid UTF-8 accepted, and invalid UTF-8, an interior NUL and an out-of-range length refused |
+| `wstring` | a surrogate pair accepted, and an unpaired surrogate, a group above `0xFFFF` and a zero group refused |
+| The Measure Stream | `measure >= bits written` over a sequence vector, at every starting bit position |
+| Reader Obligations | a read past the end refused, and the next read on that stream refused too |
+| Worked Example | the 112-byte golden message as a sequence vector, with its operation sequence |
+
 **The vector format.** A vector file is text. `#` begins a comment, blank lines
 separate records, and each record is `key` and value, one per line:
 
@@ -912,12 +1030,37 @@ separate records, and each record is `key` and value, one per line:
 | `name` | a stable identifier for the vector |
 | `param` | one parameter as `name = value`, repeated once per parameter |
 | `bytes` | the stream, as hexadecimal byte pairs, empty for a zero-bit read |
-| `expect` | the word `refused`, or `value = ` and the decoded value |
+| `expect` | the word `refused`, or `value = ` and the decoded value, or `bits = 0x` and the decoded bit pattern |
 | `consumed` | bits a conforming reader consumes, accepted reads only |
+| `writer` | the word `canonical`, on a vector that also pins the bytes a writer emits |
 
 `consumed` is stated only for accepted reads. **After a refusal the stream
 position is not part of the contract**, so no vector states it and no
 implementation is judged on it.
+
+**A vector binds the reader only, unless it carries `writer = canonical`.** An
+accepted vector states what a reader must decode from those bytes and states
+nothing about what a writer emits for that value, which is what lets a vector
+pin a valid non-canonical encoding such as an `int_relative` absolute tier
+carrying a difference a writer would have sent in a narrower tier. A vector
+carrying `writer = canonical` additionally pins the bytes a conforming writer
+produces for that value.
+
+**Values are typed by the operation's table.** A `param` takes the type its own
+section gives that parameter, so `min` and `max` under `fixed` are whole real
+units, `buffer_size` under `string` is a byte count, and `res` under
+`compressed_float` is a `float32`.
+
+**Lexical rules.** `#` begins a comment at the start of a line and nowhere
+else, numbers are written as signed decimal or as `0x` hexadecimal, and a
+parser must accept values up to 128 bits wide. `expect bits = 0x...` is the
+spelling for a value compared as a bit pattern rather than as a number, which
+is how `float` and `double` vectors are stated.
+
+**A harness presents every stream with the slack the contract requires.** The
+bytes of a vector are the stream, and a harness running it against an
+implementation under the eight-byte slack contract allocates that slack behind
+them, including for the empty stream of a zero-bit read.
 
 **Conformance vectors must discriminate.** A value taken from the middle of a
 range, or one that lands where every plausible reading agrees, proves nothing —
