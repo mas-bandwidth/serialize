@@ -50,8 +50,13 @@ static const char * assert_condition = "";
     {                                                                                       \
         if ( !( condition ) )                                                               \
         {                                                                                   \
+            /* the FIRST assertion to fire is the diagnostic one: a case that gets past  */ \
+            /* it goes on to trip the downstream assertions the narrowing used to hide   */ \
+            if ( assert_fires == 0 )                                                        \
+            {                                                                               \
+                assert_condition = #condition;                                              \
+            }                                                                               \
             assert_fires++;                                                                 \
-            assert_condition = #condition;                                                  \
         }                                                                                   \
     }                                                                                       \
     while ( 0 )
