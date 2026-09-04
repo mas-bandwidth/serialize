@@ -36,8 +36,8 @@
 
 #define SERIALIZE_VERSION_MAJOR 1
 #define SERIALIZE_VERSION_MINOR 16
-#define SERIALIZE_VERSION_PATCH 0
-#define SERIALIZE_VERSION "1.16.0"
+#define SERIALIZE_VERSION_PATCH 1
+#define SERIALIZE_VERSION "1.16.1"
 
 #if defined(_MSC_VER)
 #define serialize_restrict __restrict
@@ -3027,8 +3027,13 @@ namespace serialize
         int length = 0;
         if ( Stream::IsWriting )
         {
-            length = (int) strlen( string );
-            serialize_assert( length < buffer_size );
+            // the length assertion runs on the size_t strlen returns, before it narrows to int:
+            // an assertion placed after the narrowing sees a length already truncated, and a
+            // string of 2^32 + 5 bytes truncates to 5, which fits any buffer
+            const size_t string_length = strlen( string );
+            serialize_assert( buffer_size > 0 );
+            serialize_assert( string_length < (size_t) buffer_size );
+            length = (int) string_length;
             // the writer's contract, debug only. See serialize_string_is_valid_utf8.
             serialize_assert( serialize_string_is_valid_utf8( string, length ) );
         }
@@ -3320,6 +3325,20 @@ namespace serialize
      */
 
     const int64_t serialize_int_relative_max = 2147483647;
+
+    /**
+        Is a value inside the int_relative domain?
+        This is the write side domain check for serialize_int_relative and write_int_relative, and it runs on the caller's value before the macro narrows it to int. An assertion placed after the narrowing sees a value already truncated to int, so it cannot report the out of domain input it exists to diagnose: writing 2^32 + 5 arrives at serialize::serialize_int_relative_internal as 5, in the domain by construction.
+        The value is widened rather than narrowed, so an input above the top of the domain fails wherever it came from. An unsigned 64 bit value above 2^63 - 1 widens to a negative int64_t and fails too, which is the right answer: it is above the domain, not below it.
+        @param value The caller's value.
+        @returns True if the value is in [0,2^31-1].
+     */
+
+    template <typename T> inline bool value_in_int_relative_domain( T value )
+    {
+        const int64_t widened = int64_t( value );
+        return widened >= 0 && widened <= serialize_int_relative_max;
+    }
 
     /**
         Accept a reconstructed int_relative value, or refuse the read.
@@ -4077,8 +4096,12 @@ namespace serialize
     #define write_string( stream, string, buffer_size )                                     \
         do                                                                                  \
         {                                                                                   \
-            int length = (int) strlen( string );                                            \
-            serialize_assert( length < (buffer_size) );                                     \
+            /* the length assertion runs on the size_t strlen returns, before it narrows */ \
+            /* to int. See serialize::serialize_string_internal */                          \
+            const size_t string_length = strlen( string );                                  \
+            serialize_assert( (buffer_size) > 0 );                                          \
+            serialize_assert( string_length < (size_t) (buffer_size) );                     \
+            int length = (int) string_length;                                               \
             /* the writer's contract, debug only. See serialize_string_is_valid_utf8 */     \
             serialize_assert( serialize::serialize_string_is_valid_utf8( string, length ) );\
             write_int( stream, length, 0, (buffer_size) - 1 );                              \
@@ -4125,9 +4148,18 @@ namespace serialize
         }                                                                                   \
         while(0)
 
+    /**
+        Write an integer relative to a previous one, the write-only companion to serialize_int_relative.
+        Carries the same debug assertion on the domain, checked on the caller's value before it is narrowed to int: an assertion inside the helper sees a value already truncated, and 2^32 + 5 truncates to 5, which is in the domain.
+        @param stream The stream object. Must be a write stream.
+        @param previous The previous integer value, in [0,2^31-1].
+        @param current The current integer value, in [0,2^31-1] and strictly greater than previous.
+     */
+
     #define write_int_relative( stream, previous, current )                                 \
         do                                                                                  \
         {                                                                                   \
+            serialize_assert( serialize::value_in_int_relative_domain( current ) );         \
             int current_value = (int) ( current );                                          \
             serialize::serialize_int_relative_internal( stream, previous, current_value );  \
         } while (0)
@@ -4371,6 +4403,8 @@ namespace serialize
             int32_t int32_value = 0;                                                        \
             if ( Stream::IsWriting )                                                        \
             {                                                                               \
+                serialize_assert( int64_t( value ) >= int64_t( min ) );                     \
+                serialize_assert( int64_t( value ) <= int64_t( max ) );                     \
                 int32_value = (int32_t) ( value );                                          \
             }                                                                               \
             if ( !serialize::SerializeIntConst<(min), (max)>( stream, int32_value ) )       \

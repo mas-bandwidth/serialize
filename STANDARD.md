@@ -12,6 +12,9 @@ structure your code.
 **The format version is 1.1.** It names the wire, not a library release. Two
 endpoints interoperate when they run releases carrying the same format version,
 and a release states which format version it implements.
+[COMPATIBILITY.md](COMPATIBILITY.md) lists the release of every implementation
+in the family that carries it, pinned to the commit of this document and of the
+corpus that those releases vendor.
 
 The rulings that moved the format off 1.0, which was this document as first
 written:
@@ -448,8 +451,9 @@ one. Specifically, an implementation must not:
 The rule is a property of the arithmetic rather than a list of languages: no
 fused multiply-add across the expressions named here, in any language, and
 every runtime documents the barrier it uses to hold that. The witness value
-`8388608.0` and the two witness ranges named below are corpus vectors, carried
-in `conformance/` like every other pinned vector.
+`8388608.0` and the two witness ranges named below are owed as corpus vectors,
+and stand among the remaining silences under Provenance until the corpus carries
+them.
 
 **The integer clamp is normative — added 2026-08-23 (schema#109; ruling:
 Glenn, live).** Once `max_integer_value >= 2^23` the `float32` ulp at the top
@@ -994,13 +998,36 @@ explicit refusal test. An implementation conforms when it reproduces every
 vector byte for byte and refuses everything this document says must be refused.
 
 **The shared corpus is the conformance instrument.** It is the `conformance/`
-directory of this repository, one file per operation, holding the accepted and
-refused vectors this document's rules require. Every implementation vendors and
-syncs that directory the way it vendors this document, and its test suite must
-run every vector in it. No checker reimplements the codec and then checks that
-reimplementation against itself. A suite that regenerates its own expectations
-proves only that a port agrees with itself, which is how one wrong reading of
-this document travels to nine implementations under green results.
+directory of this repository, one file per covered operation, holding the
+accepted and refused vectors this document's rules require. The covered
+operations are:
+
+| file | operation | what it pins |
+|---|---|---|
+| `int_relative.txt` | `int_relative` | the domain, and the refusal of a reconstruction outside it in every tier |
+| `int128.txt` | `int128` | the ranged 128 bit codec, including ranges wider than `2^127` |
+
+Those are the covered operations today. The operations the corpus does not yet
+reach are the remaining silences below, each owed a vector; adding a file here
+is how one of them becomes a family obligation, and the table above moves with
+the directory.
+
+Every implementation vendors and syncs that directory the way it vendors this
+document, and its test suite must run every vector in it. No checker
+reimplements the codec and then checks that reimplementation against itself. A
+suite that regenerates its own expectations proves only that a port agrees with
+itself, which is how one wrong reading of this document travels to nine
+implementations under green results.
+
+**A runner discovers the directory. It does not name the files.** A runner
+holding a list of filenames in its source runs the vectors someone remembered to
+add to that list, so a newly vendored file goes untested in every implementation
+whose list was not edited, silently and under green results. Enumerate the
+directory instead: at run time, or at build time from a glob that re-runs when
+the directory changes. An empty directory fails the run, because an empty corpus
+is a broken checkout and not a pass, and so does a vector whose operation the
+runner has no code for, because an operation nobody implemented must be red
+rather than skipped.
 
 **The remaining silences.** These are the rules a reader can get today only by
 reading an implementation, each named by the section that owes it and by what a
@@ -1061,6 +1088,21 @@ is how `float` and `double` vectors are stated.
 bytes of a vector are the stream, and a harness running it against an
 implementation under the eight-byte slack contract allocates that slack behind
 them, including for the empty stream of a zero-bit read.
+
+**What a runner checks.** These are obligations. A runner that checks less than
+this is not running the instrument.
+
+* For an **accepted** vector: the decoded value equals the value the record
+  states, compared as a number, or as a bit pattern where the record states
+  `expect bits = 0x`; and the bits consumed equal `consumed`.
+* For a vector carrying `writer = canonical`: additionally, the bytes a writer
+  emits for that value, byte for byte.
+* For a **refused** vector: the read is refused, the caller's scalar destination
+  holds exactly what it held before the call, and the stream is left terminal.
+  Terminality is checked by behavior rather than by an accessor, so the check
+  ports to every implementation: issue a further read on the same stream and
+  require that it also fails, consumes no bits, and writes nothing to its own
+  destination.
 
 **Conformance vectors must discriminate.** A value taken from the middle of a
 range, or one that lands where every plausible reading agrees, proves nothing —

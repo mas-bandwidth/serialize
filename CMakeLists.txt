@@ -11,7 +11,7 @@ if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
     set(CMAKE_TARGET_MESSAGES OFF)
 endif()
 
-project(serialize VERSION 1.16.0 LANGUAGES CXX)
+project(serialize VERSION 1.16.1 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
@@ -116,7 +116,13 @@ if(SERIALIZE_BUILD_TESTS)
     add_executable(serialize_conformance conformance.cpp serialize.h)
     set_target_properties(serialize_conformance PROPERTIES OUTPUT_NAME conformance)
 
-    foreach(target serialize_test example serialize_conformance)
+    # The write side debug assertions, observed rather than aborted on: asserts.cpp defines
+    # serialize_assert itself, so the assertions are live in Release too and this target is
+    # registered unconditionally.
+    add_executable(serialize_asserts asserts.cpp serialize.h)
+    set_target_properties(serialize_asserts PROPERTIES OUTPUT_NAME asserts)
+
+    foreach(target serialize_test example serialize_conformance serialize_asserts)
         target_link_libraries(${target} PRIVATE serialize)
         target_compile_options(${target} PRIVATE ${SERIALIZE_DEV_FLAGS})
         target_compile_definitions(${target} PRIVATE
@@ -128,6 +134,7 @@ if(SERIALIZE_BUILD_TESTS)
     enable_testing()
     add_test(NAME test COMMAND serialize_test)
     add_test(NAME conformance COMMAND serialize_conformance ${SERIALIZE_CONFORMANCE_VECTORS})
+    add_test(NAME asserts COMMAND serialize_asserts)
 
     # THE SAME SUITE A SECOND TIME AT -ffp-contract=on, AND A THIRD TIME AT
     # -ffp-contract=fast. This is not belt and braces; these are the only builds in which the
