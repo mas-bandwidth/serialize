@@ -191,6 +191,22 @@ bytes 01 00 80
 expect bits = 0x4B000001
 consumed 24
 
+# 2^23 itself, the value STANDARD.md names as the fusion witness: "measured
+# exhaustively over [0, 16777215] at resolution 1, a fused writer moves
+# 4,194,304 inputs (every even float in the top binade), the first being 2^23
+# itself." That witness is a writer INPUT and no record whose own input is a
+# byte stream can state it, so what is pinned here is the reader's side of the
+# same band, at the same value, in both declarations the ruling names.
+
+operation compressed_float
+name compressed-float-clamp-band-fusion-witness-value
+param min = 0
+param max = 8388609
+param res = 1
+bytes 00 00 80
+expect bits = 0x4B000000
+consumed 24
+
 operation compressed_float
 name compressed-float-clamp-band-refuse-integer-one-past-max-integer-value
 param min = 0
@@ -230,6 +246,15 @@ param max = 16777215
 param res = 1
 bytes FF FF FF
 expect bits = 0x4B7FFFFF
+consumed 24
+
+operation compressed_float
+name compressed-float-wire-divergence-band-fusion-witness-value
+param min = 0
+param max = 16777215
+param res = 1
+bytes 00 00 80
+expect bits = 0x4B000000
 consumed 24
 
 operation compressed_float

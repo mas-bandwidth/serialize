@@ -1050,7 +1050,7 @@ vector would pin. The tie-break sentence above stands until this list is empty.
 | section | what a vector would pin | why the corpus does not carry it |
 |---|---|---|
 | `fixed` | a negative tie value, which separates half away from zero from an arithmetic shift | the rounding happens where a value is quantized into a Q format or narrowed out of one, and no `serialize_fixed` call rounds: the wire round trip is exact, this document says as much, and no record whose input is a byte stream can reach the rule. It needs a record shape this format does not have |
-| `compressed_float` | the fusion witness `8388608.0`, and the between-quanta writer inputs | a vector's input is a stream, so it can pin what a writer left on the wire but not the value a writer was handed. The clamp band's widths and boundaries are pinned; the writer inputs need a record shape this format does not have |
+| `compressed_float` | the between-quanta writer inputs, and the fusion witness as a WRITE | a vector's input is a stream, so it can pin what a writer left on the wire but not the value a writer was handed. Both clamp declarations' widths, boundaries and refusals are pinned, and `8388608.0` is pinned as a decode in each of them; the writer inputs need a record shape this format does not have |
 | Worked Example | the whole 112-byte golden message | this document prints 15 of its bytes and `message.txt` carries exactly those. The rest exist only inside an implementation, and a vector copied off the implementation it judges is the failure this section opens by naming |
 
 **The vector format.** A vector file is text. `#` begins a comment, blank lines
