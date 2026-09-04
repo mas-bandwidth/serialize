@@ -651,15 +651,18 @@ it is interpretable.
 **Past-end memory is an implementation contract, not a format concern.** The
 stream is exactly its stated length, and no operation's meaning ever depends
 on memory beyond it. An implementation may still *load* — never interpret —
-bytes past the end as an artifact of how it reads: the C++ implementation
-loads 64-bit windows at byte granularity and therefore requires its caller to
-allocate at least 8 bytes beyond the data; the C implementation prices its
-window to stay inside the buffer and imposes no such requirement. Both are
-conforming. Conformance requires that loaded-but-uninterpreted bytes can never
-influence a decoded value or an accept/reject decision, and that an
-implementation state which allocation contract its caller is under — a caller
-holding the wrong contract is reading out of bounds, and that is a property of
-the implementation's documentation, not of the wire.
+bytes past the end as an artifact of how it reads: the C++ and C
+implementations both load 64-bit windows at byte granularity and therefore
+require their caller to allocate at least 8 bytes beyond the data. That is
+the accepted best practice, and Implementation Law's buffer contract holds
+implementations to it: machinery that avoids the slack requirement at the
+cost of per-operation work in the hot path is a slower correct option, and is
+refused by the speed rule. The format turns on none of this. Conformance
+requires that loaded-but-uninterpreted bytes can never influence a decoded
+value or an accept/reject decision, and that an implementation state which
+allocation contract its caller is under — a caller holding the wrong contract
+is reading out of bounds, and that is a property of the implementation's
+documentation, not of the wire.
 
 **Trailing bits: writers must write zero; readers must not look; tools may
 judge.** *(Adopted 2026-08-15; the ruling verbatim: "Yes, I am OK with
