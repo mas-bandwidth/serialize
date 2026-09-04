@@ -1,0 +1,114 @@
+# serialize conformance vectors: serialize_object
+#
+# The format is specified in STANDARD.md, "The vector format". Records use the
+# sequence spelling documented at the head of conformance/sequence.txt, with one
+# addition: a step spelled `object <n>` wraps the NEXT n steps in a nested
+# object, and states `-` in the expect list because it produces no value of its
+# own.
+#
+# STANDARD.md, "object": serialize_object "invokes the object's own serialize
+# function inline. It contributes NO BYTES OF ITS OWN — it is composition, not
+# an encoding. Whatever the nested object writes appears at exactly this
+# position in the stream, with no framing, length prefix, or alignment inserted
+# around it."
+#
+# That rule is a statement about two streams being the same, so every vector
+# here has a twin in sequence.txt or below it carrying the same operations
+# unnested: same bytes, same consumption, same values. An implementation that
+# inserts a length, a tag or an alignment around a nested object produces
+# different bytes for the nested vector than for its flat twin, and one of the
+# pair goes red.
+#
+# The operation has no refusal rule of its own — it consumes nothing and decides
+# nothing — so the refusals below are the nested operations' own, and what they
+# pin is that a refusal inside a nested object propagates out of it rather than
+# being swallowed by the composition.
+
+# The flat twin, for comparison: four bits, a bool, then a byte.
+
+operation sequence
+name object-flat-twin
+param step = bits 4
+param step = bool
+param step = bits 8
+bytes 5A 0D
+expect value = 10 | true | 106
+consumed 13
+writer canonical
+
+# The same three operations, all three inside one nested object. Identical bytes
+# and identical consumption: the object added nothing.
+
+operation sequence
+name object-adds-no-bytes-of-its-own
+param step = object 3
+param step = bits 4
+param step = bool
+param step = bits 8
+bytes 5A 0D
+expect value = - | 10 | true | 106
+consumed 13
+writer canonical
+
+# The nested object in the middle of a stream, with operations before and after
+# it, so a framing byte would show up between them rather than at an end.
+
+operation sequence
+name object-nested-in-the-middle-of-a-stream
+param step = bits 4
+param step = object 1
+param step = bool
+param step = bits 8
+bytes 5A 0D
+expect value = 10 | - | true | 106
+consumed 13
+writer canonical
+
+# No alignment is inserted around a nested object. The object here holds a
+# single 3-bit field and is followed by a byte-aligned operation; if the
+# composition aligned on entry or exit, the bytes would move.
+
+operation sequence
+name object-inserts-no-alignment
+param step = object 1
+param step = bits 3
+param step = bits 8
+bytes 05 00
+expect value = - | 5 | 0
+consumed 11
+writer canonical
+
+# An object containing an operation that itself aligns: the align belongs to the
+# nested operation and lands where the nested operation puts it, not at the
+# object boundary.
+
+operation sequence
+name object-containing-an-aligning-operation
+param step = bits 3
+param step = object 1
+param step = bytes 1
+bytes 05 AB
+expect value = 5 | - | AB
+consumed 16
+measure_at_least 18
+writer canonical
+
+# A refusal inside a nested object propagates out of it. The nested align finds
+# non-zero padding, and the read must fail — the composition must not swallow
+# the refusal, and the operation after the object must refuse too.
+
+operation sequence
+name object-refusal-propagates-out-of-the-nesting
+param step = bits 3
+param step = object 1
+param step = align
+param step = bits 8
+bytes FD AB
+expect refused
+
+operation sequence
+name object-refusal-past-the-end-propagates
+param step = object 1
+param step = bits 16
+bytes FF
+expect refused

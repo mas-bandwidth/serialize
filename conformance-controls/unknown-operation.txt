@@ -1,0 +1,22 @@
+# A NEGATIVE CONTROL, not a conformance vector. This file is deliberately not in
+# conformance/ and is never run as part of the corpus.
+#
+# STANDARD.md makes the corpus the conformance instrument and requires a
+# suite to run every vector in it. A gate that quietly skips a vector it does
+# not understand is worse than no gate: it reports green over a rule nobody
+# checked, which is the exact failure the family already paid for once.
+#
+# So the contract is that a corpus file whose operation has no runner must
+# FAIL. This file is the vector that proves the contract holds. Both gates —
+# the C++ runner and the Go checker — are run against it and both must go RED.
+# If either ever goes green here, the corpus has stopped being an instrument
+# and every green result it has ever produced is worth re-examining.
+#
+# The operation name below does not exist and never will.
+
+operation no_such_operation
+name control-a-runner-must-fail-on-an-operation-it-cannot-drive
+param whatever = 1
+bytes 00
+expect value = 0
+consumed 8

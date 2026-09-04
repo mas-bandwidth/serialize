@@ -1,0 +1,116 @@
+# serialize conformance vectors: serialize_align
+#
+# The format is specified in STANDARD.md, "The vector format". Records are
+# separated by blank lines.
+#
+# STANDARD.md, "align": pads with ZERO BITS until the bit index is a multiple
+# of 8, and if the stream is already aligned NOTHING is written. "Readers must
+# verify that the padding bits are zero and fail the read if they are not."
+#
+# An align at bit index 0 is a no-op, so every interesting property of this
+# operation lives at a non-zero bit index. `preceding_bits` places the stream
+# there: the reader first performs serialize_bits over that width and discards
+# the value, then performs the align under test. `consumed` counts both.
+#
+# `value` is the padding the align consumed, which STANDARD.md requires to be
+# zero on every accepted read — so every accepted vector here states 0, and
+# every refusal is a stream whose padding is not zero.
+#
+# On a `writer = canonical` vector the writer leg emits the `preceding_bits`
+# bits the reader just decoded and then performs the align, and the result must
+# be the vector's bytes: that is what pins "pads with zero bits" and "if the
+# stream is already aligned, nothing is written" on the write side.
+#
+# The align never reads past the end: the padding always lies inside the byte
+# the preceding bits are in, and a vector's stream is a whole number of bytes.
+# So the past-end rule has no vector in this file, and that is the rule's
+# absence rather than a gap.
+
+# Already aligned: nothing is consumed. An implementation that pads a whole
+# byte when the index is already a multiple of 8 runs off the end of this
+# one-byte stream and refuses it.
+
+operation align
+name align-no-op-when-already-aligned
+param preceding_bits = 8
+bytes AB
+expect value = 0
+consumed 8
+writer canonical
+
+# The strongest form of the same rule: at bit index 0 the stream is aligned, so
+# the align consumes nothing — proved from an EMPTY stream, where any read at
+# all is an error.
+
+operation align
+name align-no-op-at-bit-index-zero
+param preceding_bits = 0
+bytes
+expect value = 0
+consumed 0
+writer canonical
+
+operation align
+name align-pads-one-bit
+param preceding_bits = 7
+bytes 7F
+expect value = 0
+consumed 8
+writer canonical
+
+operation align
+name align-pads-four-bits
+param preceding_bits = 4
+bytes 0A
+expect value = 0
+consumed 8
+writer canonical
+
+operation align
+name align-pads-seven-bits
+param preceding_bits = 1
+bytes 01
+expect value = 0
+consumed 8
+writer canonical
+
+# The padding must be zero, and readers must fail the read otherwise. Each
+# refusal below shares its `preceding_bits` with an accepted vector above, so a
+# reader that refuses on the bit index rather than on the padding contents
+# fails the accepted twin.
+
+operation align
+name align-refuse-one-non-zero-pad-bit
+param preceding_bits = 7
+bytes FF
+expect refused
+
+operation align
+name align-refuse-four-non-zero-pad-bits
+param preceding_bits = 4
+bytes AA
+expect refused
+
+operation align
+name align-refuse-seven-non-zero-pad-bits
+param preceding_bits = 1
+bytes FF
+expect refused
+
+# Only the highest padding bit is set. A reader that checks the first padding
+# bit, or that tests the padding one bit at a time and stops early, accepts
+# this stream; the document requires all of the padding to be zero.
+
+operation align
+name align-refuse-only-the-highest-pad-bit-set
+param preceding_bits = 1
+bytes 81
+expect refused
+
+# Only the lowest padding bit is set — the mirror of the vector above.
+
+operation align
+name align-refuse-only-the-lowest-pad-bit-set
+param preceding_bits = 1
+bytes 03
+expect refused

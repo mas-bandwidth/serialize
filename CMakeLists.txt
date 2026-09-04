@@ -134,6 +134,85 @@ if(SERIALIZE_BUILD_TESTS)
     enable_testing()
     add_test(NAME test COMMAND serialize_test)
     add_test(NAME conformance COMMAND serialize_conformance ${SERIALIZE_CONFORMANCE_VECTORS})
+
+    # NEGATIVE CONTROLS. The corpus is the conformance instrument, and an instrument nobody has
+    # seen go red is a claim rather than a measurement. Each control below is a deliberately
+    # broken input the gate MUST reject; ctest's WILL_FAIL inverts the verdict, so a control test
+    # passes exactly when the gate it guards goes red. If one of these ever starts failing, the
+    # gate has stopped discriminating and every green result it has produced is worth
+    # re-examining.
+
+    # Control 1: a corpus file whose operation has no runner. STANDARD.md requires a suite to run
+    # every vector in the corpus, so a runner that quietly skips what it does not understand
+    # reports green over a rule nobody checked. The vector lives in conformance-controls/, which
+    # the corpus glob above deliberately does not reach. The Go checker is run against the same
+    # file in CI, because the contract binds both gates and not only this one.
+    add_test(NAME conformance-control-unknown-operation
+             COMMAND serialize_conformance ${CMAKE_CURRENT_SOURCE_DIR}/conformance-controls/unknown-operation.txt)
+    set_tests_properties(conformance-control-unknown-operation PROPERTIES WILL_FAIL TRUE)
+
+    # Control 2: a reader with ONE LINE of a refusal rule deleted, built from a scratch copy of
+    # the header and run against the real corpus, which must go red. This is the control that
+    # answers "would the corpus notice if the implementation were wrong?" — and it answers it per
+    # rule, because each sabotage names the rule it deletes and the vectors that pin it.
+    #
+    # The scratch copy is generated at configure time and the sabotage is a string replacement, so
+    # a needle that stops matching is a FATAL_ERROR rather than a silent no-op: a control that has
+    # quietly stopped sabotaging anything is worse than no control at all. conformance.cpp is
+    # copied alongside the sabotaged header because it includes "serialize.h" with quotes, which
+    # resolves against the including file's own directory first.
+    set(SERIALIZE_CONTROL_NAMES align-padding ranged-reconstruction)
+    set(SERIALIZE_CONTROL_NEEDLE_align-padding
+        "                if ( value != 0 )")
+    set(SERIALIZE_CONTROL_RULE_align-padding
+        "readers must verify that the alignment padding bits are zero")
+    # Deliberately the RECONSTRUCTION and not the range check beside it. The ranged int's range
+    # rule is guarded twice — once in ReadStream::SerializeInteger against the offset, and again
+    # in the serialize_int macro against the decoded value — so deleting either guard alone
+    # changes no verdict and no vector can see it. A control aimed there would report green while
+    # proving nothing, which is the failure these controls exist to prevent. Dropping min from the
+    # reconstruction is a single line with no second guard behind it.
+    set(SERIALIZE_CONTROL_NEEDLE_ranged-reconstruction
+        "            value = int32_t( unsigned_value + uint32_t(min) );")
+    set(SERIALIZE_CONTROL_RULE_ranged-reconstruction
+        "a ranged int decodes to its offset plus min")
+    # each replacement keeps the sabotaged line compiling warning-free: the padding is at most
+    # seven bits, so comparing it against 0xFFFFFFFF is a condition that never holds while still
+    # reading the variable the deleted rule read
+    set(SERIALIZE_CONTROL_PATCH_align-padding
+        "                if ( value == 0xFFFFFFFF ) // NEGATIVE CONTROL: this rule is deleted on purpose")
+    set(SERIALIZE_CONTROL_PATCH_ranged-reconstruction
+        "            value = int32_t( unsigned_value ); // NEGATIVE CONTROL: min is dropped on purpose")
+
+    file(READ ${CMAKE_CURRENT_SOURCE_DIR}/serialize.h SERIALIZE_HEADER_TEXT)
+    foreach(control ${SERIALIZE_CONTROL_NAMES})
+        set(needle "${SERIALIZE_CONTROL_NEEDLE_${control}}")
+        string(REPLACE "${needle}" "${SERIALIZE_CONTROL_PATCH_${control}}"
+               SERIALIZE_SABOTAGED_TEXT "${SERIALIZE_HEADER_TEXT}")
+        if(SERIALIZE_SABOTAGED_TEXT STREQUAL SERIALIZE_HEADER_TEXT)
+            message(FATAL_ERROR
+                "conformance control '${control}' found nothing to sabotage in serialize.h. The line it "
+                "deletes has moved or changed, so the control is no longer proving that deleting "
+                "'${SERIALIZE_CONTROL_RULE_${control}}' turns the corpus red. Update the needle in "
+                "CMakeLists.txt; do not delete the control.")
+        endif()
+        set(dir ${CMAKE_BINARY_DIR}/conformance-controls/${control})
+        file(MAKE_DIRECTORY ${dir})
+        file(WRITE ${dir}/serialize.h "${SERIALIZE_SABOTAGED_TEXT}")
+        configure_file(${CMAKE_CURRENT_SOURCE_DIR}/conformance.cpp ${dir}/conformance.cpp COPYONLY)
+
+        add_executable(serialize_conformance_control_${control} ${dir}/conformance.cpp ${dir}/serialize.h)
+        set_target_properties(serialize_conformance_control_${control} PROPERTIES OUTPUT_NAME conformance-control-${control})
+        target_compile_options(serialize_conformance_control_${control} PRIVATE ${SERIALIZE_DEV_FLAGS})
+        # The controls always build UNCHECKED. A reader with a rule deleted produces values a
+        # checked build asserts on, and an abort is a hard ctest failure that WILL_FAIL does not
+        # invert — so a control built with assertions live would report a crash where the thing
+        # under test is the corpus's verdict. What must go red here is the corpus, cleanly.
+        target_compile_definitions(serialize_conformance_control_${control} PRIVATE SERIALIZE_RELEASE NDEBUG)
+        add_test(NAME conformance-control-${control}
+                 COMMAND serialize_conformance_control_${control} ${SERIALIZE_CONFORMANCE_VECTORS})
+        set_tests_properties(conformance-control-${control} PROPERTIES WILL_FAIL TRUE)
+    endforeach()
     add_test(NAME asserts COMMAND serialize_asserts)
 
     # THE SAME SUITE A SECOND TIME AT -ffp-contract=on, AND A THIRD TIME AT

@@ -4,11 +4,62 @@
 # separated by blank lines. `consumed` appears on accepted reads only, because
 # after a refusal the stream position is not part of the contract.
 #
-# Every refusal here is the domain rule: STANDARD.md, "int_relative", where the
-# domain is 0 to 2^31 - 1 inclusive and reconstruction is checked in every
-# tier. Each refusal has an accept twin one step inside the domain, sharing its
-# bytes, so a reader that refuses on the bytes rather than on the reconstructed
-# value fails the twin.
+# STANDARD.md, "int_relative": a ladder of one-bit flags, each answering "does
+# it fit in this tier?", with the tier names this file uses taken from the
+# document's own table:
+#
+#     one-bit      1              —                                exactly 1
+#     bounded-3    0 1            serialize_int( d, 2, 6 )         2 – 6
+#     bounded-5    0 0 1          serialize_int( d, 7, 23 )        7 – 23
+#     bounded-9    0 0 0 1        serialize_int( d, 24, 280 )      24 – 280
+#     bounded-13   0 0 0 0 1      serialize_int( d, 281, 4377 )    281 – 4377
+#     bounded-17   0 0 0 0 0 1    serialize_int( d, 4378, 69914 )  4378 – 69914
+#     absolute     0 0 0 0 0 0    current as 32 raw bits           anything
+#
+# Three refusal rules reach this operation, and this file carries all three in
+# every tier they can occur in.
+#
+# 1. The DOMAIN and the ordering. "Every tier's reconstruction must be
+#    checked": the reader reconstructs current in a width that cannot wrap and
+#    must refuse unless current lies in 0 .. 2^31 - 1 and is strictly greater
+#    than previous. That binds in the one-bit tier, in each of the five
+#    bounded tiers, and in the absolute tier. Each refusal below has an accept
+#    twin one step inside the domain, SHARING ITS BYTES, so a reader that
+#    refuses on the bytes rather than on the reconstructed value fails the twin.
+#
+# 2. The BOUNDED PAYLOAD's own range. Each bounded tier's payload is a ranged
+#    integer whose span is not one less than a power of two, so an offset past
+#    the span is expressible in the tier's width and "readers must check that
+#    the decoded value lies within [min,max] and fail otherwise" applies inside
+#    the ladder exactly as it does anywhere else. Every bounded tier carries
+#    that refusal below, at one past the span and at the width's maximum, each
+#    beside the accepted vector that pins the span's top.
+#
+# 3. Reading PAST THE END, in the flags and in each tier's payload.
+#
+# A writer emits the FIRST tier a difference fits, so the absolute-tier vectors
+# whose difference is small are reader-only: no conforming writer produces
+# them, and marking them `writer = canonical` would demand wire the document
+# forbids. The tier-first-fit vectors carry the mark instead.
+
+# ---------------------------------------------------------------------------
+# the one-bit tier
+
+# An empty stream cannot supply even the ladder's first flag.
+
+operation int_relative
+name ladder-refuse-past-end-empty-stream
+param previous = 100
+bytes
+expect refused
+
+operation int_relative
+name one-bit-accept
+param previous = 100
+bytes 01
+expect value = 101
+consumed 1
+writer canonical
 
 operation int_relative
 name one-bit-refuse-past-domain
@@ -22,6 +73,39 @@ param previous = 2147483646
 bytes 01
 expect value = 2147483647
 consumed 1
+writer canonical
+
+# ---------------------------------------------------------------------------
+# the bounded-3 tier: payload serialize_int( d, 2, 6 ), span 4 in 3 bits, so
+# offsets 5 through 7 are expressible and must be refused
+
+operation int_relative
+name bounded-3-accept-low
+param previous = 100
+bytes 02
+expect value = 102
+consumed 5
+writer canonical
+
+operation int_relative
+name bounded-3-accept-high
+param previous = 100
+bytes 12
+expect value = 106
+consumed 5
+writer canonical
+
+operation int_relative
+name bounded-3-refuse-payload-one-past-the-span
+param previous = 100
+bytes 16
+expect refused
+
+operation int_relative
+name bounded-3-refuse-payload-all-three-bits
+param previous = 100
+bytes 1E
+expect refused
 
 operation int_relative
 name bounded-3-refuse-past-domain
@@ -35,6 +119,39 @@ param previous = 2147483645
 bytes 02
 expect value = 2147483647
 consumed 5
+writer canonical
+
+# ---------------------------------------------------------------------------
+# the bounded-5 tier: payload serialize_int( d, 7, 23 ), span 16 in 5 bits, so
+# offsets 17 through 31 are expressible and must be refused
+
+operation int_relative
+name bounded-5-accept-low
+param previous = 100
+bytes 04
+expect value = 107
+consumed 8
+writer canonical
+
+operation int_relative
+name bounded-5-accept-high
+param previous = 100
+bytes 84
+expect value = 123
+consumed 8
+writer canonical
+
+operation int_relative
+name bounded-5-refuse-payload-one-past-the-span
+param previous = 100
+bytes 8C
+expect refused
+
+operation int_relative
+name bounded-5-refuse-payload-all-five-bits
+param previous = 100
+bytes FC
+expect refused
 
 operation int_relative
 name bounded-5-refuse-past-domain
@@ -48,6 +165,39 @@ param previous = 2147483640
 bytes 04
 expect value = 2147483647
 consumed 8
+writer canonical
+
+# ---------------------------------------------------------------------------
+# the bounded-9 tier: payload serialize_int( d, 24, 280 ), span 256 in 9 bits,
+# so offsets 257 through 511 are expressible and must be refused
+
+operation int_relative
+name bounded-9-accept-low
+param previous = 100
+bytes 08 00
+expect value = 124
+consumed 13
+writer canonical
+
+operation int_relative
+name bounded-9-accept-high
+param previous = 100
+bytes 08 10
+expect value = 380
+consumed 13
+writer canonical
+
+operation int_relative
+name bounded-9-refuse-payload-one-past-the-span
+param previous = 100
+bytes 18 10
+expect refused
+
+operation int_relative
+name bounded-9-refuse-payload-all-nine-bits
+param previous = 100
+bytes F8 1F
+expect refused
 
 operation int_relative
 name bounded-9-refuse-past-domain
@@ -61,6 +211,45 @@ param previous = 2147483623
 bytes 08 00
 expect value = 2147483647
 consumed 13
+writer canonical
+
+operation int_relative
+name bounded-9-refuse-past-end-payload-truncated
+param previous = 100
+bytes 08
+expect refused
+
+# ---------------------------------------------------------------------------
+# the bounded-13 tier: payload serialize_int( d, 281, 4377 ), span 4096 in 13
+# bits, so offsets 4097 through 8191 are expressible and must be refused
+
+operation int_relative
+name bounded-13-accept-low
+param previous = 100
+bytes 10 00 00
+expect value = 381
+consumed 18
+writer canonical
+
+operation int_relative
+name bounded-13-accept-high
+param previous = 100
+bytes 10 00 02
+expect value = 4477
+consumed 18
+writer canonical
+
+operation int_relative
+name bounded-13-refuse-payload-one-past-the-span
+param previous = 100
+bytes 30 00 02
+expect refused
+
+operation int_relative
+name bounded-13-refuse-payload-all-thirteen-bits
+param previous = 100
+bytes F0 FF 03
+expect refused
 
 operation int_relative
 name bounded-13-refuse-past-domain
@@ -74,6 +263,48 @@ param previous = 2147483366
 bytes 10 00 00
 expect value = 2147483647
 consumed 18
+writer canonical
+
+operation int_relative
+name bounded-13-refuse-past-end-payload-truncated
+param previous = 100
+bytes 10 00
+expect refused
+
+# ---------------------------------------------------------------------------
+# the bounded-17 tier: payload serialize_int( d, 4378, 69914 ), span 65536 in
+# 17 bits, so offsets 65537 through 131071 are expressible and must be refused.
+# This is the tier a decoder is most likely to be missing outright, in which
+# case its flag is read as the start of the absolute form and everything after
+# it shifts.
+
+operation int_relative
+name bounded-17-accept-low
+param previous = 100
+bytes 20 00 00
+expect value = 4478
+consumed 23
+writer canonical
+
+operation int_relative
+name bounded-17-accept-high
+param previous = 100
+bytes 20 00 40
+expect value = 70014
+consumed 23
+writer canonical
+
+operation int_relative
+name bounded-17-refuse-payload-one-past-the-span
+param previous = 100
+bytes 60 00 40
+expect refused
+
+operation int_relative
+name bounded-17-refuse-payload-all-seventeen-bits
+param previous = 100
+bytes E0 FF 7F
+expect refused
 
 operation int_relative
 name bounded-17-refuse-past-domain
@@ -87,6 +318,39 @@ param previous = 2147479269
 bytes 20 00 00
 expect value = 2147483647
 consumed 23
+writer canonical
+
+operation int_relative
+name bounded-17-refuse-past-end-payload-truncated
+param previous = 100
+bytes 20 00
+expect refused
+
+# ---------------------------------------------------------------------------
+# the absolute tier. "The final tier transmits current, not the difference."
+# Its 32 raw bits are UNSIGNED, so a value with the top bit set is outside the
+# domain and must be refused; a reader that takes the group into a signed
+# sequence type first has already left the domain, and the two readings
+# disagree about the same byte sequence.
+#
+# A writer reaches this tier only when the difference exceeds 69914, so the
+# small-difference vectors here are reader-only.
+
+operation int_relative
+name absolute-accept-domain-maximum
+param previous = 100
+bytes C0 FF FF FF 1F
+expect value = 2147483647
+consumed 38
+writer canonical
+
+operation int_relative
+name absolute-accept-first-difference-past-the-last-tier
+param previous = 100
+bytes C0 5F 44 00 00
+expect value = 70015
+consumed 38
+writer canonical
 
 operation int_relative
 name absolute-refuse-not-increasing
@@ -102,6 +366,18 @@ expect value = 2147483647
 consumed 38
 
 operation int_relative
+name absolute-refuse-current-equal-to-previous
+param previous = 100
+bytes 00 19 00 00 00
+expect refused
+
+operation int_relative
+name absolute-refuse-current-below-previous
+param previous = 100
+bytes 80 0C 00 00 00
+expect refused
+
+operation int_relative
 name absolute-refuse-top-bit-set
 param previous = 100
 bytes 00 00 00 00 20
@@ -114,8 +390,8 @@ bytes C0 FF FF FF 3F
 expect refused
 
 operation int_relative
-name absolute-accept-domain-maximum
+name absolute-refuse-past-end-payload-truncated
 param previous = 100
-bytes C0 FF FF FF 1F
-expect value = 2147483647
-consumed 38
+bytes 00 00 00 00
+expect refused
+

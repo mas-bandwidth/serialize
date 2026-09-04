@@ -1,0 +1,263 @@
+# serialize conformance vectors: serialize_int
+#
+# The format is specified in STANDARD.md, "The vector format". Records are
+# separated by blank lines.
+#
+# STANDARD.md, "int (ranged)": the width is
+#
+#     bits_required( min, max ) = ( min == max ) ? 0 : 32 - count_leading_zeros( max - min )
+#
+# and `value - min` is written in that many bits. The document names the
+# consequences and this file pins each of them: [0,7] costs 3 bits, [0,8] costs
+# 4, and a degenerate range where min == max costs ZERO BITS with the value
+# taken from the range alone.
+#
+# Two refusal rules reach this operation. "Readers must check that the decoded
+# value lies within [min,max] and fail otherwise" — in offset form, an offset
+# greater than max - min, which is expressible whenever the span is not one
+# less than a power of two. And reading past the end must fail. Every refusal
+# below carries an accepted twin one step inside the same edge, sharing the
+# declaration, so a reader that refuses on the declaration rather than on the
+# decoded value fails the twin.
+
+operation int
+name int-degenerate-range-zero-bits
+param min = 42
+param max = 42
+bytes
+expect value = 42
+consumed 0
+writer canonical
+
+operation int
+name int-degenerate-range-negative
+param min = -1000
+param max = -1000
+bytes
+expect value = -1000
+consumed 0
+writer canonical
+
+operation int
+name int-degenerate-range-at-int32-min
+param min = -2147483648
+param max = -2147483648
+bytes
+expect value = -2147483648
+consumed 0
+writer canonical
+
+# The document's own pair: [0,7] is 3 bits, [0,8] is 4. An implementation that
+# computes the width from the count of values rather than the span gets one of
+# these wrong, and the `consumed` line is what catches it.
+
+operation int
+name int-range-0-7-costs-three-bits
+param min = 0
+param max = 7
+bytes 05
+expect value = 5
+consumed 3
+writer canonical
+
+operation int
+name int-range-0-7-accepts-its-maximum
+param min = 0
+param max = 7
+bytes 07
+expect value = 7
+consumed 3
+writer canonical
+
+operation int
+name int-range-0-8-costs-four-bits
+param min = 0
+param max = 8
+bytes 08
+expect value = 8
+consumed 4
+writer canonical
+
+# [0,8] is four bits, so offsets 9 through 15 are expressible and every one of
+# them must be refused — reject, never clamp.
+
+operation int
+name int-range-0-8-refuse-offset-one-past-the-span
+param min = 0
+param max = 8
+bytes 09
+expect refused
+
+operation int
+name int-range-0-8-refuse-offset-fifteen
+param min = 0
+param max = 8
+bytes 0F
+expect refused
+
+operation int
+name int-range-0-1-single-bit-zero
+param min = 0
+param max = 1
+bytes 00
+expect value = 0
+consumed 1
+writer canonical
+
+operation int
+name int-range-0-1-single-bit-one
+param min = 0
+param max = 1
+bytes 01
+expect value = 1
+consumed 1
+writer canonical
+
+operation int
+name int-range-0-2-accepts-its-maximum
+param min = 0
+param max = 2
+bytes 02
+expect value = 2
+consumed 2
+writer canonical
+
+operation int
+name int-range-0-2-refuse-offset-three
+param min = 0
+param max = 2
+bytes 03
+expect refused
+
+# A negative min: the offset is value - min, and the reader adds min back. The
+# golden message's narrow int field.
+
+operation int
+name int-negative-min-golden-field
+param min = -100
+param max = 100
+bytes 3F
+expect value = -37
+consumed 8
+writer canonical
+
+operation int
+name int-negative-min-accepts-its-minimum
+param min = -100
+param max = 100
+bytes 00
+expect value = -100
+consumed 8
+writer canonical
+
+operation int
+name int-negative-min-accepts-its-maximum
+param min = -100
+param max = 100
+bytes C8
+expect value = 100
+consumed 8
+writer canonical
+
+operation int
+name int-negative-min-refuse-offset-one-past-the-span
+param min = -100
+param max = 100
+bytes C9
+expect refused
+
+operation int
+name int-negative-min-refuse-offset-all-ones
+param min = -100
+param max = 100
+bytes FF
+expect refused
+
+# The full int32 range is 32 bits, and every 32-bit offset is legal over it, so
+# this declaration has no refusal vector — that is the rule's absence, not a
+# gap. The span is 2^32 - 1, which a reader computing max - min in a signed
+# 32-bit type overflows; the maximum vector is where that shows.
+
+operation int
+name int-full-int32-range-golden-field
+param min = -2147483648
+param max = 2147483647
+bytes EB 32 A4 78
+expect value = -123456789
+consumed 32
+writer canonical
+
+operation int
+name int-full-int32-range-minimum
+param min = -2147483648
+param max = 2147483647
+bytes 00 00 00 00
+expect value = -2147483648
+consumed 32
+writer canonical
+
+operation int
+name int-full-int32-range-maximum
+param min = -2147483648
+param max = 2147483647
+bytes FF FF FF FF
+expect value = 2147483647
+consumed 32
+writer canonical
+
+# A 31-bit span whose maximum offset is one below the width's maximum: the
+# widest declaration in this file that can express a refusal.
+
+operation int
+name int-span-31-bits-accepts-its-maximum
+param min = 0
+param max = 2147483646
+bytes FE FF FF 7F
+expect value = 2147483646
+consumed 31
+writer canonical
+
+operation int
+name int-span-31-bits-refuse-offset-one-past-the-span
+param min = 0
+param max = 2147483646
+bytes FF FF FF 7F
+expect refused
+
+# Reading past the end. [0,1000] is 10 bits and one byte cannot supply them.
+
+operation int
+name int-refuse-past-end
+param min = 0
+param max = 1000
+bytes FF
+expect refused
+
+operation int
+name int-accept-ten-bits-of-ten
+param min = 0
+param max = 1000
+bytes E8 03
+expect value = 1000
+consumed 10
+writer canonical
+
+operation int
+name int-refuse-past-end-empty-stream
+param min = 0
+param max = 1
+bytes
+expect refused
+
+# A degenerate range consumes nothing, so it succeeds on an empty stream where
+# every other declaration fails: the same empty stream, two verdicts, decided
+# by the declaration alone.
+
+operation int
+name int-degenerate-range-accepts-the-empty-stream
+param min = 7
+param max = 7
+bytes
+expect value = 7
+consumed 0
+writer canonical

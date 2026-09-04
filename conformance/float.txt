@@ -1,0 +1,162 @@
+# serialize conformance vectors: serialize_float
+#
+# The format is specified in STANDARD.md, "The vector format". Records are
+# separated by blank lines.
+#
+# STANDARD.md, "float": the 32 bits of the IEEE-754 single-precision
+# representation, written as a 32-bit group. No conversion, no compression.
+#
+# "Bit transparency — both directions": every bit pattern is legal on the wire
+# — NaNs with any payload, signaling NaNs, infinities, negative zero, denormals
+# — and the reader reproduces the transmitted pattern exactly. It must not
+# canonicalize, quiet, flush, or refuse any of them. There is no reader
+# latitude: a reader that rejects NaN, or canonicalizes payloads, does not
+# conform.
+#
+# The document also states how these vectors must be compared: "Conformance
+# vectors for these operations must compare BIT PATTERNS, NOT VALUES: NaN
+# compares unequal to itself, -0.0 == 0.0, and a tolerance comparison cannot
+# see a quieted signaling bit, so a value-space comparison here proves
+# nothing." Every expectation below is therefore `expect bits`, and a runner
+# that compares these as floats fails the NaN rows by construction and passes
+# the negative-zero row while a canonicalizing reader is broken.
+#
+# There is no range rule and no refusal of any pattern, so the only refusal
+# STANDARD.md states for this operation is reading past the end.
+
+operation float
+name float-positive-zero
+bytes 00 00 00 00
+expect bits = 0x00000000
+consumed 32
+writer canonical
+
+# -0.0 compares EQUAL to 0.0 in value space, so only a bit comparison can see a
+# reader that canonicalizes the sign of zero.
+
+operation float
+name float-negative-zero
+bytes 00 00 00 80
+expect bits = 0x80000000
+consumed 32
+writer canonical
+
+operation float
+name float-one
+bytes 00 00 80 3F
+expect bits = 0x3F800000
+consumed 32
+writer canonical
+
+operation float
+name float-negative-one
+bytes 00 00 80 BF
+expect bits = 0xBF800000
+consumed 32
+writer canonical
+
+# The golden message's float field.
+
+operation float
+name float-pi
+bytes DB 0F 49 40
+expect bits = 0x40490FDB
+consumed 32
+writer canonical
+
+operation float
+name float-positive-infinity
+bytes 00 00 80 7F
+expect bits = 0x7F800000
+consumed 32
+writer canonical
+
+operation float
+name float-negative-infinity
+bytes 00 00 80 FF
+expect bits = 0xFF800000
+consumed 32
+writer canonical
+
+operation float
+name float-quiet-nan
+bytes 00 00 C0 7F
+expect bits = 0x7FC00000
+consumed 32
+writer canonical
+
+# A SIGNALING NaN: the quiet bit is clear. A reader that quiets NaNs — which
+# many language runtimes do on an ordinary load and store — turns this into
+# 0x7FC00001, and no tolerance comparison can see the difference.
+
+operation float
+name float-signaling-nan
+bytes 01 00 80 7F
+expect bits = 0x7F800001
+consumed 32
+writer canonical
+
+# A NaN carrying a payload. A reader that canonicalizes NaNs loses it.
+
+operation float
+name float-nan-with-payload
+bytes 00 AD DE 7F
+expect bits = 0x7FDEAD00
+consumed 32
+writer canonical
+
+operation float
+name float-negative-nan-all-payload-bits
+bytes FF FF FF FF
+expect bits = 0xFFFFFFFF
+consumed 32
+writer canonical
+
+# Denormals, which a reader that flushes subnormals to zero destroys.
+
+operation float
+name float-smallest-positive-denormal
+bytes 01 00 00 00
+expect bits = 0x00000001
+consumed 32
+writer canonical
+
+operation float
+name float-largest-denormal
+bytes FF FF 7F 00
+expect bits = 0x007FFFFF
+consumed 32
+writer canonical
+
+operation float
+name float-negative-denormal
+bytes 01 00 00 80
+expect bits = 0x80000001
+consumed 32
+writer canonical
+
+operation float
+name float-smallest-positive-normal
+bytes 00 00 80 00
+expect bits = 0x00800000
+consumed 32
+writer canonical
+
+operation float
+name float-largest-finite
+bytes FF FF 7F 7F
+expect bits = 0x7F7FFFFF
+consumed 32
+writer canonical
+
+# Reading past the end.
+
+operation float
+name float-refuse-past-end-24-of-32
+bytes 00 00 00
+expect refused
+
+operation float
+name float-refuse-past-end-empty-stream
+bytes
+expect refused

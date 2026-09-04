@@ -3,6 +3,26 @@
 # The format is specified in STANDARD.md, "The vector format". Records are
 # separated by blank lines.
 #
+# STANDARD.md, "int128 (ranged)": bits_required128( min, max ) bits, with min
+# and max converted to the UNSIGNED 128-bit domain first "so a range wider than
+# 2^127 is exact rather than overflowing". The offset value - min is computed
+# in that same unsigned domain and written in 32-bit groups from least
+# significant upward — bits <= 32 is a single group, otherwise full 32-bit
+# groups from the bottom with the final group carrying the remainder, up to
+# four groups.
+#
+# Where the range fits 64 bits or fewer the bytes are identical to
+# serialize_int64 over the same bounds, so the narrow vectors below repeat
+# int64.txt's declarations deliberately: a field widened from 64 to 128 bits
+# must not change the wire.
+#
+# Do not confuse this with serialize_uint128, which is not ranged and always
+# costs a full 128 bits; that operation has its own file.
+#
+# The refusal rules are "Readers must check that the decoded offset is at most
+# max - min in the unsigned domain and fail otherwise — reject, never clamp",
+# and reading past the end.
+
 # A degenerate range is legal and costs zero bits: STANDARD.md, "int (ranged)"
 # for the rule and "int128 (ranged)" for the width. The stream is empty, the
 # reader consumes nothing, and the value comes from min. A reader that requires
@@ -15,3 +35,180 @@ param max = 1267650600228229401496703205383
 bytes
 expect value = 1267650600228229401496703205383
 consumed 0
+writer canonical
+
+operation int128
+name int128-degenerate-range-negative
+param min = -1267650600228229401496703205376
+param max = -1267650600228229401496703205376
+bytes
+expect value = -1267650600228229401496703205376
+consumed 0
+writer canonical
+
+# Narrow ranges: byte-identical to serialize_int64 over the same bounds.
+
+operation int128
+name int128-narrow-range-matches-int64
+param min = 0
+param max = 7
+bytes 05
+expect value = 5
+consumed 3
+writer canonical
+
+operation int128
+name int128-64-bit-span-matches-int64
+param min = -9223372036854775808
+param max = 9223372036854775807
+bytes 00 00 00 00 00 00 00 80
+expect value = 0
+consumed 64
+writer canonical
+
+# The library's additive pin, decoded here by the document alone: bounds of
+# +/- 2^70 span 2^71 and need 72 bits, so this load-bears the THREE-group
+# structure — 32 bits, 32 bits, then an 8-bit remainder on top. A decoder that
+# assembles the groups in the wrong order, or puts the remainder anywhere but
+# the most significant position, decodes the wrong value.
+
+operation int128
+name int128-72-bit-span-three-groups
+param min = -1180591620717411303424
+param max = 1180591620717411303424
+bytes 11 32 54 76 98 BA DC FE 3F
+expect value = -0x0123456789ABCDEF
+consumed 72
+writer canonical
+
+operation int128
+name int128-72-bit-span-accepts-its-minimum
+param min = -1180591620717411303424
+param max = 1180591620717411303424
+bytes 00 00 00 00 00 00 00 00 00
+expect value = -1180591620717411303424
+consumed 72
+writer canonical
+
+operation int128
+name int128-72-bit-span-accepts-offset-equal-to-the-span
+param min = -1180591620717411303424
+param max = 1180591620717411303424
+bytes 00 00 00 00 00 00 00 00 80
+expect value = 1180591620717411303424
+consumed 72
+writer canonical
+
+operation int128
+name int128-72-bit-span-refuse-offset-one-past-the-span
+param min = -1180591620717411303424
+param max = 1180591620717411303424
+bytes 01 00 00 00 00 00 00 00 80
+expect refused
+
+operation int128
+name int128-72-bit-span-refuse-offset-all-ones
+param min = -1180591620717411303424
+param max = 1180591620717411303424
+bytes FF FF FF FF FF FF FF FF FF
+expect refused
+
+# The full 128-bit range: the span is 2^128 - 1, which is exactly what "min and
+# max are converted to the unsigned 128-bit domain first" buys. Four groups,
+# and every 128-bit offset is legal, so this declaration has no refusal vector.
+
+operation int128
+name int128-full-range-zero
+param min = -170141183460469231731687303715884105728
+param max = 170141183460469231731687303715884105727
+bytes 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 80
+expect value = 0
+consumed 128
+writer canonical
+
+operation int128
+name int128-full-range-minimum
+param min = -170141183460469231731687303715884105728
+param max = 170141183460469231731687303715884105727
+bytes 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+expect value = -170141183460469231731687303715884105728
+consumed 128
+writer canonical
+
+operation int128
+name int128-full-range-maximum
+param min = -170141183460469231731687303715884105728
+param max = 170141183460469231731687303715884105727
+bytes FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF
+expect value = 170141183460469231731687303715884105727
+consumed 128
+writer canonical
+
+# The widest declaration that can express a refusal: the span is 2^128 - 2, one
+# below the width's maximum. An implementation that computes the span in the
+# SIGNED 128-bit domain overflows here and cannot decide either vector.
+
+operation int128
+name int128-128-bit-span-accepts-its-maximum
+param min = -170141183460469231731687303715884105728
+param max = 170141183460469231731687303715884105726
+bytes FE FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF
+expect value = 170141183460469231731687303715884105726
+consumed 128
+writer canonical
+
+operation int128
+name int128-128-bit-span-refuse-offset-one-past-the-span
+param min = -170141183460469231731687303715884105728
+param max = 170141183460469231731687303715884105726
+bytes FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF
+expect refused
+
+# The group boundaries, one vector per group, over a zero minimum so the decoded
+# value is the offset itself. The bounds are SIGNED, so the widest declaration
+# with a zero minimum is [ 0, 2^127 - 1 ], a 127-bit span across four groups —
+# three full ones and a 31-bit remainder — and each vector puts a single set bit
+# in one group to prove that group's position in the stream.
+
+operation int128
+name int128-group-boundary-bit-32
+param min = 0
+param max = 170141183460469231731687303715884105727
+bytes 00 00 00 00 01 00 00 00 00 00 00 00 00 00 00 00
+expect value = 4294967296
+consumed 127
+writer canonical
+
+operation int128
+name int128-group-boundary-bit-64
+param min = 0
+param max = 170141183460469231731687303715884105727
+bytes 00 00 00 00 00 00 00 00 01 00 00 00 00 00 00 00
+expect value = 18446744073709551616
+consumed 127
+writer canonical
+
+operation int128
+name int128-group-boundary-bit-96
+param min = 0
+param max = 170141183460469231731687303715884105727
+bytes 00 00 00 00 00 00 00 00 00 00 00 00 01 00 00 00
+expect value = 79228162514264337593543950336
+consumed 127
+writer canonical
+
+# Reading past the end. A 101-bit field cannot be read from eight bytes.
+
+operation int128
+name int128-refuse-past-end
+param min = 0
+param max = 1267650600228229401496703205376
+bytes FF FF FF FF FF FF FF FF
+expect refused
+
+operation int128
+name int128-refuse-past-end-empty-stream
+param min = 0
+param max = 1
+bytes
+expect refused

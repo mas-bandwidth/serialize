@@ -1,0 +1,48 @@
+# serialize conformance vectors: the message STANDARD.md works through
+#
+# The format is specified in STANDARD.md, "The vector format". Records use the
+# sequence spelling documented at the head of conformance/sequence.txt.
+#
+# STANDARD.md's "Worked Example" decodes a run of the library's golden message
+# field by field, and states the bytes it decodes: the 13-byte wide-string run
+#
+#     0xE3 0x21 0x00 0x00 0xC0 0x21 0x00 0x00 0x00 0x22 0x00 0x00 0x00
+#
+# then "The message then aligns and continues with four fixed point fields. The
+# first is serialize_fixed( value, 8, 8, -100, +100 ) — Q8.8, so raw_min is
+# -100 << 8 = -25600, the raw range is 51200, and the field costs 16 bits. The
+# next two bytes of the golden vector are 0xC0 0x60, which is the offset
+# 0x60C0 = 24768; adding raw_min gives a raw value of -832, which is -3.25 in
+# Q8.8 — exactly the value the golden message stores."
+#
+# That is a real multi-operation message whose every byte the document itself
+# supplies, and this file is it: a wstring, the align that follows it, and the
+# fixed point field the align makes room for. It is the cheapest way to confirm
+# an independent implementation is correct, and it is the one place in this
+# corpus where three different operations meet across an alignment boundary
+# with a byte-for-byte expectation the page prints in full.
+#
+# It is a FRAGMENT of the 112-byte golden and not the whole of it, deliberately.
+# The remaining fields' bytes appear nowhere in STANDARD.md; they exist only as
+# an array inside serialize.h, and lifting them here would put an
+# implementation's output into the corpus, which is the one thing the corpus
+# must never contain — "no checker reimplements the codec and then checks that
+# reimplementation against itself", and a vector copied off the implementation
+# it is meant to judge is the same failure wearing a different coat. Shipping
+# the full golden needs the document to print the rest of its bytes; that is
+# filed as an underdetermination rather than worked around here.
+#
+# The wide string ends at bit 99, three bits into byte 12, so the align pads
+# the remaining five bits of that byte — which is why the document's 13-byte
+# run ends in 0x00 and the fixed point field begins on byte 13.
+
+operation sequence
+name message-worked-example-wstring-align-fixed
+param step = wstring 8
+param step = align
+param step = fixed 8 8 -100 100
+bytes E3 21 00 00 C0 21 00 00 00 22 00 00 00 C0 60
+expect value = 043C 0438 0440 | - | -832
+consumed 120
+measure_at_least 122
+writer canonical

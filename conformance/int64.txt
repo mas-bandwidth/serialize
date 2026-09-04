@@ -1,0 +1,223 @@
+# serialize conformance vectors: serialize_int64
+#
+# The format is specified in STANDARD.md, "The vector format". Records are
+# separated by blank lines.
+#
+# STANDARD.md, "int64 (ranged)": the 64-bit counterpart of the ranged integer
+# and the only ranged 64-bit operation. bits_required64( min, max ) bits are
+# used; "if that is 32 or fewer, the value is written as a single group of that
+# many bits; otherwise the low 32 bits are written first, followed by the
+# remaining bits - 32 high bits."
+#
+# Do not confuse this with serialize_uint64, which is not ranged and always
+# costs a full 64 bits; that operation is covered in bits.txt, whose aliases it
+# is one of. The names are similar and the encodings are not.
+#
+# The refusal rules are the ranged integer's: a decoded value outside [min,max]
+# — in offset form an offset greater than max - min — and reading past the end.
+# The span is computed in the unsigned 64-bit domain, so the widest
+# declarations here are where an implementation that subtracts in a signed type
+# diverges.
+
+operation int64
+name int64-degenerate-range-zero-bits
+param min = 1234567890123456789
+param max = 1234567890123456789
+bytes
+expect value = 1234567890123456789
+consumed 0
+writer canonical
+
+operation int64
+name int64-degenerate-range-at-int64-min
+param min = -9223372036854775808
+param max = -9223372036854775808
+bytes
+expect value = -9223372036854775808
+consumed 0
+writer canonical
+
+# A narrow range produces the same bytes as serialize_int over the same bounds.
+
+operation int64
+name int64-narrow-range-matches-int
+param min = 0
+param max = 7
+bytes 05
+expect value = 5
+consumed 3
+writer canonical
+
+operation int64
+name int64-single-bit-range
+param min = -1
+param max = 0
+bytes 01
+expect value = 0
+consumed 1
+writer canonical
+
+# Exactly 32 bits: the last width written as a single group.
+
+operation int64
+name int64-span-exactly-32-bits-single-group
+param min = 0
+param max = 4294967295
+bytes EF BE AD DE
+expect value = 3735928559
+consumed 32
+writer canonical
+
+operation int64
+name int64-span-exactly-32-bits-accepts-its-maximum
+param min = 0
+param max = 4294967295
+bytes FF FF FF FF
+expect value = 4294967295
+consumed 32
+writer canonical
+
+# One wider: 33 bits, the first width that splits into a low 32-bit group and a
+# high remainder. The set bit lands in the high group, so an implementation
+# that writes the high group first puts it in bit 0 instead of bit 32.
+
+operation int64
+name int64-span-33-bits-low-group-precedes-high-group
+param min = 0
+param max = 4294967296
+bytes 00 00 00 00 01
+expect value = 4294967296
+consumed 33
+writer canonical
+
+# The vector above is also this declaration's accept boundary: the span is
+# 2^32, so offset 2^32 is the largest legal offset and the next one is refused.
+
+operation int64
+name int64-span-33-bits-refuse-offset-one-past-the-span
+param min = 0
+param max = 4294967296
+bytes 01 00 00 00 01
+expect refused
+
+operation int64
+name int64-span-33-bits-accepts-its-full-width
+param min = 0
+param max = 8589934591
+bytes FF FF FF FF 01
+expect value = 8589934591
+consumed 33
+writer canonical
+
+# A 42-bit span with negative bounds: 32 bits in the low group and 10 in the
+# high one, and the offset must be added to a negative raw minimum.
+
+operation int64
+name int64-span-42-bits-negative-bounds
+param min = -1099511627776
+param max = 1099511627776
+bytes 00 00 00 00 00 01
+expect value = 0
+consumed 42
+writer canonical
+
+operation int64
+name int64-span-42-bits-accepts-its-minimum
+param min = -1099511627776
+param max = 1099511627776
+bytes 00 00 00 00 00 00
+expect value = -1099511627776
+consumed 42
+writer canonical
+
+operation int64
+name int64-span-42-bits-accepts-its-maximum
+param min = -1099511627776
+param max = 1099511627776
+bytes 00 00 00 00 00 02
+expect value = 1099511627776
+consumed 42
+writer canonical
+
+operation int64
+name int64-span-42-bits-refuse-offset-one-past-the-span
+param min = -1099511627776
+param max = 1099511627776
+bytes 01 00 00 00 00 02
+expect refused
+
+# The full int64 range: the span is 2^64 - 1, so the width is 64 and every
+# 64-bit offset is legal. No refusal vector exists for this declaration, which
+# is the rule's absence rather than a gap.
+
+operation int64
+name int64-full-range-zero
+param min = -9223372036854775808
+param max = 9223372036854775807
+bytes 00 00 00 00 00 00 00 80
+expect value = 0
+consumed 64
+writer canonical
+
+operation int64
+name int64-full-range-minimum
+param min = -9223372036854775808
+param max = 9223372036854775807
+bytes 00 00 00 00 00 00 00 00
+expect value = -9223372036854775808
+consumed 64
+writer canonical
+
+operation int64
+name int64-full-range-maximum
+param min = -9223372036854775808
+param max = 9223372036854775807
+bytes FF FF FF FF FF FF FF FF
+expect value = 9223372036854775807
+consumed 64
+writer canonical
+
+# The widest declaration that can express a refusal: the span is 2^64 - 2, one
+# below the width's maximum. An implementation computing max - min in a signed
+# 64-bit type overflows here and cannot decide either vector correctly.
+
+operation int64
+name int64-span-64-bits-accepts-its-maximum
+param min = -9223372036854775808
+param max = 9223372036854775806
+bytes FE FF FF FF FF FF FF FF
+expect value = 9223372036854775806
+consumed 64
+writer canonical
+
+operation int64
+name int64-span-64-bits-refuse-offset-one-past-the-span
+param min = -9223372036854775808
+param max = 9223372036854775806
+bytes FF FF FF FF FF FF FF FF
+expect refused
+
+# Reading past the end.
+
+operation int64
+name int64-refuse-past-end-41-of-32
+param min = 0
+param max = 1099511627776
+bytes FF FF FF FF
+expect refused
+
+operation int64
+name int64-accept-41-bits-of-41
+param min = 0
+param max = 1099511627776
+bytes 00 00 00 00 00 01
+expect value = 1099511627776
+consumed 41
+writer canonical
+
+operation int64
+name int64-refuse-past-end-empty-stream
+param min = 0
+param max = 1
+bytes
+expect refused

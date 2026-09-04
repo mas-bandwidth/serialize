@@ -1,0 +1,65 @@
+# serialize conformance vectors: serialize_uint128
+#
+# The format is specified in STANDARD.md, "The vector format". Records are
+# separated by blank lines.
+#
+# STANDARD.md, "uint128": a 128-bit unsigned integer, ALWAYS 128 bits on the
+# wire, the LOW 64-BIT HALF FIRST and then the high half, each half written
+# exactly as serialize_bits( half, 64 ). When the stream is byte aligned the
+# result is the 16 bytes of the value in little-endian order.
+#
+# Do not confuse this with serialize_int128, which is ranged. This operation
+# carries no bounds and has no range rule, so the only refusal STANDARD.md
+# states for it is reading past the end of the stream.
+#
+# The half order is the thing an implementation gets wrong, so the two vectors
+# that put the whole value in one half are the discriminating pair: an
+# implementation that writes the high half first swaps their bytes.
+
+operation uint128
+name uint128-zero
+bytes 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+expect value = 0
+consumed 128
+writer canonical
+
+operation uint128
+name uint128-low-half-only
+bytes 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+expect value = 1
+consumed 128
+writer canonical
+
+operation uint128
+name uint128-high-half-only
+bytes 00 00 00 00 00 00 00 00 01 00 00 00 00 00 00 00
+expect value = 18446744073709551616
+consumed 128
+writer canonical
+
+# The library's additive pin, decoded here by the document alone:
+# 0x0123456789ABCDEFFEDCBA9876543210, low half 0xFEDCBA9876543210 first.
+
+operation uint128
+name uint128-distinct-halves
+bytes 10 32 54 76 98 BA DC FE EF CD AB 89 67 45 23 01
+expect value = 0x0123456789ABCDEFFEDCBA9876543210
+consumed 128
+writer canonical
+
+operation uint128
+name uint128-max
+bytes FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF
+expect value = 340282366920938463463374607431768211455
+consumed 128
+writer canonical
+
+operation uint128
+name uint128-refuse-past-end-15-bytes
+bytes 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+expect refused
+
+operation uint128
+name uint128-refuse-past-end-empty-stream
+bytes
+expect refused
