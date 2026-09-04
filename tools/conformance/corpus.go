@@ -466,6 +466,25 @@ func encodeStep(w *BitWriter, s *step) error {
 	return nil
 }
 
+// relativeTiers is STANDARD.md's ladder, in order. The writer takes the first tier
+// the difference fits, and that encoding is the canonical one.
+var relativeTiers = []struct{ lo, hi int64 }{{2, 6}, {7, 23}, {24, 280}, {281, 4377}, {4378, 69914}}
+
+// relativeBits is the width of the encoding encodeRelative emits, which the measure
+// charges exactly: nothing in this operation depends on the bit position it starts at.
+func relativeBits(prev, current int64) int {
+	d := current - prev
+	if d == 1 {
+		return 1
+	}
+	for i, t := range relativeTiers {
+		if d >= t.lo && d <= t.hi {
+			return i + 1 + 1 + bitsRequired(t.lo, t.hi)
+		}
+	}
+	return 6 + 32
+}
+
 // encodeRelative emits the FIRST tier the difference fits, which is the
 // canonical encoding STANDARD.md's ladder defines.
 func encodeRelative(w *BitWriter, prev, current int64) {
@@ -474,8 +493,7 @@ func encodeRelative(w *BitWriter, prev, current int64) {
 		w.bits(1, 1)
 		return
 	}
-	tiers := []struct{ lo, hi int64 }{{2, 6}, {7, 23}, {24, 280}, {281, 4377}, {4378, 69914}}
-	for i, t := range tiers {
+	for i, t := range relativeTiers {
 		if d >= t.lo && d <= t.hi {
 			w.bits(0, i+1)
 			w.bits(1, 1)
@@ -518,6 +536,8 @@ func stepExactBits(s *step, bitIndex int) int {
 	case stepCompressedFloat:
 		_, n := compressedFloatParams(s.fmin, s.fmax, s.fres)
 		return n
+	case stepIntRelative:
+		return relativeBits(s.previous, s.number.Int64())
 	case stepBytes:
 		return (8-(bitIndex%8))%8 + 8*len(s.data)
 	case stepString:
@@ -713,10 +733,30 @@ func buildStep(spec string) (*step, error) {
 		s.kind, s.width = stepString, num(1)
 	case "wstring":
 		s.kind, s.width = stepWString, num(1)
-	case "int":
+	case "double":
+		s.kind = stepDouble
+	case "uint128":
+		s.kind = stepUint128
+	case "int", "int64", "int128":
 		lo, _ := parseNumber(words[1])
 		hi, _ := parseNumber(words[2])
-		s.kind, s.lo, s.hi = stepInt, lo, hi
+		s.lo, s.hi = lo, hi
+		switch words[0] {
+		case "int":
+			s.kind = stepInt
+		case "int64":
+			s.kind = stepInt64
+		default:
+			s.kind = stepInt128
+		}
+	case "int_relative":
+		s.kind, s.previous = stepIntRelative, num(1)
+	case "compressed_float":
+		f := func(i int) float32 {
+			v, _ := strconv.ParseFloat(words[i], 32)
+			return float32(v)
+		}
+		s.kind, s.fmin, s.fmax, s.fres = stepCompressedFloat, f(1), f(2), f(3)
 	case "fixed":
 		lo, _ := parseNumber(words[3])
 		hi, _ := parseNumber(words[4])

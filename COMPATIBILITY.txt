@@ -18,8 +18,8 @@
 # separate records, and each line is a key and its value.
 
 format_version 1.1
-standard_commit 7e42c0fda9c734a323af5c5f79efab82191ca294
-corpus_commit 7e42c0fda9c734a323af5c5f79efab82191ca294
+standard_commit 7e0515e952f3373d001ec1899adf9dffb823e1c5
+corpus_commit 7e0515e952f3373d001ec1899adf9dffb823e1c5
 
 # The C++ implementation is this repository, so it vendors nothing: it is where STANDARD.md
 # and conformance/ live. Its row is checked against the working checkout rather than against
@@ -28,23 +28,23 @@ corpus_commit 7e42c0fda9c734a323af5c5f79efab82191ca294
 runtime serialize
 language C++
 repository mas-bandwidth/serialize
-release v1.16.1
+release v1.16.2
 version_file CMakeLists.txt
-version_pattern project(serialize VERSION 1.16.1 LANGUAGES CXX)
+version_pattern project(serialize VERSION 1.16.2 LANGUAGES CXX)
 
 runtime serialize.c
 language C
 repository mas-bandwidth/serialize.c
-release v1.9.1
+release v1.9.2
 version_file serialize.h
-version_pattern #define SERIALIZE_VERSION "1.9.1"
+version_pattern #define SERIALIZE_VERSION "1.9.2"
 
 runtime serialize.cs
 language C#
 repository mas-bandwidth/serialize.cs
-release v1.9.0
+release v1.9.1
 version_file src/Serialize.csproj
-version_pattern <Version>1.9.0</Version>
+version_pattern <Version>1.9.1</Version>
 
 # serialize.go carries no version string: a Go module's version is its tag, and duplicating
 # it in a file would only create a second place for it to be wrong. The row's release is
@@ -53,41 +53,41 @@ version_pattern <Version>1.9.0</Version>
 runtime serialize.go
 language Go
 repository mas-bandwidth/serialize.go
-release v1.15.0
+release v1.15.1
 version_file -
 version_pattern -
 
 runtime serialize.rs
 language Rust
 repository mas-bandwidth/serialize.rs
-release v2.3.0
+release v2.3.2
 version_file Cargo.toml
-version_pattern version = "2.3.0"
+version_pattern version = "2.3.2"
 
 runtime serialize.js
 language JavaScript
 repository mas-bandwidth/serialize.js
-release v1.4.0
+release v1.4.2
 version_file package.json
-version_pattern "version": "1.4.0"
+version_pattern "version": "1.4.2"
 
 runtime serialize.dart
 language Dart
 repository mas-bandwidth/serialize.dart
-release v1.1.0
+release v1.1.2
 version_file pubspec.yaml
-version_pattern version: 1.1.0
+version_pattern version: 1.1.2
 
 runtime serialize.java
 language Java
 repository mas-bandwidth/serialize.java
-release v1.1.0
+release v1.1.2
 version_file src/serialize/SerializeUtil.java
-version_pattern public static final String VERSION = "1.1.0";
+version_pattern public static final String VERSION = "1.1.2";
 
 runtime serialize.elixir
 language Elixir
 repository mas-bandwidth/serialize.elixir
-release v1.1.0
+release v1.1.2
 version_file mix.exs
-version_pattern version: "1.1.0"
+version_pattern version: "1.1.2"

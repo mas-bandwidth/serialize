@@ -693,6 +693,75 @@ bits — four 32-bit groups). A decoder that assembles the groups in the wrong
 order, or puts the remainder anywhere but the most significant position,
 decodes the wrong values here.
 
+### The whole message
+
+The fields above are three of the message's twenty-eight operations. Here is all
+of it, in the step spelling the shared corpus uses, with the value each operation
+carries. `conformance/message.txt` states the same message as a vector, so every
+implementation in the family runs it.
+
+| # | operation | value |
+|---|---|---|
+| 1 | `bits 4` | 13 |
+| 2 | `bits 11` | 1445 |
+| 3 | `bits 24` | 11259375 |
+| 4 | `bits 32` | 3735928559 (`0xDEADBEEF`) |
+| 5 | `int -100 100` | -37 |
+| 6 | `int -2147483648 2147483647` | -123456789 |
+| 7 | `bool` | true |
+| 8 | `float` | 3.1415926 (`0x40490FDA`) |
+| 9 | `compressed_float 0 10 0.01` | 5.0 (`0x40A00000`) |
+| 10 | `double` | 1/3 (`0x3FD5555555555555`) |
+| 11 | `bits 8` | 127 |
+| 12 | `bits 16` | 4660 |
+| 13 | `bits 32` | 305419896 |
+| 14 | `bits 64` | 1311768467463790320 |
+| 15 | `int_relative 100` | 101 |
+| 16 | `int_relative 100` | 2100 |
+| 17 | `align` | - |
+| 18 | `bytes 7` | `DE AD BE EF CA FE 01` |
+| 19 | `string 16` | `golden` |
+| 20 | `wstring 8` | `043C 0438 0440` |
+| 21 | `align` | - |
+| 22 | `fixed 8 8 -100 100` | -832 |
+| 23 | `fixed 16 16 -2000 2000` | 80904192 |
+| 24 | `fixed 48 16 -100000 100000` | -3559993401 |
+| 25 | `fixed 16 16 0 30000` | 1966079999 |
+| 26 | `align` | - |
+| 27 | `fixed 112 16 -144115188075855872 144115188075855872` | -6472691358699745 |
+| 28 | `fixed 64 64 -9223372036854775808 9223372036854775807` | 1512366075204170930115394234220888865 |
+
+A `-` marks an operation that produces no value of its own. A value written as a
+hexadecimal pattern is stated that way because it is compared as a bit pattern
+rather than as a number, which is what `float`, `double` and `compressed_float`
+require. The `fixed` values are raw scaled integers, not
+real units, because that is what the operation carries.
+
+The whole message is 112 bytes:
+
+    0x5D 0xDA 0xF7 0xE6 0xD5 0x77 0xDF 0x56 0xEF 0x9F 0x75 0x19
+    0x52 0xBC 0xDA 0x0F 0x49 0x40 0xF4 0x55 0x55 0x55 0x55 0x55
+    0x55 0x55 0xFF 0xFC 0xD1 0x48 0xE0 0x59 0xD1 0x48 0xC0 0x7B
+    0xF3 0x6A 0xE2 0x59 0xD1 0x48 0x84 0xB7 0x06 0xDE 0xAD 0xBE
+    0xEF 0xCA 0xFE 0x01 0x06 0x67 0x6F 0x6C 0x64 0x65 0x6E 0xE3
+    0x21 0x00 0x00 0xC0 0x21 0x00 0x00 0x00 0x22 0x00 0x00 0x00
+    0xC0 0x60 0x00 0x80 0xA2 0x7C 0xFC 0xEC 0x26 0xCB 0xFF 0xFF
+    0x4B 0x1D 0x1F 0xEF 0xD2 0x1A 0x1F 0x01 0xE9 0xFF 0xFF 0x09
+    0x19 0x2A 0x3B 0x4C 0x5D 0x6E 0x7F 0x78 0x6F 0x5E 0x4D 0x3C
+    0x2B 0x1A 0x09 0x04
+
+It occupies 891 bits, so the final byte carries three bits of message and five bits
+of zero padding, which is the writer obligation under Reader Obligations. A
+conforming measure reports at least 895 bits for it, four more than the stream
+occupies from an aligned start, because the three aligns, the byte block and the
+string each cost more from some other starting position.
+
+These bytes are not copied out of an implementation. They are produced by encoding
+the fields above with a writer written from this document alone, in
+`tools/conformance`, and they are printed here because that writer, this byte block
+and the C++ implementation's pinned emission agree byte for byte, which the same
+tool checks on every run.
+
 ## Read-only and write-only forms
 
 Every operation above has `read_` and `write_` variants — `read_string`,
@@ -1020,8 +1089,8 @@ operations are:
 | `string.txt` | `string` | valid UTF-8 accepted, and invalid UTF-8, an interior NUL and an out-of-range length refused |
 | `wstring.txt` | `wstring` | no alignment anywhere, a surrogate pair accepted, and an unpaired surrogate, a group above `0xFFFF` and a zero group refused |
 | `object.txt` | `object` | that it adds no bytes of its own, each vector twinned with the same operations unnested |
-| `sequence.txt` | sequences of operations | alignment after an odd width, a zero-bit field between wide ones, terminal failure, and the measure floor |
-| `message.txt` | the Worked Example's message | three operations across an alignment boundary, byte for byte |
+| `sequence.txt` | sequences of operations | alignment after an odd width, a zero-bit field between wide ones, terminal failure before a zero-bit ranged field and before a zero-bit fixed point one, and the measure floor |
+| `message.txt` | the Worked Example's message | three operations across an alignment boundary, and the whole 112-byte golden message, byte for byte |
 
 Adding a file here is how a rule becomes a family obligation, and the table
 above moves with the directory.
@@ -1051,7 +1120,6 @@ vector would pin. The tie-break sentence above stands until this list is empty.
 |---|---|---|
 | `fixed` | a negative tie value, which separates half away from zero from an arithmetic shift | the rounding happens where a value is quantized into a Q format or narrowed out of one, and no `serialize_fixed` call rounds: the wire round trip is exact, this document says as much, and no record whose input is a byte stream can reach the rule. It needs a record shape this format does not have |
 | `compressed_float` | the between-quanta writer inputs, and the fusion witness as a WRITE | a vector's input is a stream, so it can pin what a writer left on the wire but not the value a writer was handed. Both clamp declarations' widths, boundaries and refusals are pinned, and `8388608.0` is pinned as a decode in each of them; the writer inputs need a record shape this format does not have |
-| Worked Example | the whole 112-byte golden message | this document prints 15 of its bytes and `message.txt` carries exactly those. The rest exist only inside an implementation, and a vector copied off the implementation it judges is the failure this section opens by naming |
 
 **The vector format.** A vector file is text. `#` begins a comment, blank lines
 separate records, and each record is `key` and value, one per line:
@@ -1082,7 +1150,11 @@ produces for that value.
 **Values are typed by the operation's table.** A `param` takes the type its own
 section gives that parameter, so `min` and `max` under `fixed` are whole real
 units, `buffer_size` under `string` is a byte count, and `res` under
-`compressed_float` is a `float32`.
+`compressed_float` is a `float32`. A `wstring` value is stated as the transmitted
+UTF-16 **code units**, four hexadecimal digits each, because that is what the
+groups carry. A runtime whose `wchar_t` is wider recombines surrogate pairs into
+code points on read, so its runner splits them again before comparing, and both
+platforms are held to the same units and the same bytes.
 
 **Lexical rules.** `#` begins a comment at the start of a line and nowhere
 else, numbers are written as signed decimal or as `0x` hexadecimal, and a
@@ -1093,7 +1165,9 @@ is how `float` and `double` vectors are stated.
 **A sequence vector states more than one operation.** Its `operation` is
 `sequence`, its steps are `param step = ` lines in order, and `expect value`
 lists one entry per step separated by ` | `, with `-` for a step that produces
-no value of its own. Sequences carry what a single-operation record cannot:
+no value of its own. There is one step spelling per operation this document
+defines, listed at the head of `conformance/sequence.txt`, so any message the
+format can carry can be stated as a sequence, the golden message included. Sequences carry what a single-operation record cannot:
 alignment cost, which depends on the bit index the previous operation left
 behind; a zero-bit field, which must leave that index exactly where it found
 it; a nested `object`, spelled `object <n>` to wrap the next `n` steps; and

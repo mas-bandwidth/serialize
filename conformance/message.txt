@@ -22,15 +22,13 @@
 # corpus where three different operations meet across an alignment boundary
 # with a byte-for-byte expectation the page prints in full.
 #
-# It is a FRAGMENT of the 112-byte golden and not the whole of it, deliberately.
-# The remaining fields' bytes appear nowhere in STANDARD.md; they exist only as
-# an array inside serialize.h, and lifting them here would put an
-# implementation's output into the corpus, which is the one thing the corpus
-# must never contain — "no checker reimplements the codec and then checks that
-# reimplementation against itself", and a vector copied off the implementation
-# it is meant to judge is the same failure wearing a different coat. Shipping
-# the full golden needs the document to print the rest of its bytes; that is
-# filed as an underdetermination rather than worked around here.
+# The first record below is that fragment. The second is the whole 112-byte
+# message, whose bytes STANDARD.md now prints in full. Those bytes are not
+# copied off an implementation: they are produced by encoding the message's
+# fields with a writer written from the document alone, in tools/conformance,
+# and they are carried here only because that writer and the C++ writer's
+# pinned emission agree byte for byte. A vector copied off the implementation
+# it is meant to judge would be the failure this corpus exists to prevent.
 #
 # The wide string ends at bit 99, three bits into byte 12, so the align pads
 # the remaining five bits of that byte — which is why the document's 13-byte
@@ -45,4 +43,56 @@ bytes E3 21 00 00 C0 21 00 00 00 22 00 00 00 C0 60
 expect value = 043C 0438 0440 | - | -832
 consumed 120
 measure_at_least 122
+writer canonical
+
+# The whole golden message, every operation this format defines meeting every
+# other one in a single stream: all four raw bit widths, a narrow and a full
+# range ranged int, a bool, a float, a quantized compressed float, a double,
+# four unsigned widths, both interesting tiers of the relative integer ladder,
+# a byte block, a narrow string, a wide string, and six fixed point fields
+# across three storage widths and three alignment boundaries.
+#
+# It ends at bit 891, three bits into byte 111, so the final byte carries five
+# bits of zero padding: the writer obligation, pinned by writer = canonical
+# over the whole stream.
+#
+# The measure floor is the true worst case over every starting bit position,
+# which is four bits above the 891 this stream occupies from an aligned start,
+# because the three aligns, the bytes and the string each cost more from some
+# other start than they cost from this one.
+
+operation sequence
+name message-golden-whole
+param step = bits 4
+param step = bits 11
+param step = bits 24
+param step = bits 32
+param step = int -100 100
+param step = int -2147483648 2147483647
+param step = bool
+param step = float
+param step = compressed_float 0 10 0.01
+param step = double
+param step = bits 8
+param step = bits 16
+param step = bits 32
+param step = bits 64
+param step = int_relative 100
+param step = int_relative 100
+param step = align
+param step = bytes 7
+param step = string 16
+param step = wstring 8
+param step = align
+param step = fixed 8 8 -100 100
+param step = fixed 16 16 -2000 2000
+param step = fixed 48 16 -100000 100000
+param step = fixed 16 16 0 30000
+param step = align
+param step = fixed 112 16 -144115188075855872 144115188075855872
+param step = fixed 64 64 -9223372036854775808 9223372036854775807
+bytes 5D DA F7 E6 D5 77 DF 56 EF 9F 75 19 52 BC DA 0F 49 40 F4 55 55 55 55 55 55 55 FF FC D1 48 E0 59 D1 48 C0 7B F3 6A E2 59 D1 48 84 B7 06 DE AD BE EF CA FE 01 06 67 6F 6C 64 65 6E E3 21 00 00 C0 21 00 00 00 22 00 00 00 C0 60 00 80 A2 7C FC EC 26 CB FF FF 4B 1D 1F EF D2 1A 1F 01 E9 FF FF 09 19 2A 3B 4C 5D 6E 7F 78 6F 5E 4D 3C 2B 1A 09 04
+expect value = 13 | 1445 | 11259375 | 3735928559 | -37 | -123456789 | true | 0x40490FDA | 0x40A00000 | 0x3FD5555555555555 | 127 | 4660 | 305419896 | 1311768467463790320 | 101 | 2100 | - | DE AD BE EF CA FE 01 | 67 6F 6C 64 65 6E | 043C 0438 0440 | - | -832 | 80904192 | -3559993401 | 1966079999 | - | -6472691358699745 | 1512366075204170930115394234220888865
+consumed 891
+measure_at_least 895
 writer canonical

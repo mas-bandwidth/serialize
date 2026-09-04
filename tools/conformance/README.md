@@ -19,6 +19,19 @@ and refuses exactly what the document says every implementation in the family
 must, vector for vector. [conformance.cpp](../../conformance.cpp) runs the corpus
 as the ctest target `conformance`. Neither replaces the other.
 
+## The whole golden message
+
+STANDARD.md prints the message's 112 bytes and `conformance/message.txt` carries
+them as a vector. Neither is copied out of `serialize.h`. The steps and values are
+stated in [golden_message.go](golden_message.go), encoded by the corpus encoder in
+[corpus.go](corpus.go), which is written from the document, and three things must
+then agree byte for byte: that encoding, the block the page prints, and the
+library's pinned `golden_wire_bytes`. Any one of them drifting turns this tool red.
+
+Set `SERIALIZE_PRINT_GOLDEN=1` to print the encoding, its bit count and its measure
+floor, which is how the page's block and the vector are written when the message
+changes.
+
 Standard-library Go only, no compiler for the C++ needed: `golden_wire_bytes`,
 `golden_uint128_bytes`, `golden_int128_bytes`, `pinned_bytes` and the expected
 values are read out of `serialize.h` as data. Exit 0 means the document and the

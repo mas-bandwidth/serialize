@@ -16,9 +16,16 @@
 #
 #     bits <n>                                       bool
 #     align                                          float
-#     bytes <count>                                  int <min> <max>
-#     string <buffer_size>                           wstring <buffer_size>
+#     bytes <count>                                  double
+#     string <buffer_size>                           uint128
+#     wstring <buffer_size>                          int <min> <max>
+#     int64 <min> <max>                              int128 <min> <max>
+#     int_relative <previous>
+#     compressed_float <min> <max> <res>
 #     fixed <integer_bits> <fraction_bits> <min> <max>
+#
+# There is one spelling per operation, so any message this format can carry can
+# be written as a sequence, the golden message in message.txt included.
 #
 # `expect value` lists one entry per step in order, separated by ` | `, with
 # `-` for a step that produces no value of its own. `consumed` is the total
@@ -185,6 +192,20 @@ operation sequence
 name sequence-refusal-is-terminal-before-a-zero-bit-field
 param step = bits 16
 param step = int 7 7
+bytes FF
+expect refused
+
+# The same vector with a degenerate FIXED POINT field as the successor. The two
+# are twins on purpose: a zero-bit field is zero bits whatever operation
+# declares it, so an implementation whose ranged int consults the failure state
+# before its degenerate case while its fixed point path returns early passes
+# the vector above and fails this one. Every read consults the failure state
+# before it does anything else, zero-bit reads included.
+
+operation sequence
+name sequence-refusal-is-terminal-before-a-zero-bit-fixed-field
+param step = bits 16
+param step = fixed 16 16 7 7
 bytes FF
 expect refused
 
