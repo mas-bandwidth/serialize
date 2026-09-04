@@ -1,0 +1,180 @@
+# serialize conformance vectors: serialize_bits
+#
+# The format is specified in STANDARD.md, "The vector format". Records are
+# separated by blank lines.
+#
+# STANDARD.md, "bits": the low `bits` bits of the value, where `bits` is in
+# [1,64]. For bits <= 32 a single group; for bits > 32 the LOW 32 BITS FIRST as
+# a 32-bit group, then the remaining bits - 32 high bits. The fixed width
+# helpers serialize_uint8 / uint16 / uint32 / uint64 are aliases for exactly
+# this and carry no range information of their own, so they are covered here
+# rather than in files of their own; the vectors that stand for them say so in
+# their names.
+#
+# `bits` has no range rule: every bit pattern of the stated width is a legal
+# value, so the only refusal STANDARD.md states for this operation is reading
+# past the end of the stream ("Reader Obligations"). Every refusal vector below
+# is that rule, and each has an accepted twin over the same width so a reader
+# that refuses on the width rather than on the remaining length fails the twin.
+
+operation bits
+name bits-1-zero
+param bits = 1
+bytes 00
+expect value = 0
+consumed 1
+writer canonical
+
+operation bits
+name bits-1-one
+param bits = 1
+bytes 01
+expect value = 1
+consumed 1
+writer canonical
+
+# The low bit is the value; STANDARD.md, "Trailing bits": readers must not
+# reject a stream for the contents of the unused bits of the final byte. This
+# vector is reader-only because no conforming writer emits those bits set.
+
+operation bits
+name bits-1-reader-ignores-trailing-bits
+param bits = 1
+bytes FF
+expect value = 1
+consumed 1
+
+operation bits
+name bits-8-alias-uint8
+param bits = 8
+bytes 7F
+expect value = 127
+consumed 8
+writer canonical
+
+operation bits
+name bits-8-max
+param bits = 8
+bytes FF
+expect value = 255
+consumed 8
+writer canonical
+
+operation bits
+name bits-16-alias-uint16
+param bits = 16
+bytes 34 12
+expect value = 4660
+consumed 16
+writer canonical
+
+operation bits
+name bits-24
+param bits = 24
+bytes EF CD AB
+expect value = 11259375
+consumed 24
+writer canonical
+
+operation bits
+name bits-32-alias-uint32
+param bits = 32
+bytes EF BE AD DE
+expect value = 3735928559
+consumed 32
+writer canonical
+
+operation bits
+name bits-32-max
+param bits = 32
+bytes FF FF FF FF
+expect value = 4294967295
+consumed 32
+writer canonical
+
+# The 32/33 boundary, where the single group becomes low-32-then-high. A writer
+# that emits the high group first puts this value's single set bit in bit 0
+# instead of bit 32 and produces 01 00 00 00 00.
+
+operation bits
+name bits-33-low-group-precedes-high-group
+param bits = 33
+bytes 00 00 00 00 01
+expect value = 4294967296
+consumed 33
+writer canonical
+
+operation bits
+name bits-33-max
+param bits = 33
+bytes FF FF FF FF 01
+expect value = 8589934591
+consumed 33
+writer canonical
+
+operation bits
+name bits-64-alias-uint64
+param bits = 64
+bytes F0 DE BC 9A 78 56 34 12
+expect value = 1311768467463790320
+consumed 64
+writer canonical
+
+operation bits
+name bits-64-high-half-only
+param bits = 64
+bytes 00 00 00 00 FF FF FF FF
+expect value = 18446744069414584320
+consumed 64
+writer canonical
+
+operation bits
+name bits-64-low-half-only
+param bits = 64
+bytes FF FF FF FF 00 00 00 00
+expect value = 4294967295
+consumed 64
+writer canonical
+
+operation bits
+name bits-64-max
+param bits = 64
+bytes FF FF FF FF FF FF FF FF
+expect value = 18446744073709551615
+consumed 64
+writer canonical
+
+# Reading past the end. Each refusal states a width the stream cannot supply;
+# the accepted twin above it supplies exactly enough.
+
+operation bits
+name bits-refuse-past-end-empty-stream
+param bits = 1
+bytes
+expect refused
+
+operation bits
+name bits-refuse-past-end-16-of-8
+param bits = 16
+bytes FF
+expect refused
+
+operation bits
+name bits-accept-16-of-16
+param bits = 16
+bytes FF FF
+expect value = 65535
+consumed 16
+writer canonical
+
+operation bits
+name bits-refuse-past-end-33-of-32
+param bits = 33
+bytes FF FF FF FF
+expect refused
+
+operation bits
+name bits-refuse-past-end-64-of-56
+param bits = 64
+bytes FF FF FF FF FF FF FF
+expect refused

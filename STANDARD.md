@@ -1004,13 +1004,27 @@ operations are:
 
 | file | operation | what it pins |
 |---|---|---|
-| `int_relative.txt` | `int_relative` | the domain, and the refusal of a reconstruction outside it in every tier |
+| `bits.txt` | `bits`, and the `uint8`/`uint16`/`uint32`/`uint64` aliases | every width from 1 to 64, and the low 32-bit group before the high one above 32 |
+| `bool.txt` | `bool` | one bit, and a reader that must not look at the rest of the byte |
+| `uint128.txt` | `uint128` | 128 raw bits, the low 64-bit half first |
+| `align.txt` | `align` | zero bits to the boundary, nothing when already aligned, and non-zero padding refused |
+| `int.txt` | `int` | the width rule, the degenerate range at zero bits, and a decoded value outside `[min,max]` refused |
+| `int64.txt` | `int64` | the same, at the 32/33-bit group boundary and across a span the signed domain cannot hold |
 | `int128.txt` | `int128` | the ranged 128 bit codec, including ranges wider than `2^127` |
+| `fixed.txt` | `fixed` | the offset over the raw bounds at six Q formats, and the degenerate range at zero bits on every storage width |
+| `int_relative.txt` | `int_relative` | the domain, the refusal of a reconstruction outside it in every tier, and each bounded tier's own payload range |
+| `float.txt` | `float` | NaN payloads, a signaling NaN, negative zero and denormals, compared as bit patterns |
+| `double.txt` | `double` | the same at 64 bits, and the low half before the high one |
+| `compressed_float.txt` | `compressed_float` | both clamp witnesses, the values clamp as a field width, and a non-zero `min` decode pinned bit exactly |
+| `bytes.txt` | `bytes` | the align that comes first, and a zero count that still performs it |
+| `string.txt` | `string` | valid UTF-8 accepted, and invalid UTF-8, an interior NUL and an out-of-range length refused |
+| `wstring.txt` | `wstring` | no alignment anywhere, a surrogate pair accepted, and an unpaired surrogate, a group above `0xFFFF` and a zero group refused |
+| `object.txt` | `object` | that it adds no bytes of its own, each vector twinned with the same operations unnested |
+| `sequence.txt` | sequences of operations | alignment after an odd width, a zero-bit field between wide ones, terminal failure, and the measure floor |
+| `message.txt` | the Worked Example's message | three operations across an alignment boundary, byte for byte |
 
-Those are the covered operations today. The operations the corpus does not yet
-reach are the remaining silences below, each owed a vector; adding a file here
-is how one of them becomes a family obligation, and the table above moves with
-the directory.
+Adding a file here is how a rule becomes a family obligation, and the table
+above moves with the directory.
 
 Every implementation vendors and syncs that directory the way it vendors this
 document, and its test suite must run every vector in it. No checker
@@ -1033,20 +1047,11 @@ rather than skipped.
 reading an implementation, each named by the section that owes it and by what a
 vector would pin. The tie-break sentence above stands until this list is empty.
 
-| section | what a vector would pin |
-|---|---|
-| `bits`, `bool`, `uint128` | the 32-bit group split above 32 bits, and the low half first at 128 |
-| `align` and `bytes` | non-zero padding refused, and a zero count that still aligns |
-| `int` and `int64` | a decoded value outside `[min,max]` refused, and a degenerate range that consumes nothing |
-| `fixed` | a negative tie value, which separates half away from zero from an arithmetic shift |
-| `float` and `double` | NaN payloads, a signaling NaN, negative zero and a denormal, compared as bit patterns |
-| `compressed_float` | the clamp witnesses `[0, 8388609]` and `[0, 16777215]` at resolution `1`, the fusion witness `8388608.0` in that band, and a non-zero `min` decode pinned bit exactly |
-| `object` | a nested sequence, which adds no bytes of its own |
-| `string` | valid UTF-8 accepted, and invalid UTF-8, an interior NUL and an out-of-range length refused |
-| `wstring` | a surrogate pair accepted, and an unpaired surrogate, a group above `0xFFFF` and a zero group refused |
-| The Measure Stream | `measure >= bits written` over a sequence vector, at every starting bit position |
-| Reader Obligations | a read past the end refused, and the next read on that stream refused too |
-| Worked Example | the 112-byte golden message as a sequence vector, with its operation sequence |
+| section | what a vector would pin | why the corpus does not carry it |
+|---|---|---|
+| `fixed` | a negative tie value, which separates half away from zero from an arithmetic shift | the rounding happens where a value is quantized into a Q format or narrowed out of one, and no `serialize_fixed` call rounds: the wire round trip is exact, this document says as much, and no record whose input is a byte stream can reach the rule. It needs a record shape this format does not have |
+| `compressed_float` | the fusion witness `8388608.0`, and the between-quanta writer inputs | a vector's input is a stream, so it can pin what a writer left on the wire but not the value a writer was handed. The clamp band's widths and boundaries are pinned; the writer inputs need a record shape this format does not have |
+| Worked Example | the whole 112-byte golden message | this document prints 15 of its bytes and `message.txt` carries exactly those. The rest exist only inside an implementation, and a vector copied off the implementation it judges is the failure this section opens by naming |
 
 **The vector format.** A vector file is text. `#` begins a comment, blank lines
 separate records, and each record is `key` and value, one per line:
@@ -1060,6 +1065,7 @@ separate records, and each record is `key` and value, one per line:
 | `expect` | the word `refused`, or `value = ` and the decoded value, or `bits = 0x` and the decoded bit pattern |
 | `consumed` | bits a conforming reader consumes, accepted reads only |
 | `writer` | the word `canonical`, on a vector that also pins the bytes a writer emits |
+| `measure_at_least` | the smallest number of bits a conforming measure may report, on a sequence |
 
 `consumed` is stated only for accepted reads. **After a refusal the stream
 position is not part of the contract**, so no vector states it and no
@@ -1084,6 +1090,24 @@ parser must accept values up to 128 bits wide. `expect bits = 0x...` is the
 spelling for a value compared as a bit pattern rather than as a number, which
 is how `float` and `double` vectors are stated.
 
+**A sequence vector states more than one operation.** Its `operation` is
+`sequence`, its steps are `param step = ` lines in order, and `expect value`
+lists one entry per step separated by ` | `, with `-` for a step that produces
+no value of its own. Sequences carry what a single-operation record cannot:
+alignment cost, which depends on the bit index the previous operation left
+behind; a zero-bit field, which must leave that index exactly where it found
+it; a nested `object`, spelled `object <n>` to wrap the next `n` steps; and
+terminal failure, where a refusal must poison the stream for every later step
+even where the bytes those steps would read are still present.
+
+**A measure is checked against a floor, never against a number.** A sequence
+may state `measure_at_least`, and a conforming measure must report at least it.
+The key is a floor rather than an equality because a measure is a bound and not
+the packet size: the value stated is the true worst case over every starting
+bit position, so the expected implementation's 7 bits per alignment-performing
+operation passes, a tighter correct bound passes, and the exact-from-zero
+accounting this document calls non-conforming falls below it.
+
 **A harness presents every stream with the slack the contract requires.** The
 bytes of a vector are the stream, and a harness running it against an
 implementation under the eight-byte slack contract allocates that slack behind
@@ -1103,6 +1127,18 @@ this is not running the instrument.
   ports to every implementation: issue a further read on the same stream and
   require that it also fails, consumes no bits, and writes nothing to its own
   destination.
+
+**A gate nobody has seen go red is a claim, not a measurement.** The corpus is
+an instrument, and an instrument is trusted because it has been shown to
+respond. Two controls establish that, and both belong in the test chain rather
+than in a README: a corpus file whose operation has no runner, which every gate
+must reject rather than skip; and a reader with one line of a refusal rule
+deleted, run against the real corpus, which must go red on exactly the vectors
+that pin that rule. A control that stops finding anything to break is a failure
+of the control and not a licence to remove it. This repository carries all
+three as `ctest` targets, the sabotage generated at configure time from a
+scratch copy of the header so that a needle which no longer matches is a hard
+error.
 
 **Conformance vectors must discriminate.** A value taken from the middle of a
 range, or one that lands where every plausible reading agrees, proves nothing —

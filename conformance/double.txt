@@ -1,0 +1,148 @@
+# serialize conformance vectors: serialize_double
+#
+# The format is specified in STANDARD.md, "The vector format". Records are
+# separated by blank lines.
+#
+# STANDARD.md, "double": the 64 bits of the IEEE-754 double-precision
+# representation, written as one 64-bit group — which is serialize_bits over 64
+# bits, so the low 32-bit group precedes the high one and the bytes on an
+# aligned stream are the value in little-endian order.
+#
+# "Bit transparency — both directions" binds this operation exactly as it binds
+# float, and so does the comparison rule: these vectors compare BIT PATTERNS,
+# not values. Every expectation below is `expect bits`.
+#
+# There is no range rule and no refusal of any pattern, so the only refusal
+# STANDARD.md states for this operation is reading past the end.
+
+operation double
+name double-positive-zero
+bytes 00 00 00 00 00 00 00 00
+expect bits = 0x0000000000000000
+consumed 64
+writer canonical
+
+operation double
+name double-negative-zero
+bytes 00 00 00 00 00 00 00 80
+expect bits = 0x8000000000000000
+consumed 64
+writer canonical
+
+operation double
+name double-one
+bytes 00 00 00 00 00 00 F0 3F
+expect bits = 0x3FF0000000000000
+consumed 64
+writer canonical
+
+# The golden message's double field, 1/3.
+
+operation double
+name double-one-third
+bytes 55 55 55 55 55 55 D5 3F
+expect bits = 0x3FD5555555555555
+consumed 64
+writer canonical
+
+# The whole value sits in one half or the other, so an implementation that
+# writes the high 32-bit group first swaps these two vectors' bytes.
+
+operation double
+name double-low-half-only
+bytes EF CD AB 89 00 00 00 00
+expect bits = 0x0000000089ABCDEF
+consumed 64
+writer canonical
+
+operation double
+name double-high-half-only
+bytes 00 00 00 00 EF CD AB 89
+expect bits = 0x89ABCDEF00000000
+consumed 64
+writer canonical
+
+operation double
+name double-positive-infinity
+bytes 00 00 00 00 00 00 F0 7F
+expect bits = 0x7FF0000000000000
+consumed 64
+writer canonical
+
+operation double
+name double-negative-infinity
+bytes 00 00 00 00 00 00 F0 FF
+expect bits = 0xFFF0000000000000
+consumed 64
+writer canonical
+
+operation double
+name double-quiet-nan
+bytes 00 00 00 00 00 00 F8 7F
+expect bits = 0x7FF8000000000000
+consumed 64
+writer canonical
+
+# A SIGNALING NaN: the quiet bit is clear, and a reader that quiets NaNs
+# rewrites it to 0x7FF8000000000001.
+
+operation double
+name double-signaling-nan
+bytes 01 00 00 00 00 00 F0 7F
+expect bits = 0x7FF0000000000001
+consumed 64
+writer canonical
+
+operation double
+name double-nan-with-payload
+bytes 00 00 00 00 00 AD FE 7F
+expect bits = 0x7FFEAD0000000000
+consumed 64
+writer canonical
+
+operation double
+name double-negative-nan-all-payload-bits
+bytes FF FF FF FF FF FF FF FF
+expect bits = 0xFFFFFFFFFFFFFFFF
+consumed 64
+writer canonical
+
+operation double
+name double-smallest-positive-denormal
+bytes 01 00 00 00 00 00 00 00
+expect bits = 0x0000000000000001
+consumed 64
+writer canonical
+
+operation double
+name double-largest-denormal
+bytes FF FF FF FF FF FF 0F 00
+expect bits = 0x000FFFFFFFFFFFFF
+consumed 64
+writer canonical
+
+operation double
+name double-smallest-positive-normal
+bytes 00 00 00 00 00 00 10 00
+expect bits = 0x0010000000000000
+consumed 64
+writer canonical
+
+operation double
+name double-largest-finite
+bytes FF FF FF FF FF FF EF 7F
+expect bits = 0x7FEFFFFFFFFFFFFF
+consumed 64
+writer canonical
+
+# Reading past the end.
+
+operation double
+name double-refuse-past-end-56-of-64
+bytes FF FF FF FF FF FF FF
+expect refused
+
+operation double
+name double-refuse-past-end-empty-stream
+bytes
+expect refused

@@ -1,0 +1,199 @@
+# serialize conformance vectors: sequences of operations
+#
+# The format is specified in STANDARD.md, "The vector format". Records are
+# separated by blank lines.
+#
+# Every other file in this corpus tests one operation in isolation, from bit
+# index zero. That misses everything the format says about operations meeting
+# each other: alignment cost depends on the bit index the previous operation
+# left behind, a zero-bit field must leave the index exactly where it found it,
+# and a refusal must poison the stream for everything after it. Those are
+# rules STANDARD.md states and a single-operation record cannot express, so
+# they live here.
+#
+# A sequence record's steps are given as repeated `param step` lines, one
+# operation each, in order. The step spellings are:
+#
+#     bits <n>                                       bool
+#     align                                          float
+#     bytes <count>                                  int <min> <max>
+#     string <buffer_size>                           wstring <buffer_size>
+#     fixed <integer_bits> <fraction_bits> <min> <max>
+#
+# `expect value` lists one entry per step in order, separated by ` | `, with
+# `-` for a step that produces no value of its own. `consumed` is the total
+# for the whole sequence.
+#
+# `expect refused` means the sequence must be refused, and it carries the
+# TERMINAL FAILURE rule with it: STANDARD.md says "nothing after a failing
+# operation has a defined position, so nothing after it is interpretable, and
+# it must be the stream that enforces that rather than the caller's
+# discipline", so a runner must check not only that the failing step refuses
+# but that EVERY LATER STEP REFUSES TOO — even where the stream still holds
+# bytes those steps could have read. The refusing sequences below are built so
+# that a reader without the latch passes the failing step's successor.
+#
+# `measure_at_least` states the smallest number of bits a conforming measure
+# may report for the sequence, and a measure must report at least it. It is a
+# FLOOR and not an equality, because STANDARD.md makes a measure a bound and
+# not the packet size: "a measure must report a size sufficient to serialize
+# the message at any starting bit position. It need not be exact, and cannot
+# be." Each floor below is the true worst case over every starting bit
+# position — exact width for every operation, plus the most an alignment can
+# cost where the sequence contains one — so an implementation charging the
+# document's expected 7 bits per alignment-performing operation passes, and so
+# does a tighter correct bound, while the non-conforming exact-from-zero
+# accounting the document names fails.
+
+# The document's own measure example, verbatim: "{ bits(8); align; bits(8) } is
+# 16 bits — 2 bytes — written from an aligned start, where the align is a
+# no-op; written from bit offset 1, the align pads 7 bits and the message spans
+# 23 bits — 3 bytes of room needed. The exact-from-zero answer of 2 bytes is
+# not sufficient at every starting position, which is the one thing a measure
+# is for. The conservative answer — 8 + 7 + 8 = 23 bits — is sufficient
+# everywhere." A measure reporting 16 fails this record and a measure
+# reporting 23 passes it.
+
+operation sequence
+name sequence-measure-worked-example
+param step = bits 8
+param step = align
+param step = bits 8
+bytes AB CD
+expect value = 171 | - | 205
+consumed 16
+measure_at_least 23
+writer canonical
+
+# The align actually pads here, because the preceding operation left the index
+# at bit 3. Read consumption and measure floor differ, which is the point.
+
+operation sequence
+name sequence-align-pads-after-an-odd-width
+param step = bits 3
+param step = align
+param step = bits 8
+bytes 05 AB
+expect value = 5 | - | 171
+consumed 16
+measure_at_least 18
+writer canonical
+
+# The same stream with the padding set. The align refuses, and the bits(8)
+# after it must refuse as well although byte 1 is present and readable — that
+# is the terminal-failure rule, and a reader whose failure does not latch
+# decodes 171 from the third step.
+
+operation sequence
+name sequence-refusal-is-terminal-after-bad-alignment
+param step = bits 3
+param step = align
+param step = bits 8
+bytes FD AB
+expect refused
+
+# A second align costs nothing, because the first one left the stream aligned.
+
+operation sequence
+name sequence-second-align-is-a-no-op
+param step = bits 1
+param step = align
+param step = align
+param step = bits 8
+bytes 01 AB
+expect value = 1 | - | - | 171
+consumed 16
+measure_at_least 16
+writer canonical
+
+# serialize_bytes aligns first, so it realigns a stream left mid-byte — and it
+# is that align, not the payload, that the measure floor charges for.
+
+operation sequence
+name sequence-bytes-realigns-a-mid-byte-stream
+param step = bits 5
+param step = bytes 2
+bytes 15 AB CD
+expect value = 21 | AB CD
+consumed 24
+measure_at_least 28
+writer canonical
+
+# A degenerate range costs zero bits, so the second wide field must begin at
+# bit 32 exactly. An implementation that charges any bits at all for the
+# degenerate int shifts every bit after it and decodes the wrong second value.
+
+operation sequence
+name sequence-zero-bit-field-between-wide-ones
+param step = bits 32
+param step = int 5 5
+param step = bits 32
+bytes EF BE AD DE 78 56 34 12
+expect value = 3735928559 | 5 | 305419896
+consumed 64
+measure_at_least 64
+writer canonical
+
+# The narrow string aligns and the wide string does not, in one stream: the
+# string ends byte-aligned at bit 32, and the wstring's three-bit length field
+# then puts its single character at bit 35. An implementation that mirrors the
+# narrow path in the wide one moves every byte from index 4 onward.
+
+operation sequence
+name sequence-string-aligns-and-wstring-does-not
+param step = string 16
+param step = wstring 8
+bytes 03 61 62 63 09 02 00 00 00
+expect value = 61 62 63 | 0041
+consumed 67
+measure_at_least 70
+writer canonical
+
+# float is bit-transparent at any bit index, and nothing aligns around it: the
+# bool before it leaves the stream at bit 1 and the 32-bit group runs from
+# there to bit 33.
+
+operation sequence
+name sequence-float-unaligned-between-bools
+param step = bool
+param step = float
+param step = bool
+bytes 01 00 00 7F 02
+expect value = true | 0x3F800000 | true
+consumed 34
+measure_at_least 34
+writer canonical
+
+# Terminal failure after a RANGE refusal rather than an alignment one. The
+# ranged int over [0,8] is four bits and the stream carries offset 9, which
+# must be refused; the bits(8) after it must refuse too, although twelve
+# readable bits remain.
+
+operation sequence
+name sequence-refusal-is-terminal-after-a-range-refusal
+param step = int 0 8
+param step = bits 8
+bytes 09 AB
+expect refused
+
+# Terminal failure after a PAST-END refusal, with a zero-bit operation as the
+# successor: a degenerate range consumes nothing and would otherwise always
+# succeed, so this is the vector a reader that treats "consumes no bits" as
+# "cannot fail" gets wrong.
+
+operation sequence
+name sequence-refusal-is-terminal-before-a-zero-bit-field
+param step = bits 16
+param step = int 7 7
+bytes FF
+expect refused
+
+# Terminal failure inside a composite: the string's payload runs past the end,
+# and the wstring after it must refuse rather than resynchronize.
+
+operation sequence
+name sequence-refusal-is-terminal-after-a-string-refusal
+param step = string 16
+param step = wstring 8
+bytes 06 67 6F 6C
+expect refused

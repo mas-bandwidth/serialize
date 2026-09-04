@@ -1,0 +1,271 @@
+# serialize conformance vectors: serialize_wstring
+#
+# The format is specified in STANDARD.md, "The vector format". Records are
+# separated by blank lines.
+#
+# STANDARD.md, "wstring": a null-terminated wide string where buffer_size
+# counts WIDE CHARACTERS, NOT BYTES, written as
+#
+#   1. the length, as serialize_int( length, 0, buffer_size - 1 );
+#   2. each character as a 32-BIT GROUP, in order.
+#
+# "NO ALIGNMENT IS PERFORMED ANYWHERE IN THIS OPERATION — this is the one place
+# where the wide-string path deliberately differs from its narrow counterpart,
+# which aligns via serialize_bytes. An implementation that mirrors the narrow
+# string path here will produce the wrong bytes." Every accepted vector below
+# has a length field narrower than a byte, so the first character always begins
+# mid-byte and a stray align moves every byte after it.
+#
+# Each 32-bit group carries one UTF-16 CODE UNIT, not one code point. `value`
+# is therefore stated as the transmitted code units, four hexadecimal digits
+# each, and that is the wire-level truth on every platform: a 4-byte wchar_t
+# implementation converts at the boundary — splitting astral code points into
+# surrogate pairs on write and recombining on read — so its runner compares
+# after re-splitting, and both platforms owe the same bytes.
+#
+# Four refusal rules reach this operation:
+#
+#   * the length field's own range rule, when buffer_size - 1 is not one less
+#     than a power of two;
+#   * a GROUP ABOVE 0xFFFF is not a UTF-16 code unit and "the reader must
+#     refuse it on every platform, whatever the local wchar_t can hold" —
+#     refusal does not depend on the platform, so the same byte sequence is
+#     refused everywhere;
+#   * an UNPAIRED SURROGATE fails the read: a high surrogate (0xD800–0xDBFF)
+#     not immediately followed by a low surrogate (0xDC00–0xDFFF), a low
+#     surrogate not immediately preceded by a high surrogate, or a high
+#     surrogate as the final transmitted group. Well-formed surrogate PAIRS
+#     remain valid — they are how astral text travels;
+#   * an INTERIOR NUL fails the read — a zero group among the length
+#     transmitted groups, by the same two-lengths logic as string;
+#
+# and reading past the end.
+
+# The document's own worked example, quoted in "Worked Example": a wchar_t[8]
+# buffer holding three characters, producing this 13-byte run. buffer_size 8
+# makes the length field bits_required( 0, 7 ) = 3 bits, and the first
+# character begins immediately at bit 3 — the low 5 bits of 0xE3 are the low 5
+# bits of 0x043C. Total 3 + 3x32 = 99 bits.
+
+operation wstring
+name wstring-worked-example
+param buffer_size = 8
+bytes E3 21 00 00 C0 21 00 00 00 22 00 00 00
+expect value = 043C 0438 0440
+consumed 99
+writer canonical
+
+# No alignment, stated as bluntly as the corpus can state it: a one-bit length
+# field, so the character occupies bits 1 through 32. An implementation that
+# aligns before the characters starts them at bit 8 and produces entirely
+# different bytes.
+
+operation wstring
+name wstring-no-alignment-before-the-characters
+param buffer_size = 2
+bytes 83 00 00 00 00
+expect value = 0041
+consumed 33
+writer canonical
+
+operation wstring
+name wstring-empty
+param buffer_size = 8
+bytes 00
+expect value =
+consumed 3
+writer canonical
+
+# buffer_size 1: the length field is serialize_int( length, 0, 0 ), a
+# degenerate range costing zero bits, and there is no alignment to perform, so
+# the whole operation consumes nothing — from an empty stream.
+
+operation wstring
+name wstring-buffer-size-1-zero-bit-length-field
+param buffer_size = 1
+bytes
+expect value =
+consumed 0
+writer canonical
+
+operation wstring
+name wstring-single-basic-plane-character
+param buffer_size = 8
+bytes 09 02 00 00 00
+expect value = 0041
+consumed 35
+writer canonical
+
+# ---------------------------------------------------------------------------
+# the group-above-0xFFFF rule, pinned at exactly the boundary: 0xFFFF is a
+# legal code unit and 0x10000 is not, and the two streams differ by one bit.
+
+operation wstring
+name wstring-accept-group-ffff
+param buffer_size = 8
+bytes F9 FF 07 00 00
+expect value = FFFF
+consumed 35
+writer canonical
+
+operation wstring
+name wstring-refuse-group-one-above-ffff
+param buffer_size = 8
+bytes 01 00 08 00 00
+expect refused
+
+operation wstring
+name wstring-refuse-group-all-thirty-two-bits
+param buffer_size = 8
+bytes F9 FF FF FF 07
+expect refused
+
+# ---------------------------------------------------------------------------
+# the unpaired-surrogate rule, at both ends of both surrogate blocks, each
+# beside the nearest code unit that is not a surrogate.
+
+operation wstring
+name wstring-accept-just-below-the-surrogate-block
+param buffer_size = 8
+bytes F9 BF 06 00 00
+expect value = D7FF
+consumed 35
+writer canonical
+
+operation wstring
+name wstring-refuse-first-high-surrogate-alone
+param buffer_size = 8
+bytes 01 C0 06 00 00
+expect refused
+
+operation wstring
+name wstring-refuse-last-high-surrogate-alone
+param buffer_size = 8
+bytes F9 DF 06 00 00
+expect refused
+
+operation wstring
+name wstring-refuse-first-low-surrogate-alone
+param buffer_size = 8
+bytes 01 E0 06 00 00
+expect refused
+
+operation wstring
+name wstring-refuse-last-low-surrogate-alone
+param buffer_size = 8
+bytes F9 FF 06 00 00
+expect refused
+
+operation wstring
+name wstring-accept-just-above-the-surrogate-block
+param buffer_size = 8
+bytes 01 00 07 00 00
+expect value = E000
+consumed 35
+writer canonical
+
+# A well-formed surrogate pair is how astral text travels, and it must be
+# accepted. This is U+1F4A9 as its pair, D83D DCA9.
+
+operation wstring
+name wstring-accept-surrogate-pair
+param buffer_size = 8
+bytes EA C1 06 00 48 E5 06 00 00
+expect value = D83D DCA9
+consumed 67
+writer canonical
+
+operation wstring
+name wstring-refuse-high-surrogate-followed-by-a-non-surrogate
+param buffer_size = 8
+bytes EA C1 06 00 08 02 00 00 00
+expect refused
+
+operation wstring
+name wstring-refuse-low-surrogate-not-preceded-by-a-high-one
+param buffer_size = 8
+bytes 4A E5 06 00 E8 C1 06 00 00
+expect refused
+
+operation wstring
+name wstring-refuse-high-surrogate-as-the-final-group
+param buffer_size = 8
+bytes 0A 02 00 00 E8 C1 06 00 00
+expect refused
+
+# ---------------------------------------------------------------------------
+# the interior NUL rule, in each position a zero group can occupy.
+
+operation wstring
+name wstring-refuse-nul-as-the-only-group
+param buffer_size = 8
+bytes 01 00 00 00 00
+expect refused
+
+operation wstring
+name wstring-refuse-nul-as-the-first-of-two-groups
+param buffer_size = 8
+bytes 02 00 00 00 08 02 00 00 00
+expect refused
+
+operation wstring
+name wstring-refuse-nul-as-the-final-group
+param buffer_size = 8
+bytes 0A 02 00 00 00 00 00 00 00
+expect refused
+
+# The accept twin of the vector above: the same stream with a non-zero second
+# group, so the only difference between the two verdicts is the group's value.
+
+operation wstring
+name wstring-accept-two-basic-plane-groups
+param buffer_size = 8
+bytes 0A 02 00 00 10 02 00 00 00
+expect value = 0041 0042
+consumed 67
+writer canonical
+
+# ---------------------------------------------------------------------------
+# the length field's range rule: buffer_size 5 gives bits_required( 0, 4 ) = 3
+# bits, so lengths 5, 6 and 7 are expressible and must be refused.
+
+operation wstring
+name wstring-accept-length-inside-a-five-character-buffer
+param buffer_size = 5
+bytes 09 02 00 00 00
+expect value = 0041
+consumed 35
+writer canonical
+
+operation wstring
+name wstring-refuse-length-one-past-the-buffer
+param buffer_size = 5
+bytes 05
+expect refused
+
+operation wstring
+name wstring-refuse-length-all-three-bits
+param buffer_size = 5
+bytes 07
+expect refused
+
+# ---------------------------------------------------------------------------
+# reading past the end, in the length field and in the groups.
+
+operation wstring
+name wstring-refuse-past-end-second-group-truncated
+param buffer_size = 8
+bytes EA C1 06 00
+expect refused
+
+operation wstring
+name wstring-refuse-past-end-first-group-truncated
+param buffer_size = 8
+bytes 09 02
+expect refused
+
+operation wstring
+name wstring-refuse-past-end-empty-stream
+param buffer_size = 8
+bytes
+expect refused

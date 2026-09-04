@@ -151,3 +151,17 @@ jobs:
         working-directory: tools/conformance
         run: go run .
 
+      # The negative control the C++ gate runs as a ctest target, run against the Go
+      # checker too: the contract that a vector whose operation has no runner must FAIL
+      # rather than be skipped binds every gate, and a gate nobody has seen go red is a
+      # claim rather than a measurement. This step passes exactly when the checker
+      # rejects the control.
+      - name: Negative control - an operation with no runner must fail the checker
+        working-directory: tools/conformance
+        run: |
+          if go run . ../../conformance-controls/unknown-operation.txt; then
+            echo "the checker accepted a vector whose operation it cannot drive"
+            exit 1
+          fi
+          echo "the checker rejected the control, as the corpus contract requires"
+

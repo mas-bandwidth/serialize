@@ -1,0 +1,421 @@
+# serialize conformance vectors: serialize_fixed
+#
+# The format is specified in STANDARD.md, "The vector format". Records are
+# separated by blank lines.
+#
+# STANDARD.md, "fixed (Q format, ranged)": a value in an integer storage type
+# of exactly integer_bits + fraction_bits bits, the stored integer being the
+# real value scaled by 2^fraction_bits. The encoding is an offset encoding over
+# the RAW (scaled) bounds:
+#
+#     raw_min = min << fraction_bits
+#     raw_max = max << fraction_bits
+#     bits    = bit length of ( raw_max - raw_min )
+#
+# and raw_value - raw_min is written in that many bits, split into 32-bit
+# groups from least significant upward exactly as serialize_bits splits wide
+# values. With fraction_bits = 0 the operation IS a ranged integer, and for
+# storage of 64 bits or fewer the bytes are identical to serialize_int64 over
+# the raw bounds.
+#
+# `value` is the RAW stored integer, not the real value: the raw integer is
+# what the wire carries and what the round trip is exact in, and stating it
+# avoids every question of how a real value is spelled in each of the nine
+# implementations' number syntax. raw = real * 2^fraction_bits.
+#
+# All four parameters are compile-time constants of the call site, so a runner
+# supports a fixed set of declarations and a vector naming a declaration the
+# runner does not carry must FAIL rather than pass — the same contract the
+# corpus states for an operation with no runner. The declarations used here are
+# Q8.8, Q32.0, Q16.16, Q48.16, Q112.16 and Q64.64.
+#
+# The refusal rules are "Readers must check that the decoded offset is at most
+# raw_max - raw_min and fail otherwise — reject, never clamp", and reading past
+# the end.
+
+# The document's own worked example: Q8.8 over +/- 100 whole units, raw_min
+# -25600, raw range 51200, 16 bits. The golden message's bytes are C0 60, the
+# offset 0x60C0 = 24768, and the raw value -832, which is -3.25 in Q8.8.
+
+operation fixed
+name fixed-q8-8-worked-example
+param integer_bits = 8
+param fraction_bits = 8
+param min = -100
+param max = 100
+bytes C0 60
+expect value = -832
+consumed 16
+writer canonical
+
+operation fixed
+name fixed-q8-8-accepts-its-raw-minimum
+param integer_bits = 8
+param fraction_bits = 8
+param min = -100
+param max = 100
+bytes 00 00
+expect value = -25600
+consumed 16
+writer canonical
+
+operation fixed
+name fixed-q8-8-accepts-offset-equal-to-the-raw-span
+param integer_bits = 8
+param fraction_bits = 8
+param min = -100
+param max = 100
+bytes 00 C8
+expect value = 25600
+consumed 16
+writer canonical
+
+operation fixed
+name fixed-q8-8-refuse-offset-one-past-the-raw-span
+param integer_bits = 8
+param fraction_bits = 8
+param min = -100
+param max = 100
+bytes 01 C8
+expect refused
+
+operation fixed
+name fixed-q8-8-refuse-offset-all-ones
+param integer_bits = 8
+param fraction_bits = 8
+param min = -100
+param max = 100
+bytes FF FF
+expect refused
+
+# fraction_bits = 0: the operation is a ranged integer.
+
+operation fixed
+name fixed-zero-fraction-bits-is-a-ranged-int
+param integer_bits = 32
+param fraction_bits = 0
+param min = 0
+param max = 7
+bytes 05
+expect value = 5
+consumed 3
+writer canonical
+
+operation fixed
+name fixed-zero-fraction-bits-accepts-its-maximum
+param integer_bits = 32
+param fraction_bits = 0
+param min = 0
+param max = 5
+bytes 05
+expect value = 5
+consumed 3
+writer canonical
+
+operation fixed
+name fixed-zero-fraction-bits-refuse-offset-one-past-the-span
+param integer_bits = 32
+param fraction_bits = 0
+param min = 0
+param max = 5
+bytes 06
+expect refused
+
+# A degenerate range is legal and costs ZERO BITS — on every storage width.
+# STANDARD.md is explicit that the storage width must not change this: a
+# Q112.16 field over a degenerate range costs zero bits, not fraction_bits of
+# zeros. The wide rows below are the widths where the implementations
+# historically behaved four different ways.
+
+operation fixed
+name fixed-degenerate-range-q16-16
+param integer_bits = 16
+param fraction_bits = 16
+param min = 7
+param max = 7
+bytes
+expect value = 458752
+consumed 0
+writer canonical
+
+operation fixed
+name fixed-degenerate-range-q112-16-negative
+param integer_bits = 112
+param fraction_bits = 16
+param min = -9
+param max = -9
+bytes
+expect value = -589824
+consumed 0
+writer canonical
+
+operation fixed
+name fixed-degenerate-range-q64-64-zero
+param integer_bits = 64
+param fraction_bits = 64
+param min = 0
+param max = 0
+bytes
+expect value = 0
+consumed 0
+writer canonical
+
+# The strongest form: a wide raw value recovered from an EMPTY stream, so any
+# read at all is an error and a pass proves zero bits rather than
+# fraction_bits of zeros.
+
+operation fixed
+name fixed-degenerate-range-q64-64-nonzero
+param integer_bits = 64
+param fraction_bits = 64
+param min = 3
+param max = 3
+bytes
+expect value = 55340232221128654848
+consumed 0
+writer canonical
+
+# A 32-bit raw span: the last width written as a single group.
+
+operation fixed
+name fixed-q16-16-raw-span-32-bits
+param integer_bits = 16
+param fraction_bits = 16
+param min = -32768
+param max = 32767
+bytes EF BE AD DE
+expect value = 1588444911
+consumed 32
+writer canonical
+
+operation fixed
+name fixed-q16-16-accepts-offset-equal-to-the-raw-span
+param integer_bits = 16
+param fraction_bits = 16
+param min = -32768
+param max = 32767
+bytes 00 00 FF FF
+expect value = 2147418112
+consumed 32
+writer canonical
+
+operation fixed
+name fixed-q16-16-refuse-offset-one-past-the-raw-span
+param integer_bits = 16
+param fraction_bits = 16
+param min = -32768
+param max = 32767
+bytes 01 00 FF FF
+expect refused
+
+operation fixed
+name fixed-q16-16-refuse-offset-all-ones
+param integer_bits = 16
+param fraction_bits = 16
+param min = -32768
+param max = 32767
+bytes FF FF FF FF
+expect refused
+
+# A 34-bit raw span in Q48.16: two groups, 32 bits then a 2-bit remainder.
+
+operation fixed
+name fixed-q48-16-raw-span-34-bits-two-groups
+param integer_bits = 48
+param fraction_bits = 16
+param min = 0
+param max = 131072
+bytes 00 00 00 00 01
+expect value = 4294967296
+consumed 34
+writer canonical
+
+operation fixed
+name fixed-q48-16-accepts-offset-equal-to-the-raw-span
+param integer_bits = 48
+param fraction_bits = 16
+param min = 0
+param max = 131072
+bytes 00 00 00 00 02
+expect value = 8589934592
+consumed 34
+writer canonical
+
+operation fixed
+name fixed-q48-16-refuse-offset-one-past-the-raw-span
+param integer_bits = 48
+param fraction_bits = 16
+param min = 0
+param max = 131072
+bytes 01 00 00 00 02
+expect refused
+
+# A 75-bit raw span in Q112.16 — the golden message's wide field shape: two
+# full 32-bit groups from the bottom, then an 11-bit remainder on top. Each of
+# the three vectors below puts a single set bit in one group, so a decoder that
+# assembles the groups in the wrong order, or puts the remainder anywhere but
+# the most significant position, decodes the wrong value for one of them.
+
+operation fixed
+name fixed-q112-16-raw-span-75-bits-group-one
+param integer_bits = 112
+param fraction_bits = 16
+param min = 0
+param max = 288230376151711744
+bytes 00 00 00 00 01 00 00 00 00 00
+expect value = 4294967296
+consumed 75
+writer canonical
+
+operation fixed
+name fixed-q112-16-raw-span-75-bits-group-two
+param integer_bits = 112
+param fraction_bits = 16
+param min = 0
+param max = 288230376151711744
+bytes 00 00 00 00 00 00 00 00 01 00
+expect value = 18446744073709551616
+consumed 75
+writer canonical
+
+operation fixed
+name fixed-q112-16-accepts-offset-equal-to-the-raw-span
+param integer_bits = 112
+param fraction_bits = 16
+param min = 0
+param max = 288230376151711744
+bytes 00 00 00 00 00 00 00 00 00 04
+expect value = 18889465931478580854784
+consumed 75
+writer canonical
+
+operation fixed
+name fixed-q112-16-refuse-offset-one-past-the-raw-span
+param integer_bits = 112
+param fraction_bits = 16
+param min = 0
+param max = 288230376151711744
+bytes 01 00 00 00 00 00 00 00 00 04
+expect refused
+
+operation fixed
+name fixed-q112-16-refuse-offset-all-ones
+param integer_bits = 112
+param fraction_bits = 16
+param min = 0
+param max = 288230376151711744
+bytes FF FF FF FF FF FF FF FF FF 07
+expect refused
+
+# The same width with a negative raw minimum, so the offset must be added to a
+# negative raw base at 128-bit precision.
+
+operation fixed
+name fixed-q112-16-negative-raw-minimum-decodes-zero
+param integer_bits = 112
+param fraction_bits = 16
+param min = -144115188075855872
+param max = 144115188075855872
+bytes 00 00 00 00 00 00 00 00 00 02
+expect value = 0
+consumed 75
+writer canonical
+
+operation fixed
+name fixed-q112-16-negative-raw-minimum-accepts-its-minimum
+param integer_bits = 112
+param fraction_bits = 16
+param min = -144115188075855872
+param max = 144115188075855872
+bytes 00 00 00 00 00 00 00 00 00 00
+expect value = -9444732965739290427392
+consumed 75
+writer canonical
+
+# A 127-bit raw span in Q64.64 — four groups, the golden message's widest field.
+# Over a zero minimum the decoded raw value is the offset itself. The span is
+# raw_max = ( 2^63 - 1 ) << 64 = 2^127 - 2^64, whose bit length is 127 and not
+# 128: an implementation that rounds the width up to the storage width reads one
+# bit too many and every vector here goes red.
+
+operation fixed
+name fixed-q64-64-raw-span-127-bits-group-one
+param integer_bits = 64
+param fraction_bits = 64
+param min = 0
+param max = 9223372036854775807
+bytes 00 00 00 00 01 00 00 00 00 00 00 00 00 00 00 00
+expect value = 4294967296
+consumed 127
+writer canonical
+
+operation fixed
+name fixed-q64-64-raw-span-127-bits-group-two
+param integer_bits = 64
+param fraction_bits = 64
+param min = 0
+param max = 9223372036854775807
+bytes 00 00 00 00 00 00 00 00 01 00 00 00 00 00 00 00
+expect value = 18446744073709551616
+consumed 127
+writer canonical
+
+operation fixed
+name fixed-q64-64-raw-span-127-bits-group-three
+param integer_bits = 64
+param fraction_bits = 64
+param min = 0
+param max = 9223372036854775807
+bytes 00 00 00 00 00 00 00 00 00 00 00 00 01 00 00 00
+expect value = 79228162514264337593543950336
+consumed 127
+writer canonical
+
+operation fixed
+name fixed-q64-64-accepts-offset-equal-to-the-raw-span
+param integer_bits = 64
+param fraction_bits = 64
+param min = 0
+param max = 9223372036854775807
+bytes 00 00 00 00 00 00 00 00 FF FF FF FF FF FF FF 7F
+expect value = 170141183460469231713240559642174554112
+consumed 127
+writer canonical
+
+operation fixed
+name fixed-q64-64-refuse-offset-one-past-the-raw-span
+param integer_bits = 64
+param fraction_bits = 64
+param min = 0
+param max = 9223372036854775807
+bytes 01 00 00 00 00 00 00 00 FF FF FF FF FF FF FF 7F
+expect refused
+
+operation fixed
+name fixed-q64-64-refuse-offset-all-ones
+param integer_bits = 64
+param fraction_bits = 64
+param min = 0
+param max = 9223372036854775807
+bytes FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF 7F
+expect refused
+
+# Reading past the end.
+
+operation fixed
+name fixed-refuse-past-end
+param integer_bits = 8
+param fraction_bits = 8
+param min = -100
+param max = 100
+bytes C0
+expect refused
+
+operation fixed
+name fixed-refuse-past-end-empty-stream
+param integer_bits = 16
+param fraction_bits = 16
+param min = -32768
+param max = 32767
+bytes
+expect refused

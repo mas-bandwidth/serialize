@@ -1,0 +1,322 @@
+# serialize conformance vectors: serialize_compressed_float
+#
+# The format is specified in STANDARD.md, "The vector format". Records are
+# separated by blank lines.
+#
+# STANDARD.md, "compressed_float": let delta = max - min and
+# values = delta / res, CLAMPED TO [1, 4294967040] (the largest float below
+# 2^32). Then max_integer_value = ceil( values ) and
+# bits = bits_required( 0, max_integer_value ). The high end of that clamp is
+# what keeps bits_required's 32-bit form well defined, and it is visible on the
+# wire as the field's width — the `bits-clamped` vectors below pin it.
+#
+# The reader divides the integer by max_integer_value, multiplies by delta, and
+# adds min. "The reader's arithmetic is pinned the same way" as the writer's:
+# it is float32 with EVERY STEP ROUNDING — the quotient rounds, the product
+# rounds BEFORE min is added, and the sum rounds. An implementation must not
+# widen any step to double, and must not contract the multiply and the add into
+# a fused multiply-add: fused, the decode rounds once instead of twice, and
+# whenever min is non-zero the decoded value can land one ulp away from the
+# conformant result. "Conformance vectors over a non-zero-min range must pin
+# decoded values BIT-EXACTLY — a tolerance comparison cannot see a one-ulp
+# divergence." Every expectation here is therefore `expect bits`.
+#
+# The corpus is a reader instrument and these are reader vectors. The writer's
+# own discriminating band — the between-quanta inputs and the fused-writer
+# witness 8388608.0 — is a property of the value chosen for a write, which no
+# record whose input is a byte stream can state; that gap is reported with this
+# corpus rather than papered over. What the writer side leaves on the wire IS
+# pinned here: the two declarations the document names for the integer clamp,
+# [0, 8388609] and [0, 16777215] at resolution 1, appear below as the widths
+# and accept boundaries a reader must agree with.
+#
+# The refusal rules are "Readers must reject an integer greater than
+# max_integer_value" and reading past the end. Non-finite inputs and non-finite
+# declarations are non-conforming on the WRITE side and "the read path is
+# untouched: the poison is in the declaration or the input value, never on the
+# wire, so there is nothing for a reader to refuse" — so no vector here states
+# one, and that is the document's ruling rather than a gap.
+
+# [0,10] at resolution 0.01: values = 1000 exactly, max_integer_value = 1000,
+# ten bits.
+
+operation compressed_float
+name compressed-float-zero-integer-over-0-10
+param min = 0
+param max = 10
+param res = 0.01
+bytes 00 00
+expect bits = 0x00000000
+consumed 10
+
+# The golden message's field: integer 500, which normalizes to exactly 0.5 and
+# lands exactly on a quantum, where float32, double and a fused multiply-add
+# all produce the same answer. It is the on-quantum ANCHOR and it can never
+# discriminate; it is here to keep the width and the decode honest, and the
+# vectors that can fail are below it.
+
+operation compressed_float
+name compressed-float-on-quantum-anchor-over-0-10
+param min = 0
+param max = 10
+param res = 0.01
+bytes F4 01
+expect bits = 0x40A00000
+consumed 10
+
+# Integer 1 over [0,10]: float32( 1 / 1000 ) * 10 + 0, two roundings.
+
+operation compressed_float
+name compressed-float-integer-one-over-0-10
+param min = 0
+param max = 10
+param res = 0.01
+bytes 01 00
+expect bits = 0x3C23D70B
+consumed 10
+
+operation compressed_float
+name compressed-float-accepts-max-integer-value-over-0-10
+param min = 0
+param max = 10
+param res = 0.01
+bytes E8 03
+expect bits = 0x41200000
+consumed 10
+
+operation compressed_float
+name compressed-float-refuse-integer-one-past-max-integer-value
+param min = 0
+param max = 10
+param res = 0.01
+bytes E9 03
+expect refused
+
+operation compressed_float
+name compressed-float-refuse-integer-all-ten-bits
+param min = 0
+param max = 10
+param res = 0.01
+bytes FF 03
+expect refused
+
+# A NON-ZERO min, where the reader's second rounding becomes visible: the
+# product rounds BEFORE min is added, and a fused decode lands one ulp away.
+# [-100,100] at resolution 0.01: values = 20000, fifteen bits.
+
+operation compressed_float
+name compressed-float-nonzero-min-integer-zero
+param min = -100
+param max = 100
+param res = 0.01
+bytes 00 00
+expect bits = 0xC2C80000
+consumed 15
+
+# Integer 10000 normalizes to exactly 0.5; the product is exactly 100.0 and the
+# sum is exactly +0.0. The on-quantum anchor for this declaration.
+
+operation compressed_float
+name compressed-float-nonzero-min-midpoint
+param min = -100
+param max = 100
+param res = 0.01
+bytes 10 27
+expect bits = 0x00000000
+consumed 15
+
+# Integer 384 over [-100,100]: the format's answer is 0xC2C051EC and a fused
+# reader decode is 0xC2C051EB. One ulp, invisible to any tolerance comparison,
+# and it changes the bytes a re-encode produces — which is how a fusing
+# platform breaks round-tripping with a conforming one.
+
+operation compressed_float
+name compressed-float-nonzero-min-fused-decode-differs-by-one-ulp
+param min = -100
+param max = 100
+param res = 0.01
+bytes 80 01
+expect bits = 0xC2C051EC
+consumed 15
+
+# Integer 5743 over [-100,100], the family's brute-forced off-quantum value.
+
+operation compressed_float
+name compressed-float-nonzero-min-off-quantum
+param min = -100
+param max = 100
+param res = 0.01
+bytes 6F 16
+expect bits = 0xC22A47AE
+consumed 15
+
+operation compressed_float
+name compressed-float-nonzero-min-accepts-max-integer-value
+param min = -100
+param max = 100
+param res = 0.01
+bytes 20 4E
+expect bits = 0x42C80000
+consumed 15
+
+operation compressed_float
+name compressed-float-nonzero-min-refuse-integer-one-past-max-integer-value
+param min = -100
+param max = 100
+param res = 0.01
+bytes 21 4E
+expect refused
+
+operation compressed_float
+name compressed-float-nonzero-min-refuse-integer-all-fifteen-bits
+param min = -100
+param max = 100
+param res = 0.01
+bytes FF 7F
+expect refused
+
+# The integer clamp's band, the first of the two declarations STANDARD.md names
+# (schema#109, adopted 2026-08-23): [0, 8388609] at resolution 1. Here
+# max_integer_value is 8388609 and the field is 24 bits, so codes 8388610
+# through 16777215 are expressible and every one of them is the "reader
+# rejects" class the ruling closes. The accept boundary is the largest legal
+# code and the refusal is exactly one past it.
+
+operation compressed_float
+name compressed-float-clamp-band-accepts-max-integer-value
+param min = 0
+param max = 8388609
+param res = 1
+bytes 01 00 80
+expect bits = 0x4B000001
+consumed 24
+
+operation compressed_float
+name compressed-float-clamp-band-refuse-integer-one-past-max-integer-value
+param min = 0
+param max = 8388609
+param res = 1
+bytes 02 00 80
+expect refused
+
+operation compressed_float
+name compressed-float-clamp-band-refuse-integer-all-twenty-four-bits
+param min = 0
+param max = 8388609
+param res = 1
+bytes FF FF FF
+expect refused
+
+operation compressed_float
+name compressed-float-clamp-band-integer-zero
+param min = 0
+param max = 8388609
+param res = 1
+bytes 00 00 00
+expect bits = 0x00000000
+consumed 24
+
+# The second declaration STANDARD.md names, [0, 16777215] at resolution 1 —
+# the wire-divergence class, where implementations historically disagreed about
+# the bytes because the rounded sum could exceed the field. Here
+# max_integer_value is 16777215, which is exactly the largest 24-bit code, so
+# EVERY code is legal and this declaration has no refusal vector: the rule's
+# absence rather than a gap. What it pins is the width, which is 24 and not 25.
+
+operation compressed_float
+name compressed-float-wire-divergence-band-accepts-max-integer-value
+param min = 0
+param max = 16777215
+param res = 1
+bytes FF FF FF
+expect bits = 0x4B7FFFFF
+consumed 24
+
+operation compressed_float
+name compressed-float-wire-divergence-band-integer-zero
+param min = 0
+param max = 16777215
+param res = 1
+bytes 00 00 00
+expect bits = 0x00000000
+consumed 24
+
+# The HIGH end of the values clamp, which is visible on the wire as the field's
+# width. delta is 2^33 and res is 1, so values is 8589934592 — above
+# 4294967040, so it clamps there and max_integer_value is 4294967040, giving a
+# 32-bit field. Without the clamp the width would be 34 bits and the reader
+# would consume two bits too many, so `consumed 32` is what pins the rule.
+
+operation compressed_float
+name compressed-float-values-clamped-at-the-high-end
+param min = 0
+param max = 8589934592
+param res = 1
+bytes 00 FF FF FF
+expect bits = 0x50000000
+consumed 32
+
+operation compressed_float
+name compressed-float-values-clamped-integer-zero
+param min = 0
+param max = 8589934592
+param res = 1
+bytes 00 00 00 00
+expect bits = 0x00000000
+consumed 32
+
+operation compressed_float
+name compressed-float-values-clamped-refuse-integer-one-past-max-integer-value
+param min = 0
+param max = 8589934592
+param res = 1
+bytes 01 FF FF FF
+expect refused
+
+operation compressed_float
+name compressed-float-values-clamped-refuse-integer-all-thirty-two-bits
+param min = 0
+param max = 8589934592
+param res = 1
+bytes FF FF FF FF
+expect refused
+
+# The LOW end of the values clamp: delta / res is below 1, so values clamps to
+# 1, max_integer_value is 1 and the field is a single bit. Every code is legal
+# at that width, so this declaration has no refusal vector.
+
+operation compressed_float
+name compressed-float-values-clamped-at-the-low-end-zero
+param min = 0
+param max = 1
+param res = 10
+bytes 00
+expect bits = 0x00000000
+consumed 1
+
+operation compressed_float
+name compressed-float-values-clamped-at-the-low-end-one
+param min = 0
+param max = 1
+param res = 10
+bytes 01
+expect bits = 0x3F800000
+consumed 1
+
+# Reading past the end.
+
+operation compressed_float
+name compressed-float-refuse-past-end-8-of-10
+param min = 0
+param max = 10
+param res = 0.01
+bytes FF
+expect refused
+
+operation compressed_float
+name compressed-float-refuse-past-end-empty-stream
+param min = 0
+param max = 10
+param res = 0.01
+bytes
+expect refused

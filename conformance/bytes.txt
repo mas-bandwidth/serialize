@@ -1,0 +1,124 @@
+# serialize conformance vectors: serialize_bytes
+#
+# The format is specified in STANDARD.md, "The vector format". Records are
+# separated by blank lines.
+#
+# STANDARD.md, "bytes": ALIGNS FIRST, then writes `count` raw bytes. "The
+# alignment is part of the format, not an optimization — a reader that does not
+# align will desynchronize." `count` is not written; both sides agree on it.
+#
+# `count` may be zero, and "the alignment is performed regardless": a
+# zero-length serialize_bytes pads to the byte boundary and writes nothing
+# else. Skipping the alignment when count is zero desynchronizes every field
+# that follows, and a round-trip self-test cannot catch it because both halves
+# skip the same align — so the corpus must, and does, below.
+#
+# `preceding_bits` places the stream at a non-aligned bit index before the
+# operation, exactly as in align.txt; without it the operation's own align is
+# always a no-op and the format's load-bearing clause goes untested. `value` is
+# the decoded payload as hexadecimal byte pairs, empty for count = 0.
+#
+# Two refusal rules reach this operation: the alignment padding must be zero
+# ("align"), and reading past the end must fail ("Reader Obligations"). Note
+# that STANDARD.md leaves the buffer's contents UNSPECIFIED after a refused
+# read into a caller-owned buffer, so no vector here states anything about it.
+
+operation bytes
+name bytes-zero-count-aligned-start
+param preceding_bits = 0
+param count = 0
+bytes
+expect value =
+consumed 0
+writer canonical
+
+# The load-bearing clause: count = 0 still performs the align. Three bits of
+# value, then five bits of zero padding. An implementation that skips the align
+# when count is zero consumes 3 bits here instead of 8.
+
+operation bytes
+name bytes-zero-count-still-performs-the-align
+param preceding_bits = 3
+param count = 0
+bytes 05
+expect value =
+consumed 8
+writer canonical
+
+operation bytes
+name bytes-zero-count-refuse-non-zero-align-padding
+param preceding_bits = 3
+param count = 0
+bytes FD
+expect refused
+
+operation bytes
+name bytes-single-byte-aligned-start
+param preceding_bits = 0
+param count = 1
+bytes FF
+expect value = FF
+consumed 8
+writer canonical
+
+operation bytes
+name bytes-all-zero
+param preceding_bits = 0
+param count = 3
+bytes 00 00 00
+expect value = 00 00 00
+consumed 24
+writer canonical
+
+# The golden message's byte block.
+
+operation bytes
+name bytes-seven-bytes-aligned-start
+param preceding_bits = 0
+param count = 7
+bytes DE AD BE EF CA FE 01
+expect value = DE AD BE EF CA FE 01
+consumed 56
+writer canonical
+
+operation bytes
+name bytes-after-a-partial-byte
+param preceding_bits = 4
+param count = 2
+bytes 0A AB CD
+expect value = AB CD
+consumed 24
+writer canonical
+
+operation bytes
+name bytes-refuse-non-zero-align-padding
+param preceding_bits = 4
+param count = 2
+bytes FA AB CD
+expect refused
+
+operation bytes
+name bytes-refuse-past-end
+param preceding_bits = 0
+param count = 4
+bytes DE AD BE
+expect refused
+
+# The align lands exactly on the end of the stream and there is nothing left
+# for the payload. A reader that checks the length before aligning accepts.
+
+operation bytes
+name bytes-refuse-past-end-after-the-align
+param preceding_bits = 1
+param count = 1
+bytes 01
+expect refused
+
+operation bytes
+name bytes-accept-one-byte-after-the-align
+param preceding_bits = 1
+param count = 1
+bytes 01 5A
+expect value = 5A
+consumed 16
+writer canonical

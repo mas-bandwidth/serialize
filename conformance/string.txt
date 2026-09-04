@@ -1,0 +1,340 @@
+# serialize conformance vectors: serialize_string
+#
+# The format is specified in STANDARD.md, "The vector format". Records are
+# separated by blank lines.
+#
+# STANDARD.md, "string": a null-terminated narrow string, written as
+#
+#   1. the length, as serialize_int( length, 0, buffer_size - 1 ) — so the bit
+#      cost depends on buffer_size, which both sides must agree on;
+#   2. the characters, as serialize_bytes — WHICH ALIGNS.
+#
+# The terminator is not transmitted; the reader appends it. Because
+# buffer_size is an operand rather than a transmitted value, the same string
+# serialized against different buffer sizes produces different bytes, and the
+# vectors below pin three buffer sizes for that reason.
+#
+# `value` is the transmitted payload as hexadecimal byte pairs, empty for the
+# empty string. Spelling it as bytes rather than as text keeps this file pure
+# ASCII and keeps the expectation free of any question about how each of the
+# nine implementations quotes a string.
+#
+# Four refusal rules reach this operation:
+#
+#   * the length field's own range rule, when buffer_size - 1 is not one less
+#     than a power of two, so a length past the buffer is expressible;
+#   * the alignment padding must be zero, inherited from serialize_bytes;
+#   * INVALID UTF-8 fails the read — "the payload the contract above promises
+#     is the payload the reader insists on";
+#   * an INTERIOR NUL fails the read — a zero byte anywhere among the length
+#     transmitted bytes, which "gives the payload two lengths" and is its own
+#     rule because NUL is well-formed UTF-8;
+#
+# and reading past the end. Every UTF-8 refusal below is paired with the
+# nearest well-formed accept, so a reader that refuses a whole byte class
+# rather than the malformed sequence fails the twin.
+#
+# STANDARD.md leaves the buffer's contents UNSPECIFIED after a refused read
+# into a caller-owned buffer, so no vector here states anything about it.
+
+# buffer_size 16: the length field is bits_required( 0, 15 ) = 4 bits, then
+# four bits of alignment padding, so the payload starts at byte 1.
+
+operation string
+name string-golden
+param buffer_size = 16
+bytes 06 67 6F 6C 64 65 6E
+expect value = 67 6F 6C 64 65 6E
+consumed 56
+writer canonical
+
+# The empty string reaches serialize_bytes with count zero, which "pads to the
+# byte boundary and writes nothing else". The align is performed regardless: an
+# implementation that skips it when the payload is empty consumes 4 bits here
+# instead of 8 and desynchronizes everything after it.
+
+operation string
+name string-empty-still-performs-the-align
+param buffer_size = 16
+bytes 00
+expect value =
+consumed 8
+writer canonical
+
+operation string
+name string-single-byte
+param buffer_size = 16
+bytes 01 41
+expect value = 41
+consumed 16
+writer canonical
+
+operation string
+name string-fills-the-buffer
+param buffer_size = 16
+bytes 0F 41 42 43 44 45 46 47 48 49 4A 4B 4C 4D 4E 4F
+expect value = 41 42 43 44 45 46 47 48 49 4A 4B 4C 4D 4E 4F
+consumed 128
+writer canonical
+
+# buffer_size 8: a three-bit length field, so the same payload produces
+# different bytes than it does above. The alignment absorbs five bits here
+# instead of four, and the payload still starts at byte 1.
+
+operation string
+name string-buffer-size-8-three-bit-length
+param buffer_size = 8
+bytes 04 74 65 73 74
+expect value = 74 65 73 74
+consumed 40
+writer canonical
+
+# buffer_size 1: the length field is serialize_int( length, 0, 0 ), a
+# DEGENERATE RANGE, so it costs zero bits and the only representable string is
+# the empty one. The align at bit index 0 is a no-op, the payload is empty, and
+# the whole operation consumes nothing at all — from an empty stream, where any
+# read is an error.
+
+operation string
+name string-buffer-size-1-zero-bit-length-field
+param buffer_size = 1
+bytes
+expect value =
+consumed 0
+writer canonical
+
+# The length field's range rule: buffer_size 10 gives bits_required( 0, 9 ) = 4
+# bits, so lengths 10 through 15 are expressible and must be refused.
+
+operation string
+name string-accepts-the-longest-length
+param buffer_size = 10
+bytes 09 31 32 33 34 35 36 37 38 39
+expect value = 31 32 33 34 35 36 37 38 39
+consumed 80
+writer canonical
+
+operation string
+name string-refuse-length-one-past-the-buffer
+param buffer_size = 10
+bytes 0A
+expect refused
+
+operation string
+name string-refuse-length-all-four-bits
+param buffer_size = 10
+bytes 0F
+expect refused
+
+# The alignment padding must be zero. The low four bits are a length of 1, the
+# high four are the padding, and only the padding differs between this vector
+# and string-single-byte above.
+
+operation string
+name string-refuse-non-zero-align-padding
+param buffer_size = 16
+bytes F1 41
+expect refused
+
+# Reading past the end, in the length field and in the payload.
+
+operation string
+name string-refuse-past-end-payload-truncated
+param buffer_size = 16
+bytes 06 67 6F 6C
+expect refused
+
+operation string
+name string-refuse-past-end-empty-stream
+param buffer_size = 16
+bytes
+expect refused
+
+# ---------------------------------------------------------------------------
+# the interior NUL rule. A conforming writer derives length from strlen, so no
+# zero byte can reach the wire from conformance; a stream carrying one gives
+# the payload two lengths — the wire length and the strlen every consumer
+# downstream computes — and everything between them rides invisibly past
+# whichever side uses the other. The rule is "a zero byte ANYWHERE among the
+# length transmitted bytes", so the first, a middle and the last byte each get
+# a vector: a reader that only scans strictly-interior positions accepts two of
+# these three.
+
+operation string
+name string-refuse-nul-as-the-only-byte
+param buffer_size = 16
+bytes 01 00
+expect refused
+
+operation string
+name string-refuse-nul-as-the-first-byte
+param buffer_size = 16
+bytes 03 00 61 62
+expect refused
+
+operation string
+name string-refuse-nul-in-the-middle
+param buffer_size = 16
+bytes 03 61 00 62
+expect refused
+
+operation string
+name string-refuse-nul-as-the-last-byte
+param buffer_size = 16
+bytes 03 61 62 00
+expect refused
+
+operation string
+name string-accept-the-same-three-bytes-without-a-nul
+param buffer_size = 16
+bytes 03 61 62 63
+expect value = 61 62 63
+consumed 32
+writer canonical
+
+# ---------------------------------------------------------------------------
+# the UTF-8 well-formedness rule. Each refusal is paired with the nearest
+# well-formed sequence, usually the code point one step away from the malformed
+# one, so a reader that refuses a byte class wholesale fails the accept.
+
+operation string
+name string-accept-shortest-two-byte-sequence
+param buffer_size = 16
+bytes 02 C2 80
+expect value = C2 80
+consumed 24
+writer canonical
+
+operation string
+name string-refuse-overlong-two-byte-nul
+param buffer_size = 16
+bytes 02 C0 80
+expect refused
+
+operation string
+name string-refuse-overlong-two-byte-slash
+param buffer_size = 16
+bytes 02 C1 AF
+expect refused
+
+operation string
+name string-accept-shortest-three-byte-sequence
+param buffer_size = 16
+bytes 03 E0 A0 80
+expect value = E0 A0 80
+consumed 32
+writer canonical
+
+operation string
+name string-refuse-overlong-three-byte-slash
+param buffer_size = 16
+bytes 03 E0 80 AF
+expect refused
+
+operation string
+name string-accept-just-below-the-surrogate-block
+param buffer_size = 16
+bytes 03 ED 9F BF
+expect value = ED 9F BF
+consumed 32
+writer canonical
+
+operation string
+name string-refuse-surrogate-encoded-in-utf8
+param buffer_size = 16
+bytes 03 ED A0 80
+expect refused
+
+operation string
+name string-refuse-low-surrogate-encoded-in-utf8
+param buffer_size = 16
+bytes 03 ED BF BF
+expect refused
+
+operation string
+name string-accept-just-above-the-surrogate-block
+param buffer_size = 16
+bytes 03 EE 80 80
+expect value = EE 80 80
+consumed 32
+writer canonical
+
+operation string
+name string-accept-astral-code-point
+param buffer_size = 16
+bytes 04 F0 9F 92 A9
+expect value = F0 9F 92 A9
+consumed 40
+writer canonical
+
+operation string
+name string-accept-the-largest-code-point
+param buffer_size = 16
+bytes 04 F4 8F BF BF
+expect value = F4 8F BF BF
+consumed 40
+writer canonical
+
+operation string
+name string-refuse-code-point-above-10FFFF
+param buffer_size = 16
+bytes 04 F4 90 80 80
+expect refused
+
+operation string
+name string-refuse-five-byte-sequence
+param buffer_size = 16
+bytes 05 F8 88 80 80 80
+expect refused
+
+operation string
+name string-refuse-lone-continuation-byte
+param buffer_size = 16
+bytes 01 80
+expect refused
+
+operation string
+name string-refuse-continuation-byte-after-ascii
+param buffer_size = 16
+bytes 02 41 BF
+expect refused
+
+operation string
+name string-refuse-truncated-two-byte-sequence
+param buffer_size = 16
+bytes 01 C3
+expect refused
+
+operation string
+name string-accept-the-same-two-byte-sequence-completed
+param buffer_size = 16
+bytes 02 C3 A9
+expect value = C3 A9
+consumed 24
+writer canonical
+
+operation string
+name string-refuse-truncated-three-byte-sequence
+param buffer_size = 16
+bytes 02 E2 82
+expect refused
+
+operation string
+name string-accept-the-same-three-byte-sequence-completed
+param buffer_size = 16
+bytes 03 E2 82 AC
+expect value = E2 82 AC
+consumed 32
+writer canonical
+
+operation string
+name string-refuse-byte-fe
+param buffer_size = 16
+bytes 01 FE
+expect refused
+
+operation string
+name string-refuse-byte-ff
+param buffer_size = 16
+bytes 01 FF
+expect refused

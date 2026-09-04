@@ -813,6 +813,14 @@ func main() {
 	}
 	c.eq("doctored trailing bits: diagnostic flags the stream", trailingBits(doctored, db.i) != 0, true)
 
+	// ---- the shared corpus ------------------------------------------------
+	//
+	// The other half of this tool's job, and the half that is not about the
+	// library's own pinned emissions: every vector in conformance/, decoded,
+	// re-encoded and measured by the same document-derived machinery. See
+	// corpus.go. A corpus file this checker cannot drive FAILS.
+	runCorpus(c, root)
+
 	fmt.Printf("%d checks against STANDARD.md, %d failures\n", c.n, len(c.fails))
 	for _, f := range c.fails {
 		fmt.Println("  FAIL " + f)
