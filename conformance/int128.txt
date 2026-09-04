@@ -1,0 +1,17 @@
+# serialize conformance vectors: serialize_int128
+#
+# The format is specified in STANDARD.md, "The vector format". Records are
+# separated by blank lines.
+#
+# A degenerate range is legal and costs zero bits: STANDARD.md, "int (ranged)"
+# for the rule and "int128 (ranged)" for the width. The stream is empty, the
+# reader consumes nothing, and the value comes from min. A reader that requires
+# min < max, or that consumes bits here, fails this vector.
+
+operation int128
+name degenerate-range-zero-bits
+param min = 1267650600228229401496703205383
+param max = 1267650600228229401496703205383
+bytes
+expect value = 1267650600228229401496703205383
+consumed 0

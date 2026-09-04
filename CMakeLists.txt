@@ -43,6 +43,9 @@ if(SERIALIZE_INSTALL)
         NAMESPACE serialize::
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/serialize
     )
+    # SameMajorVersion states API compatibility and says nothing about the wire.
+    # Wire agreement between two endpoints is the format version at the head of
+    # STANDARD.md, which a library release states separately.
     write_basic_package_version_file(
         ${CMAKE_CURRENT_BINARY_DIR}/serialize-config-version.cmake
         COMPATIBILITY SameMajorVersion
