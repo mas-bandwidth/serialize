@@ -18,8 +18,8 @@
 # separate records, and each line is a key and its value.
 
 format_version 1.1
-standard_commit 7e0515e952f3373d001ec1899adf9dffb823e1c5
-corpus_commit 7e0515e952f3373d001ec1899adf9dffb823e1c5
+standard_commit 39cc8543bb502b83cff5046a2f865ab1ab530cb7
+corpus_commit 39cc8543bb502b83cff5046a2f865ab1ab530cb7
 
 # The C++ implementation is this repository, so it vendors nothing: it is where STANDARD.md
 # and conformance/ live. Its row is checked against the working checkout rather than against
@@ -60,9 +60,9 @@ version_pattern -
 runtime serialize.rs
 language Rust
 repository mas-bandwidth/serialize.rs
-release v2.3.2
+release v2.4.0
 version_file Cargo.toml
-version_pattern version = "2.3.2"
+version_pattern version = "2.4.0"
 
 runtime serialize.js
 language JavaScript

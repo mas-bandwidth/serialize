@@ -13,7 +13,7 @@ These are the releases that carry format version 1.1:
 | [serialize.c](https://github.com/mas-bandwidth/serialize.c) | C | `v1.9.2` |
 | [serialize.cs](https://github.com/mas-bandwidth/serialize.cs) | C# | `v1.9.1` |
 | [serialize.go](https://github.com/mas-bandwidth/serialize.go) | Go | `v1.15.1` |
-| [serialize.rs](https://github.com/mas-bandwidth/serialize.rs) | Rust | `v2.3.2` |
+| [serialize.rs](https://github.com/mas-bandwidth/serialize.rs) | Rust | `v2.4.0` |
 | [serialize.js](https://github.com/mas-bandwidth/serialize.js) | JavaScript | `v1.4.2` |
 | [serialize.dart](https://github.com/mas-bandwidth/serialize.dart) | Dart | `v1.1.2` |
 | [serialize.java](https://github.com/mas-bandwidth/serialize.java) | Java | `v1.1.2` |
@@ -28,8 +28,8 @@ whether two endpoints can talk to each other.
 Every release above vendors the standard and the corpus from one commit of this
 repository:
 
-    standard_commit  7e0515e952f3373d001ec1899adf9dffb823e1c5
-    corpus_commit    7e0515e952f3373d001ec1899adf9dffb823e1c5
+    standard_commit  39cc8543bb502b83cff5046a2f865ab1ab530cb7
+    corpus_commit    39cc8543bb502b83cff5046a2f865ab1ab530cb7
 
 The pin names a commit and never a branch. `main` moves, so a claim proved
 against `main` is a claim about whatever `main` happened to be that morning. The
