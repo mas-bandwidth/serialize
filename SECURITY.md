@@ -33,6 +33,13 @@ hostile buffer — out-of-bounds reads past the end of a stream, integer overflo
 byte counts, and any way for a serialized length or array count to drive an allocation or
 a copy without being bounds-checked against what remains in the buffer.
 
+One thing that is not a finding: the reader loads 64-bit windows at byte granularity, so
+it reads up to 8 bytes past the end of the packet data and never interprets them. Callers
+owe the reader an allocation that extends that far. That contract is stated in
+[STANDARD.md](STANDARD.md), under Reader Obligations and again under Implementation Law,
+and in the Limitations section of the README. A read past the end of an allocation that
+honors it is a finding.
+
 serialize performs no encryption and no authentication; it is a wire-format library. It is
 normally used underneath a layer that authenticates (netcode). That does not put memory
 safety out of scope — a stream is only trustworthy if the layer above actually verified it,
