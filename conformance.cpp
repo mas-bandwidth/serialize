@@ -25,7 +25,7 @@
 /*
     Runs the shared conformance corpus through this library's reader.
 
-    The corpus is the conformance/ directory: one file per operation, holding the accepted and
+    The corpus is the conformance/ directory: one file per covered operation, holding the accepted and
     refused vectors STANDARD.md's rules require. It is the conformance instrument every
     implementation in the family runs, and it is deliberately not generated from this code — a
     suite that regenerates its own expectations proves only that a port agrees with itself.
