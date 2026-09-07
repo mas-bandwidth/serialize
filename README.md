@@ -6,7 +6,7 @@ If this library helps you, please support it: **[Become a supporter](https://www
 
 **serialize** is a simple bitpacking serializer for C++.
 
-![image](https://github.com/mas-bandwidth/serialize/assets/696656/dc36cc53-3382-4a63-888e-6dbb53dda92d)
+![serialize — loose blocks packed into one compact line](images/serialize.png)
 
 It has the following features:
 
