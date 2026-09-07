@@ -2,11 +2,9 @@
 
 [![CI](https://github.com/mas-bandwidth/serialize/actions/workflows/ci.yml/badge.svg)](https://github.com/mas-bandwidth/serialize/actions/workflows/ci.yml)
 
-If this library helps you, please support it: **[Become a supporter](https://www.patreon.com/MasBandwidth/membership)**
+![serialize — loose blocks packed into one compact line](images/serialize.png)
 
 **serialize** is a simple bitpacking serializer for C++.
-
-![serialize — loose blocks packed into one compact line](images/serialize.png)
 
 It has the following features:
 
@@ -18,6 +16,8 @@ It has the following features:
 * Serialize 128 bit unsigned integers on every platform: native __int128 where the compiler has it, an emulated signed/unsigned pair where it doesn't, byte-identical on the wire
 * Alignment support so you can align your bitstream to a byte boundary whenever you want
 * Optional template-based serialization so you can write one function that handles both read and write
+
+If this library helps you, **[please support it](https://www.patreon.com/MasBandwidth/membership)**
 
 # Installing
 
