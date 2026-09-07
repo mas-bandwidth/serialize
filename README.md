@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/mas-bandwidth/serialize/actions/workflows/ci.yml/badge.svg)](https://github.com/mas-bandwidth/serialize/actions/workflows/ci.yml)
 
-![serialize — loose blocks packed into one compact line](images/serialize.png)
+![serialize logo with a packed row of colored blocks](images/serialize.png)
 
 **serialize** is a simple bitpacking serializer for C++.
 
