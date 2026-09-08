@@ -37,8 +37,11 @@ One thing that is not a finding: the reader loads 64-bit windows at byte granula
 it reads up to 8 bytes past the end of the packet data and never interprets them. Callers
 owe the reader an allocation that extends that far. That contract is stated in
 [STANDARD.md](STANDARD.md), under Reader Obligations and again under Implementation Law,
-and in the Limitations section of the README. A read past the end of an allocation that
-honors it is a finding.
+and in the Limitations section of the README. A payload received into an exactly sized
+allocation is read through `ReadStream::InitializePadded`, which copies it into a
+caller-supplied destination and zeroes the slack — and which refuses, in every build, a
+destination too small to hold both, copying nothing and handing back a failed stream.
+A read past the end of an allocation that honors the contract is a finding.
 
 serialize performs no encryption and no authentication; it is a wire-format library. It is
 normally used underneath a layer that authenticates (netcode). That does not put memory

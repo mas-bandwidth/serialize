@@ -1937,9 +1937,47 @@ namespace serialize
         }
 
         /**
+            Read a payload whose allocation carries no slack.
+            Initialize requires the allocation behind the buffer to extend at least 8 bytes
+            past the data (see BitReader). A packet received into an exactly sized allocation
+            does not satisfy that contract. This copies the payload into a destination you
+            supply, zeroes the 8 slack bytes, and initializes the stream over the copy.
+            destination must hold at least bytes + 8. The library allocates nothing.
+            The destination is yours: it must outlive the stream and must not change
+            while the stream is reading it.
+            A destination that is too small is refused in every build: nothing is copied,
+            and the stream is left failed. The same check covers a negative bytes.
+            The C twin is serialize_read_stream_init_padded.
+            @returns True if the stream is ready to read, false if the destination was too small.
+         */
+
+        bool InitializePadded( uint8_t * destination, int64_t destination_bytes, const uint8_t * data, int64_t bytes )
+        {
+            serialize_assert( destination );
+            serialize_assert( bytes >= 0 );
+            serialize_assert( destination_bytes >= 8 );
+            serialize_assert( destination_bytes - 8 >= bytes );
+            if ( bytes < 0 || destination_bytes < 8 || destination_bytes - 8 < bytes )
+            {
+                m_reader.Initialize( destination, 0 );
+                Fail();
+                return false;
+            }
+            if ( bytes > 0 )
+            {
+                serialize_assert( data );
+                memcpy( destination, data, (size_t) bytes );
+            }
+            uint64_t slack = 0;
+            memcpy( destination + bytes, &slack, 8 );
+            m_reader.Initialize( destination, bytes );
+            return true;
+        }
+
+        /**
             Read stream constructor.
             @param buffer The buffer to read from.
-            @param bytes The number of bytes of packet data to read. IMPORTANT: the underlying allocation must extend at least 8 bytes past the end of the data, because the bit reader loads 64 bit windows at byte granularity. See BitReader for details.
+            @param bytes The number of bytes of packet data to read. IMPORTANT: the underlying allocation must extend at least 8 bytes past the end of the data, because the bit reader loads 64 bit windows at byte granularity. See BitReader for details. For an exactly sized allocation, use InitializePadded.
          */
 
         ReadStream( const uint8_t * buffer, int64_t bytes ) : m_reader( buffer, bytes ) {}
@@ -6004,6 +6042,82 @@ inline void test_read_stream_failure_is_terminal()
         serialize_check( readStream.SerializeBits( value, 8 ) == true );
         serialize_check( value == 0xAF );
     }
+}
+
+inline void test_read_stream_initialize_padded()
+{
+    uint8_t written[64];
+    serialize::WriteStream writeStream( written, 64 );
+    // 8 + bits_required(0,10) is 12 bits, 2 bytes — not a multiple of 8, so the
+    // final window reaches past the data and the slack is load-bearing.
+    uint32_t marker = 0xAF;
+    writeStream.SerializeBits( marker, 8 );
+    writeStream.SerializeInteger( 7, 0, 10 );
+    writeStream.Flush();
+    const int64_t bytes = writeStream.GetBytesProcessed();
+    serialize_check( bytes > 0 );
+    serialize_check( ( bytes % 8 ) != 0 );
+
+    uint8_t * tight = (uint8_t *) malloc( (size_t) bytes );
+    serialize_check( tight != NULL );
+    memcpy( tight, written, (size_t) bytes );
+
+    uint8_t dest[64 + 8];
+    memset( dest, 0xFF, sizeof( dest ) );
+    serialize::ReadStream readStream;
+    serialize_check( readStream.InitializePadded( dest, (int64_t) sizeof( dest ), tight, bytes ) == true );
+    serialize_check( memcmp( dest, tight, (size_t) bytes ) == 0 );
+    for ( int i = 0; i < 8; i++ )
+        serialize_check( dest[bytes + i] == 0 );
+    uint32_t got = 0;
+    int value = 0;
+    serialize_check( readStream.SerializeBits( got, 8 ) == true );
+    serialize_check( got == 0xAF );
+    serialize_check( readStream.SerializeInteger( value, 0, 10 ) == true );
+    serialize_check( value == 7 );
+
+    {
+        serialize::ReadStream empty;
+        memset( dest, 0xFF, sizeof( dest ) );
+        serialize_check( empty.InitializePadded( dest, (int64_t) sizeof( dest ), tight, 0 ) == true );
+        for ( int i = 0; i < 8; i++ )
+            serialize_check( dest[i] == 0 );
+        uint32_t bit = 0;
+        serialize_check( empty.SerializeBits( bit, 1 ) == false );
+    }
+    free( tight );
+
+#if defined( NDEBUG )
+    // a dest that cannot hold payload+8 is refused in every build; debug asserts first.
+    // asserts.cpp records the debug half so the sanitizer job sees the refusal too.
+    {
+        serialize::ReadStream tooSmall;
+        uint8_t tiny[16];
+        memset( tiny, 0xFF, sizeof( tiny ) );
+        serialize_check( tooSmall.InitializePadded( tiny, (int64_t) sizeof( tiny ), written, (int64_t) sizeof( tiny ) ) == false );
+        for ( int i = 0; i < (int) sizeof( tiny ); i++ )
+            serialize_check( tiny[i] == 0xFF );
+        uint32_t after = 0xFFFFFFFF;
+        serialize_check( tooSmall.SerializeBits( after, 8 ) == false );
+        serialize_check( after == 0xFFFFFFFF );
+    }
+    {
+        serialize::ReadStream shortByOne;
+        uint8_t undersized[16];
+        memset( undersized, 0xFF, sizeof( undersized ) );
+        serialize_check( shortByOne.InitializePadded( undersized, (int64_t) sizeof( undersized ), written, (int64_t) sizeof( undersized ) - 7 ) == false );
+        serialize_check( undersized[0] == 0xFF );
+    }
+    {
+        serialize::ReadStream exactSlack;
+        uint8_t undersized[16];
+        memset( undersized, 0xFF, sizeof( undersized ) );
+        serialize_check( exactSlack.InitializePadded( undersized, (int64_t) sizeof( undersized ), written, (int64_t) sizeof( undersized ) - 8 ) == true );
+        serialize_check( memcmp( undersized, written, sizeof( undersized ) - 8 ) == 0 );
+        for ( int i = 0; i < 8; i++ )
+            serialize_check( undersized[sizeof( undersized ) - 8 + i] == 0 );
+    }
+#endif
 }
 
 inline void test_compressed_float_validation()
@@ -10136,6 +10250,7 @@ inline void serialize_test()
         SERIALIZE_RUN_TEST( test_wstring_read_validation );
         SERIALIZE_RUN_TEST( test_int_relative_validation );
     SERIALIZE_RUN_TEST( test_read_stream_failure_is_terminal );
+        SERIALIZE_RUN_TEST( test_read_stream_initialize_padded );
         SERIALIZE_RUN_TEST( test_compressed_float_validation );
         SERIALIZE_RUN_TEST( test_compressed_float_top_of_range_clamp );
         SERIALIZE_RUN_TEST( test_compressed_float_non_finite_asserts );

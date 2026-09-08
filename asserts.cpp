@@ -37,6 +37,11 @@
     than a process death: it runs identically on all three platforms in the matrix and in
     both build configurations, where an aborting assertion would need a death test whose
     shape differs on each of them, and it also names WHICH assertion fired.
+
+    InitializePadded's too-small destination is a memory claim, not a decoded-value one.
+    The unit test can only exercise the refusal under NDEBUG, because a live assert aborts
+    first. Recording here lets both halves run in every configuration, including the
+    sanitizer job.
 */
 
 #include <stdio.h>
@@ -182,6 +187,41 @@ static void test_serialize_int_compile_time_asserts_on_the_callers_value()
 
 #endif // #if defined( SERIALIZE_HAS_COMPILE_TIME_SURFACE )
 
+static void test_initialize_padded_refuses_a_short_destination()
+{
+    printf( "  ReadStream::InitializePadded\n" );
+
+    uint8_t payload[11];
+    memset( payload, 0xAB, sizeof( payload ) );
+
+    {
+        reset();
+        uint8_t dest[16];
+        memset( dest, 0xFF, sizeof( dest ) );
+        serialize::ReadStream stream;
+        bool ok = stream.InitializePadded( dest, (int64_t) sizeof( dest ), payload, (int64_t) sizeof( payload ) );
+        check( assert_fires > 0, "a destination that cannot hold payload+8 trips the assertion" );
+        check( ok == false, "and refuses in every build" );
+        check( dest[0] == (uint8_t) 0xFF, "copying nothing" );
+        uint32_t after = 0xFFFFFFFFu;
+        check( stream.SerializeBits( after, 8 ) == false, "the stream is latched" );
+        check( after == 0xFFFFFFFFu, "a refused read leaves the caller's value" );
+        printf( "      assertion: %s\n", assert_condition );
+    }
+
+    {
+        reset();
+        uint8_t dest[19];
+        memset( dest, 0xFF, sizeof( dest ) );
+        serialize::ReadStream stream;
+        bool ok = stream.InitializePadded( dest, (int64_t) sizeof( dest ), payload, (int64_t) sizeof( payload ) );
+        check( assert_fires == 0, "exactly payload+8 does not trip it" );
+        check( ok == true, "and is accepted" );
+        check( dest[0] == (uint8_t) 0xAB, "the payload is copied" );
+        check( dest[11] == 0, "the slack is zeroed" );
+    }
+}
+
 int main()
 {
     printf( "\nwrite side assertions\n\n" );
@@ -191,6 +231,7 @@ int main()
 #if defined( SERIALIZE_HAS_COMPILE_TIME_SURFACE )
     test_serialize_int_compile_time_asserts_on_the_callers_value();
 #endif
+    test_initialize_padded_refuses_a_short_destination();
 
     if ( failures > 0 )
     {
