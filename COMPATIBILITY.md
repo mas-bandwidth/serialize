@@ -9,7 +9,7 @@ These are the releases that carry format version 1.1:
 
 | runtime | language | release |
 |---|---|---|
-| [serialize](https://github.com/mas-bandwidth/serialize) | C++ | `v1.16.2` |
+| [serialize](https://github.com/mas-bandwidth/serialize) | C++ | `v1.17.0` |
 | [serialize.c](https://github.com/mas-bandwidth/serialize.c) | C | `v1.9.2` |
 | [serialize.cs](https://github.com/mas-bandwidth/serialize.cs) | C# | `v1.9.1` |
 | [serialize.go](https://github.com/mas-bandwidth/serialize.go) | Go | `v1.15.1` |
