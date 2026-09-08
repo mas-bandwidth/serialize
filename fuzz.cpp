@@ -25,14 +25,17 @@
 /*
     libFuzzer harness for serialize.
 
-    Every input runs two passes:
+    Every input runs three passes:
 
     1. Hostile read (FuzzRead). ReadStream is the trust boundary of this library: it must survive
        arbitrary hostile bytes, failing reads by returning false, never by corrupting memory or
        tripping an assert. Build with asserts enabled (Debug config) plus ASan/UBSan so all three
        failure modes are caught.
 
-    2. Differential round trip (FuzzRoundTrip). Values generated from the input are written with
+    2. The same hostile bytes through InitializePadded, from a source allocation with no slack.
+       The source is heap allocated at exactly the payload size so ASan fences the byte after it.
+
+    3. Differential round trip (FuzzRoundTrip). Values generated from the input are written with
        WriteStream, read back with ReadStream, and compared. Any write/read asymmetry traps.
        MeasureStream runs the same ops and must never measure fewer bits than were written.
 
@@ -43,6 +46,7 @@
 
 #include "serialize.h"
 
+#include <stdlib.h>
 #include <vector>
 
 #define fuzz_check( condition ) do { if ( !(condition) ) { __builtin_trap(); } } while (0)
@@ -620,7 +624,28 @@ extern "C" int LLVMFuzzerTestOneInput( const uint8_t * data, size_t size )
         FuzzRead( stream, ops, NumOps );
     }
 
-    // pass 2: differential round trip of values generated from the same bytes
+    // pass 2: the same hostile bytes, through InitializePadded, from a source
+    // allocation with no slack. The destination is not zeroed first, so a byte
+    // the reader can touch that the wrapper failed to write shows up as a
+    // finding rather than a silent zero.
+    {
+        uint8_t * exact = (uint8_t *) malloc( payloadBytes );
+        uint8_t * padded = (uint8_t *) malloc( payloadBytes + 8 );
+        if ( exact == NULL || padded == NULL )
+        {
+            free( exact );
+            free( padded );
+            return 0;
+        }
+        memcpy( exact, payload, payloadBytes );
+        serialize::ReadStream stream;
+        fuzz_check( stream.InitializePadded( padded, (int64_t) ( payloadBytes + 8 ), exact, (int64_t) payloadBytes ) == true );
+        FuzzRead( stream, ops, NumOps );
+        free( exact );
+        free( padded );
+    }
+
+    // pass 3: differential round trip of values generated from the same bytes
     {
         // worst case is ~260 bytes per op (a 241 byte serialize_bytes plus alignment), so 32 ops fit comfortably
         const int WriteBufferSize = 16 * 1024;
