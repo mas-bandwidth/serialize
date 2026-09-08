@@ -93,7 +93,7 @@
 #endif // #if defined( _MSC_VER )
 
 /*
-    SERIALIZE_BULK_COPY — how WriteBytes moves memory, spelled so the fortify capture
+    SERIALIZE_BULK_COPY — how WriteBytes and ReadBytes move memory, spelled so the fortify capture
     can never touch it. Where _FORTIFY_SOURCE is armed (glibc honors it in C++ too, and
     some toolchains arm it by default; Darwin's capture fires for C, which is how
     serialize.c hit it), the string.h macros rewrite
@@ -1557,8 +1557,10 @@ namespace serialize
             serialize_assert( GetAlignBits() == 0 );
             serialize_assert( uint64_t(m_bitsRead) + uint64_t(bytes) * 8 <= uint64_t(m_numBits) );
 
-            // the bit index is byte aligned here (see the align assert), so this is a straight copy
-            memcpy( data, m_data + ( m_bitsRead >> 3 ), (size_t) bytes );
+            // the bit index is byte aligned here (see the align assert), so this is a straight copy —
+            // through SERIALIZE_BULK_COPY, because a plain memcpy spelling here re-arms the fortify
+            // capture the word moves already dodge
+            SERIALIZE_BULK_COPY( data, m_data + ( m_bitsRead >> 3 ), (size_t) bytes );
 
             m_bitsRead += bytes * 8;
         }
