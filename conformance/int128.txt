@@ -104,14 +104,14 @@ name int128-72-bit-span-refuse-offset-one-past-the-span
 param min = -1180591620717411303424
 param max = 1180591620717411303424
 bytes 01 00 00 00 00 00 00 00 80
-expect refused
+expect refused value_out_of_range
 
 operation int128
 name int128-72-bit-span-refuse-offset-all-ones
 param min = -1180591620717411303424
 param max = 1180591620717411303424
 bytes FF FF FF FF FF FF FF FF FF
-expect refused
+expect refused value_out_of_range
 
 # The full 128-bit range: the span is 2^128 - 1, which is exactly what "min and
 # max are converted to the unsigned 128-bit domain first" buys. Four groups,
@@ -162,7 +162,7 @@ name int128-128-bit-span-refuse-offset-one-past-the-span
 param min = -170141183460469231731687303715884105728
 param max = 170141183460469231731687303715884105726
 bytes FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF
-expect refused
+expect refused value_out_of_range
 
 # The group boundaries, one vector per group, over a zero minimum so the decoded
 # value is the offset itself. The bounds are SIGNED, so the widest declaration
@@ -204,11 +204,75 @@ name int128-refuse-past-end
 param min = 0
 param max = 1267650600228229401496703205376
 bytes FF FF FF FF FF FF FF FF
-expect refused
+expect refused past_end
 
 operation int128
 name int128-refuse-past-end-empty-stream
 param min = 0
 param max = 1
 bytes
-expect refused
+expect refused past_end
+
+# ---------------------------------------------------------------------------
+# WIDE INTEGERS ARE EXACT (STANDARD.md, "Wide integers are exact"). A 64 or
+# 128 bit value is an integer on the wire and must be one in every reader: an
+# implementation that carries it through a double holds every integer up to
+# 2^53 and loses the rest. The edges come in threes around each limit, because
+# a power of two survives a double and its neighbours do not: 2^53 + 1 is the
+# first integer a double cannot hold, 2^63 - 1 rounds up to 2^63, and 2^64 - 1
+# rounds past the width entirely. A reader that passes every vector below
+# carries the width exactly.
+
+operation int128
+name int128-full-range-exact-2p53-plus-1
+param min = -170141183460469231731687303715884105728
+param max = 170141183460469231731687303715884105727
+bytes 01 00 00 00 00 00 20 00 00 00 00 00 00 00 00 80
+expect value = 9007199254740993
+consumed 128
+writer canonical
+
+operation int128
+name int128-full-range-exact-2p63
+param min = -170141183460469231731687303715884105728
+param max = 170141183460469231731687303715884105727
+bytes 00 00 00 00 00 00 00 80 00 00 00 00 00 00 00 80
+expect value = 9223372036854775808
+consumed 128
+writer canonical
+
+operation int128
+name int128-full-range-exact-2p64-plus-1
+param min = -170141183460469231731687303715884105728
+param max = 170141183460469231731687303715884105727
+bytes 01 00 00 00 00 00 00 00 01 00 00 00 00 00 00 80
+expect value = 18446744073709551617
+consumed 128
+writer canonical
+
+operation int128
+name int128-full-range-exact-minus-2p64-minus-1
+param min = -170141183460469231731687303715884105728
+param max = 170141183460469231731687303715884105727
+bytes FF FF FF FF FF FF FF FF FE FF FF FF FF FF FF 7F
+expect value = -18446744073709551617
+consumed 128
+writer canonical
+
+operation int128
+name int128-full-range-exact-2p127-minus-2
+param min = -170141183460469231731687303715884105728
+param max = 170141183460469231731687303715884105727
+bytes FE FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF
+expect value = 170141183460469231731687303715884105726
+consumed 128
+writer canonical
+
+operation int128
+name int128-full-range-exact-minus-2p127-plus-1
+param min = -170141183460469231731687303715884105728
+param max = 170141183460469231731687303715884105727
+bytes 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+expect value = -170141183460469231731687303715884105727
+consumed 128
+writer canonical

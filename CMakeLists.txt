@@ -11,7 +11,7 @@ if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
     set(CMAKE_TARGET_MESSAGES OFF)
 endif()
 
-project(serialize VERSION 1.17.0 LANGUAGES CXX)
+project(serialize VERSION 2.0.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
@@ -36,7 +36,7 @@ target_include_directories(serialize INTERFACE
 
 if(SERIALIZE_INSTALL)
     include(CMakePackageConfigHelpers)
-    install(FILES serialize.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+    install(FILES serialize.h serialize_utf.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
     install(TARGETS serialize EXPORT serialize-targets)
     install(EXPORT serialize-targets
         FILE serialize-config.cmake
@@ -122,7 +122,12 @@ if(SERIALIZE_BUILD_TESTS)
     add_executable(serialize_asserts asserts.cpp serialize.h)
     set_target_properties(serialize_asserts PROPERTIES OUTPUT_NAME asserts)
 
-    foreach(target serialize_test example serialize_conformance serialize_asserts)
+    # serialize_utf.h, the wstring migration helper: wide text to UTF-8 and back, outside the
+    # format and outside serialize.h's stream API
+    add_executable(serialize_utf utf.cpp serialize.h serialize_utf.h)
+    set_target_properties(serialize_utf PROPERTIES OUTPUT_NAME utf)
+
+    foreach(target serialize_test example serialize_conformance serialize_asserts serialize_utf)
         target_link_libraries(${target} PRIVATE serialize)
         target_compile_options(${target} PRIVATE ${SERIALIZE_DEV_FLAGS})
         target_compile_definitions(${target} PRIVATE
@@ -152,55 +157,135 @@ if(SERIALIZE_BUILD_TESTS)
     set_tests_properties(conformance-control-unknown-operation PROPERTIES WILL_FAIL TRUE)
 
     # Control 2: a reader with ONE LINE of a refusal rule deleted, built from a scratch copy of
-    # the header and run against the real corpus, which must go red. This is the control that
-    # answers "would the corpus notice if the implementation were wrong?" — and it answers it per
-    # rule, because each sabotage names the rule it deletes and the vectors that pin it.
+    # the header and run against the real corpus. This is the control that answers "would the
+    # corpus notice if the implementation were wrong?" — and it answers it per rule, because each
+    # sabotage names the rule it deletes and conformance-controls/<control>.expected names EXACTLY
+    # the vectors that rule owns. The control passes only when the sabotaged reader fails those
+    # vectors and no others: a sabotage that breaks more than its rule, or less, is a control that
+    # measures something other than what it claims.
     #
     # The scratch copy is generated at configure time and the sabotage is a string replacement, so
     # a needle that stops matching is a FATAL_ERROR rather than a silent no-op: a control that has
     # quietly stopped sabotaging anything is worse than no control at all. conformance.cpp is
     # copied alongside the sabotaged header because it includes "serialize.h" with quotes, which
     # resolves against the including file's own directory first.
-    set(SERIALIZE_CONTROL_NAMES align-padding ranged-reconstruction ranged-range fixed-degenerate-terminal)
+    #
+    # Each replacement keeps the sabotaged line compiling warning-free and reading every variable
+    # the deleted rule read: the added conjunct is false exactly when the rule would have fired.
+    set(SERIALIZE_CONTROL_NAMES
+        align-padding ranged-reconstruction ranged-range fixed-degenerate-terminal
+        float-finite double-finite compressed-float-finite
+        end-trailing-data end-padding
+        int-relative-canonical
+        string-embedded-nul string-utf8 string-utf8-surrogate
+        int64-through-double
+        wrong-reason)
+
+    set(SERIALIZE_CONTROL_RULE_align-padding "readers must verify that the alignment padding bits are zero")
     set(SERIALIZE_CONTROL_NEEDLE_align-padding
         "                if ( value != 0 )")
-    set(SERIALIZE_CONTROL_RULE_align-padding
-        "readers must verify that the alignment padding bits are zero")
-    # Two controls over the ranged int, one per rule, because the two rules fail differently: the
-    # reconstruction decides what an accepted offset means, and the range check decides which
-    # offsets are accepted at all. Each is a single line with no second guard behind it, so
-    # deleting it changes the verdict on exactly the vectors that pin it.
-    set(SERIALIZE_CONTROL_NEEDLE_ranged-reconstruction
-        "            value = int32_t( unsigned_value + uint32_t(min) );")
-    set(SERIALIZE_CONTROL_RULE_ranged-reconstruction
-        "a ranged int decodes to its offset plus min")
-    set(SERIALIZE_CONTROL_NEEDLE_ranged-range
-        "            if ( unsigned_value > uint32_t(max) - uint32_t(min) )")
-    set(SERIALIZE_CONTROL_RULE_ranged-range
-        "a ranged int whose offset is past the span is refused")
-    # The degenerate fixed point field, which consumes no bits and would otherwise always
-    # succeed. The needle appears in both FixedPointSerializer specializations and both are
-    # sabotaged, which is what the rule needs: a zero bit field is zero bits whatever operation
-    # declares it and whatever storage width carries it.
-    set(SERIALIZE_CONTROL_NEEDLE_fixed-degenerate-terminal
-        "                if ( !stream.SerializeInteger( degenerate, 0, 0 ) )")
-    set(SERIALIZE_CONTROL_RULE_fixed-degenerate-terminal
-        "every read consults the failure state, zero bit reads included")
-    # each replacement keeps the sabotaged line compiling warning-free: the padding is at most
-    # seven bits, so comparing it against 0xFFFFFFFF is a condition that never holds while still
-    # reading the variable the deleted rule read
     set(SERIALIZE_CONTROL_PATCH_align-padding
         "                if ( value == 0xFFFFFFFF ) // NEGATIVE CONTROL: this rule is deleted on purpose")
+
+    # Two controls over the ranged int, one per rule, because the two rules fail differently: the
+    # reconstruction decides what an accepted offset means, and the range check decides which
+    # offsets are accepted at all. Each is a single line with no second guard behind it.
+    set(SERIALIZE_CONTROL_RULE_ranged-reconstruction "a ranged int decodes to its offset plus min")
+    set(SERIALIZE_CONTROL_NEEDLE_ranged-reconstruction
+        "            value = int32_t( unsigned_value + uint32_t(min) );")
     set(SERIALIZE_CONTROL_PATCH_ranged-reconstruction
         "            value = int32_t( unsigned_value ); // NEGATIVE CONTROL: min is dropped on purpose")
-    # the widened right hand side is at least 0xFFFFFFFF and the offset is at most 0xFFFFFFFF, so
-    # the sabotaged condition never holds while still reading every variable the deleted rule read
+
+    # the widened right hand side is at least 0xFFFFFFFF and the offset is at most 0xFFFFFFFF
+    set(SERIALIZE_CONTROL_RULE_ranged-range "a ranged int whose offset is past the span is refused")
+    set(SERIALIZE_CONTROL_NEEDLE_ranged-range
+        "            if ( unsigned_value > uint32_t(max) - uint32_t(min) )")
     set(SERIALIZE_CONTROL_PATCH_ranged-range
         "            if ( uint64_t(unsigned_value) > uint64_t( uint32_t(max) - uint32_t(min) ) + 0xFFFFFFFFull ) // NEGATIVE CONTROL: this rule is deleted on purpose")
-    # a refused read leaves its destination unwritten, so the added conjunct is false exactly
-    # when the deleted rule would have fired, and the sabotaged line still reads both operands
+
+    # The degenerate fixed point field, which consumes no bits and would otherwise always succeed.
+    # The needle appears in both FixedPointSerializer specializations and both are sabotaged.
+    set(SERIALIZE_CONTROL_RULE_fixed-degenerate-terminal "every read consults the failure state, zero bit reads included")
+    set(SERIALIZE_CONTROL_NEEDLE_fixed-degenerate-terminal
+        "                if ( !stream.SerializeInteger( degenerate, 0, 0 ) )")
     set(SERIALIZE_CONTROL_PATCH_fixed-degenerate-terminal
         "                if ( !stream.SerializeInteger( degenerate, 0, 0 ) && degenerate != 0 ) // NEGATIVE CONTROL: this rule is deleted on purpose")
+
+    # The finite rule, once per width and once for the compressed float decode. Zero is finite, so
+    # the added conjunct never holds
+    set(SERIALIZE_CONTROL_RULE_float-finite "a float read refuses NaN and the infinities")
+    set(SERIALIZE_CONTROL_NEEDLE_float-finite
+        "            if ( !float_bits_are_finite( int_value ) )")
+    set(SERIALIZE_CONTROL_PATCH_float-finite
+        "            if ( !float_bits_are_finite( int_value ) && int_value == 0u ) // NEGATIVE CONTROL: this rule is deleted on purpose")
+
+    set(SERIALIZE_CONTROL_RULE_double-finite "a double read refuses NaN and the infinities")
+    set(SERIALIZE_CONTROL_NEEDLE_double-finite
+        "            if ( !double_bits_are_finite( int_value ) )")
+    set(SERIALIZE_CONTROL_PATCH_double-finite
+        "            if ( !double_bits_are_finite( int_value ) && int_value == 0u ) // NEGATIVE CONTROL: this rule is deleted on purpose")
+
+    set(SERIALIZE_CONTROL_RULE_compressed-float-finite "a compressed float decode that is not finite is refused")
+    set(SERIALIZE_CONTROL_NEEDLE_compressed-float-finite
+        "            if ( !float_bits_are_finite( decoded_bits ) )")
+    set(SERIALIZE_CONTROL_PATCH_compressed-float-finite
+        "            if ( !float_bits_are_finite( decoded_bits ) && decoded_bits == 0u ) // NEGATIVE CONTROL: this rule is deleted on purpose")
+
+    # The end's two rules. Without the trailing data rule the end checks only the low bits of
+    # whatever remains, so a stream with whole bytes left passes when those bits are zero
+    set(SERIALIZE_CONTROL_RULE_end-trailing-data "an end refuses a whole byte after the object")
+    set(SERIALIZE_CONTROL_NEEDLE_end-trailing-data
+        "            if ( remaining >= 8 )")
+    set(SERIALIZE_CONTROL_PATCH_end-trailing-data
+        "            if ( remaining >= 8 && m_reader.GetBitsRead() < 0 ) // NEGATIVE CONTROL: this rule is deleted on purpose")
+
+    set(SERIALIZE_CONTROL_RULE_end-padding "an end refuses non-zero padding in the final byte")
+    set(SERIALIZE_CONTROL_NEEDLE_end-padding
+        "                if ( padding != 0 )")
+    set(SERIALIZE_CONTROL_PATCH_end-padding
+        "                if ( padding == 0xFFFFFFFF ) // NEGATIVE CONTROL: this rule is deleted on purpose")
+
+    set(SERIALIZE_CONTROL_RULE_int-relative-canonical "the absolute tier refuses a difference a bounded tier carries")
+    set(SERIALIZE_CONTROL_NEEDLE_int-relative-canonical
+        "            if ( reconstructed >= 0 && reconstructed <= serialize_int_relative_max && reconstructed > int64_t( previous ) && reconstructed - int64_t( previous ) <= 69914 )")
+    set(SERIALIZE_CONTROL_PATCH_int-relative-canonical
+        "            if ( reconstructed >= 0 && reconstructed <= serialize_int_relative_max && reconstructed > int64_t( previous ) && reconstructed - int64_t( previous ) <= 69914 && reconstructed < 0 ) // NEGATIVE CONTROL: this rule is deleted on purpose")
+
+    set(SERIALIZE_CONTROL_RULE_string-embedded-nul "a string read refuses a zero byte among its payload")
+    set(SERIALIZE_CONTROL_NEEDLE_string-embedded-nul
+        "                if ( string[i] == '\\0' )")
+    set(SERIALIZE_CONTROL_PATCH_string-embedded-nul
+        "                if ( string[i] == '\\0' && i < 0 ) // NEGATIVE CONTROL: this rule is deleted on purpose")
+
+    set(SERIALIZE_CONTROL_RULE_string-utf8 "a string read refuses a payload that is not well formed UTF-8")
+    set(SERIALIZE_CONTROL_NEEDLE_string-utf8
+        "            if ( !serialize_string_is_valid_utf8( string, length ) )")
+    set(SERIALIZE_CONTROL_PATCH_string-utf8
+        "            if ( !serialize_string_is_valid_utf8( string, length ) && length < 0 ) // NEGATIVE CONTROL: this rule is deleted on purpose")
+
+    # one clause of the UTF-8 rule alone: the encoded surrogates, ED A0 80 through ED BF BF
+    set(SERIALIZE_CONTROL_RULE_string-utf8-surrogate "a string read refuses an encoded surrogate code point")
+    set(SERIALIZE_CONTROL_NEEDLE_string-utf8-surrogate
+        "                if ( lead == 0xED && byte1 >= 0xA0 )")
+    set(SERIALIZE_CONTROL_PATCH_string-utf8-surrogate
+        "                if ( lead == 0xED && byte1 >= 0xA0 && byte1 > 0xFF ) // NEGATIVE CONTROL: this rule is deleted on purpose")
+
+    # A reader whose ranged 64 bit integer passes through a double, as a port backed by a double
+    # number type would: every integer up to 2^53 survives, and the wide vectors past it do not
+    set(SERIALIZE_CONTROL_RULE_int64-through-double "a 64 bit value is carried exactly, never through a double")
+    set(SERIALIZE_CONTROL_NEEDLE_int64-through-double
+        "            value = int64_t( unsigned_value + uint64_t(min) );")
+    set(SERIALIZE_CONTROL_PATCH_int64-through-double
+        "            { const double through_double = double( int64_t( unsigned_value + uint64_t(min) ) ); value = through_double >= 9223372036854775807.0 ? 9223372036854775807LL : int64_t( through_double ); } // NEGATIVE CONTROL: the value goes through a double on purpose")
+
+    # The refusal reason. This reader refuses every stream the real one refuses, and names the
+    # wrong rule for one of them: a vector states its reason, and a refusal under the wrong rule
+    # is a disagreement about the format, however red the stream ends up
+    set(SERIALIZE_CONTROL_RULE_wrong-reason "a refusal names the rule that refused it")
+    set(SERIALIZE_CONTROL_NEEDLE_wrong-reason
+        "                    return serialize_fail( stream, REFUSAL_EMBEDDED_NUL );")
+    set(SERIALIZE_CONTROL_PATCH_wrong-reason
+        "                    return serialize_fail( stream, REFUSAL_INVALID_UTF8 ); // NEGATIVE CONTROL: the wrong reason on purpose")
 
     file(READ ${CMAKE_CURRENT_SOURCE_DIR}/serialize.h SERIALIZE_HEADER_TEXT)
     foreach(control ${SERIALIZE_CONTROL_NAMES})
@@ -214,6 +299,10 @@ if(SERIALIZE_BUILD_TESTS)
                 "'${SERIALIZE_CONTROL_RULE_${control}}' turns the corpus red. Update the needle in "
                 "CMakeLists.txt; do not delete the control.")
         endif()
+        set(expected ${CMAKE_CURRENT_SOURCE_DIR}/conformance-controls/${control}.expected)
+        if(NOT EXISTS ${expected})
+            message(FATAL_ERROR "conformance control '${control}' has no ${expected} naming the vectors its rule owns.")
+        endif()
         set(dir ${CMAKE_BINARY_DIR}/conformance-controls/${control})
         file(MAKE_DIRECTORY ${dir})
         file(WRITE ${dir}/serialize.h "${SERIALIZE_SABOTAGED_TEXT}")
@@ -223,15 +312,14 @@ if(SERIALIZE_BUILD_TESTS)
         set_target_properties(serialize_conformance_control_${control} PROPERTIES OUTPUT_NAME conformance-control-${control})
         target_compile_options(serialize_conformance_control_${control} PRIVATE ${SERIALIZE_DEV_FLAGS})
         # The controls always build UNCHECKED. A reader with a rule deleted produces values a
-        # checked build asserts on, and an abort is a hard ctest failure that WILL_FAIL does not
-        # invert — so a control built with assertions live would report a crash where the thing
-        # under test is the corpus's verdict. What must go red here is the corpus, cleanly.
+        # checked build asserts on, and an abort is a hard ctest failure rather than the corpus's
+        # verdict. What must go red here is the corpus, cleanly.
         target_compile_definitions(serialize_conformance_control_${control} PRIVATE SERIALIZE_RELEASE NDEBUG)
         add_test(NAME conformance-control-${control}
-                 COMMAND serialize_conformance_control_${control} ${SERIALIZE_CONFORMANCE_VECTORS})
-        set_tests_properties(conformance-control-${control} PROPERTIES WILL_FAIL TRUE)
+                 COMMAND serialize_conformance_control_${control} --expect-failures ${expected} ${SERIALIZE_CONFORMANCE_VECTORS})
     endforeach()
     add_test(NAME asserts COMMAND serialize_asserts)
+    add_test(NAME utf COMMAND serialize_utf)
 
     # THE SAME SUITE A SECOND TIME AT -ffp-contract=on, AND A THIRD TIME AT
     # -ffp-contract=fast. This is not belt and braces; these are the only builds in which the

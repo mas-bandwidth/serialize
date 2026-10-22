@@ -34,8 +34,9 @@
     conforming reader decodes together with the bits it consumes, or the word `refused`. An
     accepted vector must yield exactly that value and consume exactly that many bits; a refused
     vector must be refused, and must leave the caller's scalar destination unwritten, which is the
-    obligation Reader Obligations states for every refusal. STANDARD.md leaves a caller-owned
-    BUFFER unspecified after a refusal — bytes, string and wstring — so this runner checks the
+    obligation Reader Obligations states for every refusal, and must be refused for the REASON the
+    vector states, spelled from STANDARD.md's closed list. STANDARD.md leaves a caller-owned
+    BUFFER unspecified after a refusal — bytes and string — so this runner checks the
     destination only for the scalar operations, exactly as far as the document reaches.
 
     A vector carrying `writer = canonical` additionally pins the bytes a conforming writer emits
@@ -43,10 +44,19 @@
     bytes exactly, flush included, which is where the trailing-bits writer obligation bites. A
     vector without the mark binds the reader only.
 
+    A compressed_float vector carrying `writer_input` pins the bytes a conforming writer emits when
+    it is handed that input, which is how the quantization arithmetic is pinned for a value that
+    does not decode back to itself.
+
     A sequence vector carrying `measure_at_least` pins the floor a conforming measure may report,
     which STANDARD.md makes a bound rather than an equality.
 
-    THE BUFFER CONTRACT. STANDARD.md, "Past-end memory is an implementation contract": the C++
+    NEGATIVE CONTROLS run this binary with `--expect-failures <file>`, naming the exact set of
+    vectors a sabotaged reader must fail. The run passes only when the failing set is exactly that
+    set: a sabotage that turns more vectors red than the rule owns, or fewer, is a control that
+    does not measure what it claims to.
+
+    THE BUFFER CONTRACT. IMPLEMENTING.md, "The buffer contract": the C++
     implementation loads 64-bit windows at byte granularity and therefore requires its caller to
     allocate at least 8 bytes beyond the data. Every stream this runner presents carries that
     slack, and the slack bytes are set to a non-zero pattern rather than zero, so a vector that
@@ -82,7 +92,8 @@ const int MaxBytes = 256;
 const int MaxSlack = 8;                 // the buffer contract: at least 8 bytes past the data
 const uint8_t SlackFill = 0xA5;         // non-zero, so a read that strays past the end is visible
 const int MaxParams = 8;
-const int MaxSteps = 48;                // the golden message is 28 operations long
+const int MaxSteps = 48;                // the golden message is 29 operations long
+const int MaxNames = 512;               // vectors one control may name
 
 enum ExpectKind
 {
@@ -114,7 +125,10 @@ struct Vector
     int64_t measureAtLeast;
     bool hasMeasure;
     bool writerCanonical;
+    bool hasWriterInput;
+    uint32_t writerInputBits;
     ExpectKind expectKind;
+    char refusal[MaxLine];              // the reason a refused vector states
 };
 
 static void vector_reset( Vector & vector, const char * file )
@@ -429,9 +443,9 @@ template <typename Stream> bool op_string( Stream & stream, char * string, int b
     return true;
 }
 
-template <typename Stream> bool op_wstring( Stream & stream, wchar_t * string, int bufferSize )
+template <typename Stream> bool op_end( Stream & stream )
 {
-    serialize_wstring( stream, string, bufferSize );
+    serialize_end( stream );
     return true;
 }
 
@@ -637,7 +651,7 @@ enum StepKind
     STEP_COMPRESSED_FLOAT,
     STEP_BYTES,
     STEP_STRING,
-    STEP_WSTRING,
+    STEP_END,
     STEP_FIXED,
     STEP_OBJECT                             // opens a nested object over the steps that follow
 };
@@ -660,8 +674,6 @@ struct Step
     bool boolean;
     uint8_t buffer[MaxBytes + 1];
     int bufferBytes;
-    wchar_t wbuffer[MaxBytes + 1];
-    int wbufferUnits;
 };
 
 /*
@@ -758,8 +770,8 @@ template <typename Stream> static bool run_step( Stream & stream, Step & step )
         case STEP_STRING:
             return op_string( stream, (char*) step.buffer, (int) step.width );
 
-        case STEP_WSTRING:
-            return op_wstring( stream, step.wbuffer, (int) step.width );
+        case STEP_END:
+            return op_end( stream );
 
         case STEP_FIXED:
             return run_fixed_declaration( stream, step.fixedDeclaration, step.number );
@@ -952,10 +964,9 @@ static bool step_from_words( const Vector & vector, const char * text, Step & st
         step.width = (int64_t) a;
         return true;
     }
-    if ( strcmp( words[0], "wstring" ) == 0 && numWords == 2 && parse_number( words[1], a ) )
+    if ( strcmp( words[0], "end" ) == 0 && numWords == 1 )
     {
-        step.kind = STEP_WSTRING;
-        step.width = (int64_t) a;
+        step.kind = STEP_END;
         return true;
     }
     if ( ( strcmp( words[0], "int" ) == 0 || strcmp( words[0], "int64" ) == 0 || strcmp( words[0], "int128" ) == 0 )
@@ -1095,11 +1106,9 @@ static bool build_steps( const Vector & vector, Step * steps, int & numSteps )
         step.kind = STEP_STRING;
         step.width = width;
     }
-    else if ( strcmp( vector.operation, "wstring" ) == 0 )
+    else if ( strcmp( vector.operation, "end" ) == 0 )
     {
-        if ( !param_int( vector, "buffer_size", width ) ) return false;
-        step.kind = STEP_WSTRING;
-        step.width = width;
+        step.kind = STEP_END;
     }
     else if ( strcmp( vector.operation, "fixed" ) == 0 )
     {
@@ -1141,43 +1150,6 @@ static void bytes_to_hex( const uint8_t * data, int count, char * out, int outSi
     out[written] = '\0';
 }
 
-static void units_to_hex( const wchar_t * units, int count, char * out, int outSize )
-{
-    static const char * digits = "0123456789ABCDEF";
-    int written = 0;
-    for ( int i = 0; i < count; i++ )
-    {
-        // STANDARD.md, "wstring": each 32 bit group carries one UTF-16 CODE UNIT, and a 4 byte
-        // wchar_t platform "converts at the boundary — splits astral code points into surrogate
-        // pairs on write, recombines on read". The corpus states units, so a code point that
-        // came back recombined is split again here and both platforms compare the same text.
-        unsigned int pair[2];
-        int numUnits = 1;
-        const unsigned int codePoint = (unsigned int) units[i];
-        if ( codePoint > 0xFFFF )
-        {
-            const unsigned int offset = codePoint - 0x10000;
-            pair[0] = 0xD800 + ( offset >> 10 );
-            pair[1] = 0xDC00 + ( offset & 0x3FF );
-            numUnits = 2;
-        }
-        else
-        {
-            pair[0] = codePoint;
-        }
-        for ( int u = 0; u < numUnits; u++ )
-        {
-            if ( written + 6 >= outSize ) break;
-            if ( written > 0 ) out[written++] = ' ';
-            out[written++] = digits[( pair[u] >> 12 ) & 0xF];
-            out[written++] = digits[( pair[u] >> 8 ) & 0xF];
-            out[written++] = digits[( pair[u] >> 4 ) & 0xF];
-            out[written++] = digits[pair[u] & 0xF];
-        }
-    }
-    out[written] = '\0';
-}
-
 /*
     A parameter this runner does not understand is a FAILURE and not a silent default: a vector
     whose declaration is not the one being exercised proves nothing, and a corpus that grows a
@@ -1190,7 +1162,7 @@ static bool operation_takes_param( const char * operation, const char * name )
     if ( strcmp( name, "preceding_bits" ) == 0 )    return strcmp( operation, "align" ) == 0 || strcmp( operation, "bytes" ) == 0;
     if ( strcmp( name, "bits" ) == 0 )              return strcmp( operation, "bits" ) == 0;
     if ( strcmp( name, "count" ) == 0 )             return strcmp( operation, "bytes" ) == 0;
-    if ( strcmp( name, "buffer_size" ) == 0 )       return strcmp( operation, "string" ) == 0 || strcmp( operation, "wstring" ) == 0;
+    if ( strcmp( name, "buffer_size" ) == 0 )       return strcmp( operation, "string" ) == 0;
     if ( strcmp( name, "previous" ) == 0 )          return strcmp( operation, "int_relative" ) == 0;
     if ( strcmp( name, "res" ) == 0 )               return strcmp( operation, "compressed_float" ) == 0;
     if ( strcmp( name, "integer_bits" ) == 0 || strcmp( name, "fraction_bits" ) == 0 )
@@ -1217,7 +1189,7 @@ static bool operation_takes_param( const char * operation, const char * name )
     quieted signaling bit, so a value-space comparison here proves nothing."
 
     The remaining kinds have textual spellings the corpus states directly: `true` or `false`,
-    hexadecimal byte pairs for bytes and string payloads, and four digit code units for wstring.
+    and hexadecimal byte pairs for bytes and string payloads.
 */
 
 static void render_hex128( serialize::uint128_t bits, char * out )
@@ -1262,7 +1234,8 @@ static void render_step_value( const Step & step, char * out, int outSize )
     {
         case STEP_OBJECT:
         case STEP_ALIGN:
-            // neither has a value of its own; for align the corpus states the padding it
+        case STEP_END:
+            // none has a value of its own; for align and end the corpus states the padding they
             // consumed, which a conforming read always finds zero
             strncpy( out, "0", (size_t) outSize - 1 );
             out[outSize - 1] = '\0';
@@ -1281,13 +1254,6 @@ static void render_step_value( const Step & step, char * out, int outSize )
             bytes_to_hex( step.buffer, (int) strlen( (const char*) step.buffer ), out, outSize );
             return;
 
-        case STEP_WSTRING:
-        {
-            int units = 0;
-            while ( step.wbuffer[units] != 0 ) units++;
-            units_to_hex( step.wbuffer, units, out, outSize );
-            return;
-        }
         default:
             strncpy( out, "?", (size_t) outSize - 1 );
             out[outSize - 1] = '\0';
@@ -1380,9 +1346,21 @@ static void run_reader( const Vector & vector, Step * steps, int numSteps )
             return;
         }
 
+        // STANDARD.md, "Refusal reasons": the refusal must be for the reason the vector states. A
+        // reader that refuses for the wrong reason has refused under a rule that is not the one the
+        // vector pins, which is a disagreement about the format however red the stream ends up.
+        // The reason is the FIRST refusal's: every later read on a failed stream is an echo of it
+        const char * reason = serialize::refusal_name( stream.GetRefusal() );
+        if ( strcmp( reason, vector.refusal ) != 0 )
+        {
+            printf( "  FAIL %s: refused for %s, the corpus states %s [%s]\n", vector.name, reason, vector.refusal, vector.file );
+            failures++;
+            return;
+        }
+
         // STANDARD.md, "A refused primitive read must leave its destination unwritten". The rule
-        // reaches the scalars only: a read into a caller-owned buffer — bytes, string and
-        // wstring — leaves that buffer's contents unspecified after a refusal, and the document
+        // reaches the scalars only: a read into a caller-owned buffer — bytes and string —
+        // leaves that buffer's contents unspecified after a refusal, and the document
         // says so in as many words, so those kinds are not checked here.
         if ( g_failedStep )
         {
@@ -1511,6 +1489,51 @@ static void run_writer( const Vector & vector, Step * steps, int numSteps )
 }
 
 /*
+    The writer input leg. STANDARD.md pins compressed_float's quantization arithmetic: two float32
+    roundings and the integer clamp. A canonical vector can only re-emit the value it decoded, which
+    lands on a quantum where every plausible arithmetic agrees, so a vector carrying `writer_input`
+    hands the writer the value a caller would have, between quanta or in the fusion band, and the
+    emission must be the vector's bytes exactly.
+*/
+
+static void run_writer_input( const Vector & vector, Step * steps, int numSteps )
+{
+    writerChecked++;
+
+    if ( numSteps != 1 || steps[0].kind != STEP_COMPRESSED_FLOAT )
+    {
+        fail( vector, "writer_input is only meaningful on a single compressed_float" );
+        return;
+    }
+
+    uint8_t scratch[MaxBytes + 64];
+    memset( scratch, SlackFill, sizeof( scratch ) );
+    const int64_t capacity = (int64_t) sizeof( scratch ) & ~(int64_t) 7;
+    serialize::WriteStream stream( scratch, capacity );
+
+    Step step = steps[0];
+    step.bits = serialize::uint128_t( uint64_t( vector.writerInputBits ) );
+    if ( !run_steps( stream, &step, 1 ) )
+    {
+        fail( vector, "the writer refused its input" );
+        return;
+    }
+    stream.Flush();
+
+    const int64_t written = stream.GetBytesProcessed();
+    if ( written != vector.numBytes || ( written > 0 && memcmp( stream.GetData(), vector.bytes, (size_t) written ) != 0 ) )
+    {
+        char got[MaxLine];
+        char want[MaxLine];
+        bytes_to_hex( stream.GetData(), (int) written, got, MaxLine );
+        bytes_to_hex( vector.bytes, vector.numBytes, want, MaxLine );
+        printf( "  FAIL %s: the writer handed its input emitted %s, the corpus states %s [%s]\n",
+                vector.name, got, want, vector.file );
+        failures++;
+    }
+}
+
+/*
     The measure leg. STANDARD.md makes a measure a BOUND and not the packet size — "it need not
     be exact, and cannot be" — so the corpus states a floor and the check is an inequality. A
     measure that computes alignment from a running bit index starting at zero under-counts every
@@ -1537,7 +1560,30 @@ static void run_measure( const Vector & vector, Step * steps, int numSteps )
     }
 }
 
+// the vectors that failed, by name, for the negative controls
+static char failedNames[MaxNames][MaxLine];
+static int numFailedNames = 0;
+static int vectorFailures = 0;
+
+static void run_vector_checks( const Vector & vector );
+
 static void run_vector( const Vector & vector )
+{
+    const int before = failures;
+    run_vector_checks( vector );
+    if ( failures > before )
+    {
+        vectorFailures += failures - before;
+        if ( numFailedNames < MaxNames )
+        {
+            strncpy( failedNames[numFailedNames], vector.name, MaxLine - 1 );
+            failedNames[numFailedNames][MaxLine - 1] = '\0';
+            numFailedNames++;
+        }
+    }
+}
+
+static void run_vector_checks( const Vector & vector )
 {
     checked++;
 
@@ -1568,6 +1614,18 @@ static void run_vector( const Vector & vector )
 
     const int failuresBefore = failures;
     run_reader( vector, steps, numSteps );
+
+    // the writer input leg stands alone: its input is the record's, not the decode, so it runs
+    // on refused vectors too
+    if ( vector.hasWriterInput && failures == failuresBefore )
+    {
+        Step inputSteps[MaxSteps];
+        int numInputSteps = 0;
+        if ( build_steps( vector, inputSteps, numInputSteps ) )
+        {
+            run_writer_input( vector, inputSteps, numInputSteps );
+        }
+    }
 
     // the writer and the measure are handed the values the reader decoded, so running them after
     // a reader failure reports a second failure about a value that was never decoded. One vector,
@@ -1682,9 +1740,27 @@ static bool run_file( const char * path )
         }
         else if ( strcmp( key, "expect" ) == 0 )
         {
-            if ( strcmp( value, "refused" ) == 0 )
+            if ( strncmp( value, "refused", 7 ) == 0 && ( value[7] == ' ' || value[7] == '\0' ) )
             {
+                // the reason is mandatory and comes from the closed list: a bare `refused`, or a
+                // word the list does not hold, is a malformed vector rather than a looser one
+                const char * reason = trim( value + 7 );
+                bool known = false;
+                for ( int r = 1; r < serialize::REFUSAL_NUM_REASONS; r++ )
+                {
+                    if ( strcmp( reason, serialize::refusal_name( (serialize::Refusal) r ) ) == 0 )
+                    {
+                        known = true;
+                    }
+                }
+                if ( !known )
+                {
+                    printf( "  FAIL %s: expect refused must state a reason from the closed list, not '%s'\n", path, reason );
+                    failures++;
+                    continue;
+                }
                 vector.expectKind = EXPECT_REFUSED;
+                strncpy( vector.refusal, reason, MaxLine - 1 );
             }
             else
             {
@@ -1724,6 +1800,19 @@ static bool run_file( const char * path )
             vector.measureAtLeast = (int64_t) strtol( value, NULL, 10 );
             vector.hasMeasure = true;
         }
+        else if ( strcmp( key, "writer_input" ) == 0 )
+        {
+            char * equals = strchr( value, '=' );
+            serialize::int128_t bits = 0;
+            if ( !equals || ( *equals = '\0', strcmp( trim( value ), "bits" ) != 0 ) || !parse_number( trim( equals + 1 ), bits ) )
+            {
+                printf( "  FAIL %s: malformed writer_input line\n", path );
+                failures++;
+                continue;
+            }
+            vector.hasWriterInput = true;
+            vector.writerInputBits = (uint32_t) (int64_t) bits;
+        }
         else if ( strcmp( key, "writer" ) == 0 )
         {
             if ( strcmp( value, "canonical" ) != 0 )
@@ -1750,28 +1839,114 @@ static bool run_file( const char * path )
     return true;
 }
 
+/*
+    A negative control names the exact set of vectors its sabotaged reader must fail, one name per
+    line, # comments allowed. The control passes when the failing set equals that set: nothing
+    named passes, nothing unnamed fails, and nothing fails outside a vector (a malformed file is
+    never what a control is measuring).
+*/
+
+static bool expected_failures_match( const char * path )
+{
+    FILE * file = fopen( path, "r" );
+    if ( !file )
+    {
+        printf( "  FAIL could not open the expected failure list %s\n", path );
+        return false;
+    }
+    static char expected[MaxNames][MaxLine];
+    int numExpected = 0;
+    char line[MaxLine];
+    while ( fgets( line, sizeof( line ), file ) && numExpected < MaxNames )
+    {
+        if ( line[0] == '#' )
+            continue;
+        char * name = trim( line );
+        if ( *name == '\0' )
+            continue;
+        strncpy( expected[numExpected], name, MaxLine - 1 );
+        expected[numExpected][MaxLine - 1] = '\0';
+        numExpected++;
+    }
+    fclose( file );
+
+    bool match = true;
+    if ( numExpected == 0 )
+    {
+        printf( "  the expected failure list %s names no vector: a control must break something\n", path );
+        match = false;
+    }
+    for ( int i = 0; i < numExpected; i++ )
+    {
+        bool found = false;
+        for ( int j = 0; j < numFailedNames; j++ )
+            found = found || strcmp( expected[i], failedNames[j] ) == 0;
+        if ( !found )
+        {
+            printf( "  CONTROL: %s should have failed and passed\n", expected[i] );
+            match = false;
+        }
+    }
+    for ( int j = 0; j < numFailedNames; j++ )
+    {
+        bool found = false;
+        for ( int i = 0; i < numExpected; i++ )
+            found = found || strcmp( expected[i], failedNames[j] ) == 0;
+        if ( !found )
+        {
+            printf( "  CONTROL: %s failed and is not the control's rule\n", failedNames[j] );
+            match = false;
+        }
+    }
+    if ( failures != vectorFailures )
+    {
+        printf( "  CONTROL: %d failure(s) outside any vector\n", failures - vectorFailures );
+        match = false;
+    }
+    return match;
+}
+
 int main( int argc, char ** argv )
 {
-    if ( argc < 2 )
+    const char * expectFailures = NULL;
+    int first = 1;
+    if ( argc >= 3 && strcmp( argv[1], "--expect-failures" ) == 0 )
     {
-        printf( "usage: conformance <vector file> [vector file ...]\n" );
+        expectFailures = argv[2];
+        first = 3;
+    }
+
+    if ( argc <= first )
+    {
+        printf( "usage: conformance [--expect-failures <list>] <vector file> [vector file ...]\n" );
         return 1;
     }
 
     printf( "\nrunning the conformance corpus\n\n" );
 
-    for ( int i = 1; i < argc; i++ )
+    for ( int i = first; i < argc; i++ )
     {
         run_file( argv[i] );
     }
 
     printf( "%d vectors from %d file(s): %d writer checks, %d measure checks, %d failure(s)\n",
-            checked, argc - 1, writerChecked, measureChecked, failures );
+            checked, argc - first, writerChecked, measureChecked, failures );
 
     if ( checked == 0 )
     {
         printf( "\nno vectors ran. the corpus is the conformance instrument: an empty run is a failure.\n\n" );
         return 1;
+    }
+
+    if ( expectFailures )
+    {
+        if ( !expected_failures_match( expectFailures ) )
+        {
+            printf( "\nTHE CONTROL DID NOT FAIL EXACTLY ITS RULE'S VECTORS.\n\n" );
+            return 1;
+        }
+        printf( "\n*** THE CONTROL FAILS EXACTLY ITS RULE'S %d VECTOR(S) ***\n\n", numFailedNames );
+        return 0;
     }
 
     if ( failures > 0 )

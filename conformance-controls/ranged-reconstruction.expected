@@ -1,0 +1,28 @@
+# The vectors a reader fails when this rule is deleted, and no others:
+# a ranged int decodes to its offset plus min.
+#
+# CMakeLists.txt builds that reader, and ctest requires its failures to be
+# exactly this list. A vector added to the corpus that pins the rule belongs here.
+
+int-negative-min-golden-field
+int-negative-min-accepts-its-minimum
+int-negative-min-accepts-its-maximum
+int-full-int32-range-golden-field
+int-full-int32-range-minimum
+int-full-int32-range-maximum
+bounded-3-accept-low
+bounded-3-accept-high
+bounded-3-accept-at-domain-top
+bounded-5-accept-low
+bounded-5-accept-high
+bounded-5-accept-at-domain-top
+bounded-9-accept-low
+bounded-9-accept-high
+bounded-9-accept-at-domain-top
+bounded-13-accept-low
+bounded-13-accept-high
+bounded-13-accept-at-domain-top
+bounded-17-accept-low
+bounded-17-accept-high
+bounded-17-accept-at-domain-top
+message-golden-whole

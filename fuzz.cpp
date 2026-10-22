@@ -91,7 +91,6 @@ template <typename Stream> bool FuzzRead( Stream & stream, const uint8_t * ops, 
 {
     uint8_t bytes[256];
     char string[256];
-    wchar_t wstring[64];
 
     for ( int i = 0; i < numOps; i++ )
     {
@@ -174,8 +173,12 @@ template <typename Stream> bool FuzzRead( Stream & stream, const uint8_t * ops, 
 
             case 5:
             {
+                // finite values only: whatever the bytes, an accepted float is never NaN or infinite
                 float value = 0.0f;
                 serialize_float( stream, value );
+                uint32_t value_bits = 0;
+                memcpy( &value_bits, &value, 4 );
+                fuzz_check( serialize::float_bits_are_finite( value_bits ) );
             }
             break;
 
@@ -183,6 +186,9 @@ template <typename Stream> bool FuzzRead( Stream & stream, const uint8_t * ops, 
             {
                 double value = 0.0;
                 serialize_double( stream, value );
+                uint64_t value_bits = 0;
+                memcpy( &value_bits, &value, 8 );
+                fuzz_check( serialize::double_bits_are_finite( value_bits ) );
             }
             break;
 
@@ -190,6 +196,9 @@ template <typename Stream> bool FuzzRead( Stream & stream, const uint8_t * ops, 
             {
                 float value = 0.0f;
                 serialize_compressed_float( stream, value, -10.0f, +10.0f, 0.01f );
+                uint32_t value_bits = 0;
+                memcpy( &value_bits, &value, 4 );
+                fuzz_check( serialize::float_bits_are_finite( value_bits ) );
             }
             break;
 
@@ -218,10 +227,13 @@ template <typename Stream> bool FuzzRead( Stream & stream, const uint8_t * ops, 
 
             case 11:
             {
-                serialize_wstring( stream, wstring, (int) ( sizeof( wstring ) / sizeof( wchar_t ) ) );
-                fuzz_check( wcslen( wstring ) < sizeof( wstring ) / sizeof( wchar_t ) );
+                // the end of the object: an accepted end leaves nothing in the stream
+                serialize_end( stream );
+                fuzz_check( stream.GetBitsProcessed() % 8 == 0 );
+                uint32_t after = 0;
+                fuzz_check( stream.SerializeBits( after, 1 ) == false );
+                return false;
             }
-            break;
 
             case 12:
             {
@@ -381,8 +393,12 @@ template <typename Stream> bool FuzzRoundTrip( Stream & stream, const uint8_t * 
 
             case 5:
             {
-                // arbitrary bit patterns, including nan and inf: floats must round trip bit exact
-                const uint32_t expected_bits = pool.NextUint32();
+                // arbitrary FINITE bit patterns, -0 and subnormals included: floats round trip bit
+                // exact. NaN and infinity are non-conforming on write and assert in this harness, so
+                // a non-finite pattern has its exponent cleared, which keeps the sign and mantissa
+                // entropy as a subnormal. Hostile non-finite bytes reach the read path in pass 1
+                const uint32_t raw_bits = pool.NextUint32();
+                const uint32_t expected_bits = serialize::float_bits_are_finite( raw_bits ) ? raw_bits : ( raw_bits & 0x807FFFFF );
                 float value = 0.0f;
                 if ( Stream::IsWriting )
                 {
@@ -400,7 +416,8 @@ template <typename Stream> bool FuzzRoundTrip( Stream & stream, const uint8_t * 
 
             case 6:
             {
-                const uint64_t expected_bits = pool.NextUint64();
+                const uint64_t raw_bits = pool.NextUint64();
+                const uint64_t expected_bits = serialize::double_bits_are_finite( raw_bits ) ? raw_bits : ( raw_bits & 0x800FFFFFFFFFFFFFULL );
                 double value = 0.0;
                 if ( Stream::IsWriting )
                 {
@@ -515,30 +532,50 @@ template <typename Stream> bool FuzzRoundTrip( Stream & stream, const uint8_t * 
 
             case 11:
             {
-                wchar_t expected[8];
-                const int length = pool.NextByte() % ( sizeof( expected ) / sizeof( wchar_t ) - 1 );
-                for ( int j = 0; j < length; j++ )
+                // a string of real text: random Unicode scalar values, encoded as UTF-8 here, so
+                // every length of sequence and every plane reaches the writer and must come back
+                // byte for byte. NUL and the surrogate block are not scalar text and are skipped
+                char expected[40];                                      // seven four byte characters at most, and the terminator
+                int length = 0;
+                const int characters = pool.NextByte() % 8;
+                for ( int j = 0; j < characters; j++ )
                 {
-                    uint32_t unit = pool.NextUint32() % 0xFFFF + 1;                             // [1,0xFFFF]: valid for 2 and 4 byte wchar_t
-                    if ( unit >= 0xD800 && unit <= 0xDFFF )
+                    uint32_t code = pool.NextUint32() % 0x110000;
+                    if ( code == 0 || ( code >= 0xD800 && code <= 0xDFFF ) )
+                        code = 0x7881;                                  // 碁
+                    if ( code < 0x80 )
                     {
-                        unit -= 0x0800;     // out of the surrogate block: the payload is well-formed
-                                            // UTF-16 by the writer's contract (debug-asserted, live in
-                                            // this harness), and the reader REFUSES unpaired surrogates
-                                            // (STANDARD.md, adopted 2026-08-15)
+                        expected[length++] = (char) code;
                     }
-                    expected[j] = (wchar_t) unit;
+                    else if ( code < 0x800 )
+                    {
+                        expected[length++] = (char) ( 0xC0 | ( code >> 6 ) );
+                        expected[length++] = (char) ( 0x80 | ( code & 0x3F ) );
+                    }
+                    else if ( code < 0x10000 )
+                    {
+                        expected[length++] = (char) ( 0xE0 | ( code >> 12 ) );
+                        expected[length++] = (char) ( 0x80 | ( ( code >> 6 ) & 0x3F ) );
+                        expected[length++] = (char) ( 0x80 | ( code & 0x3F ) );
+                    }
+                    else
+                    {
+                        expected[length++] = (char) ( 0xF0 | ( code >> 18 ) );
+                        expected[length++] = (char) ( 0x80 | ( ( code >> 12 ) & 0x3F ) );
+                        expected[length++] = (char) ( 0x80 | ( ( code >> 6 ) & 0x3F ) );
+                        expected[length++] = (char) ( 0x80 | ( code & 0x3F ) );
+                    }
                 }
-                expected[length] = L'\0';
-                wchar_t value[8];
+                expected[length] = '\0';
+                char value[40];
                 if ( Stream::IsWriting )
                 {
-                    memcpy( value, expected, ( length + 1 ) * sizeof( wchar_t ) );
+                    memcpy( value, expected, length + 1 );
                 }
-                serialize_wstring( stream, value, (int) ( sizeof( value ) / sizeof( wchar_t ) ) );
+                serialize_string( stream, value, (int) sizeof( value ) );
                 if ( Stream::IsReading )
                 {
-                    fuzz_check( wcscmp( value, expected ) == 0 );
+                    fuzz_check( strcmp( value, expected ) == 0 );
                 }
             }
             break;
@@ -666,6 +703,14 @@ extern "C" int LLVMFuzzerTestOneInput( const uint8_t * data, size_t size )
         serialize::ReadStream readStream( writeBuffer, writeStream.GetBytesProcessed() );
         ValuePool readPool( payload, payloadBytes );
         fuzz_check( FuzzRoundTrip( readStream, ops, NumOps, readPool ) == true );               // reading back our own data must always succeed
+        fuzz_check( readStream.SerializeEnd() == true );                                        // and it ends exactly where the writer stopped
+
+        // one byte more than the writer reported is trailing data, refused at the end
+        serialize::ReadStream longerStream( writeBuffer, writeStream.GetBytesProcessed() + 1 );
+        ValuePool longerPool( payload, payloadBytes );
+        fuzz_check( FuzzRoundTrip( longerStream, ops, NumOps, longerPool ) == true );
+        fuzz_check( longerStream.SerializeEnd() == false );
+        fuzz_check( longerStream.GetRefusal() == serialize::REFUSAL_TRAILING_DATA );
     }
 
     return 0;

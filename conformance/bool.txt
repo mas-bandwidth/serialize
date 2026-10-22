@@ -21,10 +21,10 @@ expect value = true
 consumed 1
 writer canonical
 
-# STANDARD.md, "Trailing bits": readers must not reject a stream for the
-# contents of the unused bits of the final byte, and no read operation examines
-# them. A reader that tests the whole byte rather than the low bit fails this.
-# Reader-only: no conforming writer emits those bits set.
+# A field read looks at its own bit and no others: the rest of the byte belongs
+# to whatever reads next, and only an end looks at the unused bits of a final
+# byte (end.txt). A reader that tests the whole byte rather than the low bit
+# fails this.
 
 operation bool
 name bool-true-reader-ignores-trailing-bits
@@ -44,4 +44,4 @@ consumed 1
 operation bool
 name bool-refuse-past-end-empty-stream
 bytes
-expect refused
+expect refused past_end

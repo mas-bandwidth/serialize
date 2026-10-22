@@ -57,9 +57,61 @@ writer canonical
 operation uint128
 name uint128-refuse-past-end-15-bytes
 bytes 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
-expect refused
+expect refused past_end
 
 operation uint128
 name uint128-refuse-past-end-empty-stream
 bytes
-expect refused
+expect refused past_end
+
+# ---------------------------------------------------------------------------
+# WIDE INTEGERS ARE EXACT (STANDARD.md, "Wide integers are exact"). A 64 or
+# 128 bit value is an integer on the wire and must be one in every reader: an
+# implementation that carries it through a double holds every integer up to
+# 2^53 and loses the rest. The edges come in threes around each limit, because
+# a power of two survives a double and its neighbours do not: 2^53 + 1 is the
+# first integer a double cannot hold, 2^63 - 1 rounds up to 2^63, and 2^64 - 1
+# rounds past the width entirely. A reader that passes every vector below
+# carries the width exactly.
+
+operation uint128
+name uint128-exact-2p53-plus-1
+bytes 01 00 00 00 00 00 20 00 00 00 00 00 00 00 00 00
+expect value = 9007199254740993
+consumed 128
+writer canonical
+
+operation uint128
+name uint128-exact-2p64-minus-1
+bytes FF FF FF FF FF FF FF FF 00 00 00 00 00 00 00 00
+expect value = 18446744073709551615
+consumed 128
+writer canonical
+
+operation uint128
+name uint128-exact-2p64
+bytes 00 00 00 00 00 00 00 00 01 00 00 00 00 00 00 00
+expect value = 18446744073709551616
+consumed 128
+writer canonical
+
+operation uint128
+name uint128-exact-2p64-plus-1
+bytes 01 00 00 00 00 00 00 00 01 00 00 00 00 00 00 00
+expect value = 18446744073709551617
+consumed 128
+writer canonical
+
+operation uint128
+name uint128-exact-2p127
+bytes 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 80
+expect value = 170141183460469231731687303715884105728
+consumed 128
+writer canonical
+
+operation uint128
+name uint128-exact-2p128-minus-2
+bytes FE FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF
+expect value = 340282366920938463463374607431768211454
+consumed 128
+writer canonical

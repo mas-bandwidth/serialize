@@ -1,0 +1,8 @@
+# The vectors a reader fails when this rule is deleted, and no others:
+# a string read refuses an encoded surrogate code point.
+#
+# CMakeLists.txt builds that reader, and ctest requires its failures to be
+# exactly this list. A vector added to the corpus that pins the rule belongs here.
+
+string-refuse-surrogate-encoded-in-utf8
+string-refuse-low-surrogate-encoded-in-utf8

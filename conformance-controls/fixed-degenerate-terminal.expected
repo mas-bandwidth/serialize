@@ -1,0 +1,7 @@
+# The vectors a reader fails when this rule is deleted, and no others:
+# every read consults the failure state, zero bit reads included.
+#
+# CMakeLists.txt builds that reader, and ctest requires its failures to be
+# exactly this list. A vector added to the corpus that pins the rule belongs here.
+
+sequence-refusal-is-terminal-before-a-zero-bit-fixed-field

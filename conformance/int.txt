@@ -86,14 +86,14 @@ name int-range-0-8-refuse-offset-one-past-the-span
 param min = 0
 param max = 8
 bytes 09
-expect refused
+expect refused value_out_of_range
 
 operation int
 name int-range-0-8-refuse-offset-fifteen
 param min = 0
 param max = 8
 bytes 0F
-expect refused
+expect refused value_out_of_range
 
 operation int
 name int-range-0-1-single-bit-zero
@@ -127,7 +127,7 @@ name int-range-0-2-refuse-offset-three
 param min = 0
 param max = 2
 bytes 03
-expect refused
+expect refused value_out_of_range
 
 # A negative min: the offset is value - min, and the reader adds min back. The
 # golden message's narrow int field.
@@ -164,14 +164,14 @@ name int-negative-min-refuse-offset-one-past-the-span
 param min = -100
 param max = 100
 bytes C9
-expect refused
+expect refused value_out_of_range
 
 operation int
 name int-negative-min-refuse-offset-all-ones
 param min = -100
 param max = 100
 bytes FF
-expect refused
+expect refused value_out_of_range
 
 # The full int32 range is 32 bits, and every 32-bit offset is legal over it, so
 # this declaration has no refusal vector — that is the rule's absence, not a
@@ -222,7 +222,7 @@ name int-span-31-bits-refuse-offset-one-past-the-span
 param min = 0
 param max = 2147483646
 bytes FF FF FF 7F
-expect refused
+expect refused value_out_of_range
 
 # Reading past the end. [0,1000] is 10 bits and one byte cannot supply them.
 
@@ -231,7 +231,7 @@ name int-refuse-past-end
 param min = 0
 param max = 1000
 bytes FF
-expect refused
+expect refused past_end
 
 operation int
 name int-accept-ten-bits-of-ten
@@ -247,7 +247,7 @@ name int-refuse-past-end-empty-stream
 param min = 0
 param max = 1
 bytes
-expect refused
+expect refused past_end
 
 # A degenerate range consumes nothing, so it succeeds on an empty stream where
 # every other declaration fails: the same empty stream, two verdicts, decided

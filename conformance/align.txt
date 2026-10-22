@@ -83,19 +83,19 @@ operation align
 name align-refuse-one-non-zero-pad-bit
 param preceding_bits = 7
 bytes FF
-expect refused
+expect refused nonzero_padding
 
 operation align
 name align-refuse-four-non-zero-pad-bits
 param preceding_bits = 4
 bytes AA
-expect refused
+expect refused nonzero_padding
 
 operation align
 name align-refuse-seven-non-zero-pad-bits
 param preceding_bits = 1
 bytes FF
-expect refused
+expect refused nonzero_padding
 
 # Only the highest padding bit is set. A reader that checks the first padding
 # bit, or that tests the padding one bit at a time and stops early, accepts
@@ -105,7 +105,7 @@ operation align
 name align-refuse-only-the-highest-pad-bit-set
 param preceding_bits = 1
 bytes 81
-expect refused
+expect refused nonzero_padding
 
 # Only the lowest padding bit is set — the mirror of the vector above.
 
@@ -113,4 +113,4 @@ operation align
 name align-refuse-only-the-lowest-pad-bit-set
 param preceding_bits = 1
 bytes 03
-expect refused
+expect refused nonzero_padding

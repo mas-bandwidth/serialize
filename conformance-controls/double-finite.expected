@@ -1,0 +1,14 @@
+# The vectors a reader fails when this rule is deleted, and no others:
+# a double read refuses NaN and the infinities.
+#
+# CMakeLists.txt builds that reader, and ctest requires its failures to be
+# exactly this list. A vector added to the corpus that pins the rule belongs here.
+
+double-refuse-positive-infinity
+double-refuse-negative-infinity
+double-refuse-quiet-nan
+double-refuse-negative-quiet-nan
+double-refuse-signaling-nan
+double-refuse-nan-with-payload
+double-refuse-negative-nan-all-payload-bits
+double-refuse-nan-payload-in-low-group-only

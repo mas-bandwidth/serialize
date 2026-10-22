@@ -17,6 +17,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"math/big"
@@ -26,6 +27,46 @@ import (
 	"strconv"
 	"strings"
 )
+
+// refusalReasons is STANDARD.md's closed list, "Refusal reasons". Every refusal
+// this checker's decoder makes names exactly one of them, and every refused
+// vector in the corpus states the one it expects.
+var refusalReasons = map[string]bool{
+	"past_end":           true,
+	"value_out_of_range": true,
+	"nonzero_padding":    true,
+	"trailing_data":      true,
+	"non_finite_float":   true,
+	"invalid_utf8":       true,
+	"embedded_nul":       true,
+	"non_canonical":      true,
+}
+
+// refusal is a read the document says must be refused, carrying its reason.
+type refusal struct {
+	reason string
+	detail string
+}
+
+func (e *refusal) Error() string { return e.reason + ": " + e.detail }
+
+// refusalf builds a refusal. The reason must be one of refusalReasons; a typo
+// here would be a checker bug, so it panics rather than inventing a reason.
+func refusalf(reason, format string, args ...interface{}) error {
+	if !refusalReasons[reason] {
+		panic("not a refusal reason: " + reason)
+	}
+	return &refusal{reason: reason, detail: fmt.Sprintf(format, args...)}
+}
+
+// reasonOf is the refusal reason an error carries, or "" if it is not a refusal.
+func reasonOf(err error) string {
+	var r *refusal
+	if errors.As(err, &r) {
+		return r.reason
+	}
+	return ""
+}
 
 // BitReader implements STANDARD.md, "General Conventions": bits are packed
 // least-significant-bit first into 64-bit little-endian words.
@@ -44,7 +85,7 @@ func (r *BitReader) bits(n int) (uint64, error) {
 	for k := 0; k < n; k++ {
 		byteIdx := r.i / 8
 		if byteIdx >= len(r.b) {
-			return 0, fmt.Errorf("read past end of stream at bit %d", r.i)
+			return 0, refusalf("past_end", "read past end of stream at bit %d", r.i)
 		}
 		v |= uint64((r.b[byteIdx]>>(uint(r.i)%8))&1) << uint(k)
 		r.i++
@@ -65,7 +106,7 @@ func (r *BitReader) align() error {
 		return err
 	}
 	if v != 0 {
-		return fmt.Errorf("alignment padding must be zero, got %d", v)
+		return refusalf("nonzero_padding", "alignment padding must be zero, got %d", v)
 	}
 	return nil
 }
@@ -76,11 +117,35 @@ func (r *BitReader) readBytes(n int) ([]byte, error) {
 	}
 	start := r.i / 8
 	if start+n > len(r.b) {
-		return nil, fmt.Errorf("read of %d bytes past end of stream", n)
+		return nil, refusalf("past_end", "read of %d bytes past end of stream", n)
 	}
 	out := r.b[start : start+n]
 	r.i += n * 8
 	return out, nil
+}
+
+// end is STANDARD.md's "end": the object ends at the current bit index, and the
+// stream must end there too. A whole byte left over is trailing_data; otherwise
+// the fewer than 8 unused bits of the final byte are consumed and must be zero,
+// or the read is refused as nonzero_padding. A conforming writer emits nothing
+// for it and a measure charges nothing.
+func (r *BitReader) end() error {
+	total := 8 * len(r.b)
+	if r.i > total {
+		return refusalf("past_end", "end past the end of the stream at bit %d", r.i)
+	}
+	remaining := total - r.i
+	if remaining >= 8 {
+		return refusalf("trailing_data", "%d whole byte(s) remain after the end of the object", remaining/8)
+	}
+	v, err := r.bits(remaining)
+	if err != nil {
+		return err
+	}
+	if v != 0 {
+		return refusalf("nonzero_padding", "the final byte's %d unused bits are 0x%X, not zero", remaining, v)
+	}
+	return nil
 }
 
 // bitsRequired is STANDARD.md's rule verbatim: zero bits for a degenerate
@@ -107,7 +172,7 @@ func sint(r *BitReader, lo, hi int64) (int64, error) {
 		return 0, err
 	}
 	if v > uint64(hi-lo) {
-		return 0, fmt.Errorf("ranged int offset %d exceeds span %d over [%d,%d] — reject, never clamp", v, uint64(hi-lo), lo, hi)
+		return 0, refusalf("value_out_of_range", "ranged int offset %d exceeds span %d over [%d,%d] — reject, never clamp", v, uint64(hi-lo), lo, hi)
 	}
 	return int64(v) + lo, nil
 }
@@ -164,13 +229,29 @@ func decodeCompressedFloat(r *BitReader, min, max, res float32) (float32, error)
 		return 0, err
 	}
 	if v > maxIntegerValue {
-		return 0, fmt.Errorf("compressed_float integer %d exceeds max_integer_value %d", v, maxIntegerValue)
+		return 0, refusalf("value_out_of_range", "compressed_float integer %d exceeds max_integer_value %d", v, maxIntegerValue)
 	}
 	normalized := float32(float32(v) / float32(maxIntegerValue))
-	delta := max - min
+	delta := float32(max - min)
 	scaled := float32(normalized * delta) // rounds BEFORE min is added; fused, the decode is one ulp off whenever min is non-zero
-	return scaled + min, nil
+	decoded := float32(scaled + min)
+	// STANDARD.md, "compressed_float": the decode must be finite. Every operand
+	// is finite and the integer is in range, but the final add rounds, and at
+	// the top of a declaration that reaches FLT_MAX it can round past it to an
+	// infinity: [3 * 2^103, FLT_MAX] at resolution 2^104 decodes
+	// max_integer_value to +inf.
+	if !float32BitsFinite(math.Float32bits(decoded)) {
+		return 0, refusalf("non_finite_float", "compressed_float integer %d decodes to the non-finite 0x%08X", v, math.Float32bits(decoded))
+	}
+	return decoded, nil
 }
+
+// float32BitsFinite and float64BitsFinite are STANDARD.md's finite rule on the
+// bit pattern: the exponent field all ones is NaN (any payload, either sign)
+// or an infinity, and nothing else is. -0 and the subnormals are finite.
+func float32BitsFinite(b uint32) bool { return b&0x7F800000 != 0x7F800000 }
+
+func float64BitsFinite(b uint64) bool { return b&0x7FF0000000000000 != 0x7FF0000000000000 }
 
 // relativeMax is the top of int_relative's domain: STANDARD.md states the
 // domain as 0 to 2^31 - 1 inclusive, for `previous` as well as `current`.
@@ -183,10 +264,10 @@ const relativeMax = 1<<31 - 1
 // wrap here, because both operands come from a 32-bit domain.
 func relativeAccept(current, prev int64) (int64, error) {
 	if current < 0 || current > relativeMax {
-		return 0, fmt.Errorf("reconstructed current=%d is outside the domain [0,%d]", current, relativeMax)
+		return 0, refusalf("value_out_of_range", "reconstructed current=%d is outside the domain [0,%d]", current, relativeMax)
 	}
 	if current <= prev {
-		return 0, fmt.Errorf("reconstructed current=%d, not greater than previous=%d", current, prev)
+		return 0, refusalf("value_out_of_range", "reconstructed current=%d, not greater than previous=%d", current, prev)
 	}
 	return current, nil
 }
@@ -237,7 +318,20 @@ func relative(r *BitReader, prev int64) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return relativeAccept(int64(cur), prev)
+	accepted, err := relativeAccept(int64(cur), prev)
+	if err != nil {
+		return 0, err
+	}
+	// STANDARD.md: the writer takes the FIRST tier the difference fits, so the
+	// absolute tier only ever carries a difference above the last bounded tier.
+	// One that would have fit a bounded tier is a second encoding of the same
+	// value. The domain and ordering rule above runs first and wins. The bounded
+	// tiers need no such check: each one's payload range starts one past the
+	// tier above it.
+	if accepted-prev <= tiers[len(tiers)-1].hi {
+		return 0, refusalf("non_canonical", "absolute tier carries difference %d, which fits a bounded tier", accepted-prev)
+	}
+	return accepted, nil
 }
 
 // fixed decodes STANDARD.md's fixed point: an offset encoding over the raw
@@ -263,7 +357,7 @@ func fixed(r *BitReader, fractionBits uint, lo, hi *big.Int) (*big.Int, error) {
 		v.Or(v, new(big.Int).Lsh(new(big.Int).SetUint64(grp), uint(g)))
 	}
 	if v.Cmp(span) > 0 {
-		return nil, fmt.Errorf("fixed offset %s exceeds span %s", v, span)
+		return nil, refusalf("value_out_of_range", "fixed offset %s exceeds span %s", v, span)
 	}
 	return v.Add(v, rawLo), nil
 }
@@ -293,7 +387,7 @@ func ranged128(r *BitReader, lo, hi *big.Int) (*big.Int, error) {
 		v.Or(v, new(big.Int).Lsh(new(big.Int).SetUint64(grp), uint(g)))
 	}
 	if v.Cmp(span) > 0 {
-		return nil, fmt.Errorf("int128 offset %s exceeds span %s", v, span)
+		return nil, refusalf("value_out_of_range", "int128 offset %s exceeds span %s", v, span)
 	}
 	out := mask(new(big.Int).Add(v, ulo))
 	// back to signed two's complement
@@ -335,13 +429,10 @@ func hexArray(header, name string) ([]byte, error) {
 // stream whose final operation ended at bit position bitIndex — zero for a
 // stream written by a conforming writer.
 //
-// STANDARD.md, "Trailing bits" (adopted 2026-08-15): writers must emit zero
-// there, readers must not reject a stream for their contents, and a
-// conformance or diagnostic check MAY treat non-zero as evidence the stream
-// was not produced by a conforming writer — "was this really written by
-// serialize?". This function is that diagnostic. It lives in this tool BY
-// RULE: no decode function in this file consults it, and it must never move
-// into a read path.
+// STANDARD.md, "end": writers emit zero there, and the end of the object
+// refuses them non-zero. This function reads them without consuming anything,
+// so the checker can hold a pinned emission to the writer obligation before the
+// end step consumes them.
 func trailingBits(b []byte, bitIndex int) uint8 {
 	if len(b) == 0 || bitIndex%8 == 0 || (bitIndex+7)/8 != len(b) {
 		return 0 // ends aligned, or not in the final byte: nothing trails
@@ -393,6 +484,10 @@ func bi(s string) *big.Int {
 func pow2(n uint) *big.Int { return new(big.Int).Lsh(big.NewInt(1), n) }
 
 func main() {
+	if len(os.Args) == 3 && os.Args[1] == "--citations" {
+		citationsMain(os.Args[2])
+		return
+	}
 	exe, err := os.Executable()
 	_ = exe
 	root, err := filepath.Abs(".")
@@ -473,11 +568,9 @@ func main() {
 		c.eq("string", string(s), "golden")
 	}
 	ln = rs(0, 7)
-	var ws []uint64
-	for i := int64(0); i < ln; i++ {
-		ws = append(ws, rd(32))
+	if s, err := r.readBytes(int(ln)); !c.err("string go stones", err) {
+		c.eq("string (go stones, U+7881 U+77F3, as UTF-8 bytes)", fmt.Sprintf("%x", s), "e7a281e79fb3")
 	}
-	c.eq("wstring (32 bits per UTF-16 code unit, NO alignment)", fmt.Sprint(ws), fmt.Sprint([]uint64{0x043C, 0x0438, 0x0440}))
 
 	c.err("align before fixed", r.align())
 	if f, err := fixed(r, 8, big.NewInt(-100), big.NewInt(100)); !c.err("fixed q8.8", err) {
@@ -503,14 +596,15 @@ func main() {
 	}
 	c.eq("consumed exactly the golden bytes", (r.i+7)/8, len(data))
 
-	// Writer obligation (STANDARD.md, "Trailing bits", adopted 2026-08-15):
-	// writers must emit zero in the unused bits of the final byte. The golden
-	// stream ends 3 bits into its final byte and is the C++ writer's actual
-	// emitted output, pinned — so this checks the obligation against a real
-	// emission, not against this file's own arithmetic. (The uint128/int128
-	// pins end byte-aligned, so the obligation is vacuous there and is not
-	// checked: a check that cannot fail is not a check.)
+	// Writer obligation (STANDARD.md, "end"): writers emit zero in the unused
+	// bits of the final byte. The golden stream ends 3 bits into its final byte
+	// and is the C++ writer's actual emitted output, pinned — so this checks the
+	// obligation against a real emission, not against this file's own
+	// arithmetic. The message's own end step then consumes those bits and
+	// requires them zero, and requires no byte after them.
 	c.eq("golden_wire_bytes trailing bits are zero (writer obligation)", trailingBits(data, r.i), uint8(0))
+	c.err("golden message end", r.end())
+	c.eq("the golden message's end consumed the whole stream", r.i, 8*len(data))
 
 	// The whole 112 bytes, encoded from the document's rules and compared against both the
 	// pinned emission and the block STANDARD.md prints. See golden_message.go.
@@ -686,10 +780,14 @@ func main() {
 	// refused." Until now this tool exercised only the first half (issue
 	// #55). Each stream below is one a conforming reader MUST refuse, decoded
 	// by the document's own rules — a decode that SUCCEEDS is the failure.
-	refuse := func(name string, err error) {
+	refuse := func(name, reason string, err error) {
 		c.n++
 		if err == nil {
-			c.fails = append(c.fails, fmt.Sprintf("%s: decode succeeded, the document requires refusal", name))
+			c.fails = append(c.fails, fmt.Sprintf("%s: decode succeeded, the document requires refusal as %s", name, reason))
+			return
+		}
+		if got := reasonOf(err); got != reason {
+			c.fails = append(c.fails, fmt.Sprintf("%s: refused as %q, the document requires %s (%v)", name, got, reason, err))
 		}
 	}
 
@@ -698,7 +796,7 @@ func main() {
 	// the missing bits, or wrap. A ranged int over [0,1000] is 10 bits, and
 	// one byte is not enough for it.
 	_, err = sint(NewBitReader([]byte{0xFF}), 0, 1000)
-	refuse("ranged int with only 8 of its 10 bits present", err)
+	refuse("ranged int with only 8 of its 10 bits present", "past_end", err)
 
 	// ranged int: [0,10] is 4 bits, so offsets 11..15 are expressible and
 	// must be refused — reject, never clamp. 10 is the accept boundary.
@@ -706,15 +804,15 @@ func main() {
 		c.eq("ranged int accepts its max (offset == span)", v, int64(10))
 	}
 	_, err = sint(NewBitReader([]byte{0x0F}), 0, 10)
-	refuse("ranged int offset 15 over [0,10]", err)
+	refuse("ranged int offset 15 over [0,10]", "value_out_of_range", err)
 	_, err = sint(NewBitReader([]byte{0xFF}), -100, 100)
-	refuse("ranged int offset 255 over [-100,100]", err)
+	refuse("ranged int offset 255 over [-100,100]", "value_out_of_range", err)
 
 	// align: padding bits must be zero, and readers must fail the read if
 	// they are not. Three bits of value, then five padding bits of ones.
 	rp := NewBitReader([]byte{0xFD})
 	if _, err := rp.bits(3); err == nil {
-		refuse("align with non-zero padding", rp.align())
+		refuse("align with non-zero padding", "nonzero_padding", rp.align())
 	}
 
 	// int_relative: every tier's reconstruction is checked against the domain
@@ -729,11 +827,15 @@ func main() {
 		stream string
 		prev   int64
 		note   string
+		reason string
 	}{
-		{"0019000000", 100, "absolute current == previous"},
-		{"800c000000", 100, "absolute current < previous"},
-		{"0000000020", 100, "absolute top bit set, outside the domain"},
-		{"01", relativeMax, "one-bit tier reconstructing past the top of the domain"},
+		{"0019000000", 100, "absolute current == previous", "value_out_of_range"},
+		{"800c000000", 100, "absolute current < previous", "value_out_of_range"},
+		{"0000000020", 100, "absolute top bit set, outside the domain", "value_out_of_range"},
+		{"01", relativeMax, "one-bit tier reconstructing past the top of the domain", "value_out_of_range"},
+		// the absolute tier carrying difference 69914, which the last bounded
+		// tier carries: a second encoding of 70014, never written
+		{"805f440000", 100, "absolute tier carrying a bounded tier's difference", "non_canonical"},
 	} {
 		raw := make([]byte, len(tc.stream)/2)
 		for i := range raw {
@@ -741,7 +843,7 @@ func main() {
 			raw[i] = byte(b)
 		}
 		_, err := relative(NewBitReader(raw), tc.prev)
-		refuse(fmt.Sprintf("int_relative %s", tc.note), err)
+		refuse(fmt.Sprintf("int_relative %s", tc.note), tc.reason, err)
 	}
 
 	// int128 ranged: the decoded offset must be at most max - min in the
@@ -752,7 +854,7 @@ func main() {
 		c.eq("int128 ranged accepts offset == span (decodes +2^70)", v, pow2(70))
 	}
 	_, err = ranged128(NewBitReader([]byte{0x01, 0, 0, 0, 0, 0, 0, 0, 0x80}), new(big.Int).Neg(pow2(70)), pow2(70))
-	refuse("int128 ranged offset span+1", err)
+	refuse("int128 ranged offset span+1", "value_out_of_range", err)
 
 	// fixed: the decoded offset must be at most raw_max - raw_min — reject,
 	// never clamp. Q8.8 over [-100,100]: the raw span is 51200 in 16 bits,
@@ -762,7 +864,7 @@ func main() {
 		c.eq("fixed q8.8 accepts offset == raw span (decodes +100.0)", f, big.NewInt(25600))
 	}
 	_, err = fixed(NewBitReader([]byte{0xFF, 0xFF}), 8, big.NewInt(-100), big.NewInt(100))
-	refuse("fixed q8.8 offset 65535 over raw span 51200", err)
+	refuse("fixed q8.8 offset 65535 over raw span 51200", "value_out_of_range", err)
 
 	// compressed_float: readers must reject an integer greater than
 	// max_integer_value. Over [0,10] at res 0.01 that is 1000 in 10 bits:
@@ -772,7 +874,45 @@ func main() {
 		c.eq("compressed_float accepts integer == max_integer_value", f, float32(10.0))
 	}
 	_, err = decodeCompressedFloat(NewBitReader([]byte{0xE9, 0x03}), 0, 10, 0.01)
-	refuse("compressed_float integer 1001 over max_integer_value 1000", err)
+	refuse("compressed_float integer 1001 over max_integer_value 1000", "value_out_of_range", err)
+
+	// compressed_float: the decode must be finite. min = 3 * 2^103, max =
+	// FLT_MAX, res = 2^104: delta = max - min ties to even UPWARD, and
+	// min + delta lands exactly halfway between FLT_MAX and 2^128, which ties
+	// to +inf. max_integer_value is 2^24 - 2 in 24 bits; that integer, all
+	// ones but the lowest bit, decodes to +inf and must be refused. One step
+	// below it decodes finite.
+	cfMin := float32(3) * float32(math.Ldexp(1, 103))
+	cfMax := float32(math.MaxFloat32)
+	cfRes := float32(math.Ldexp(1, 104))
+	if m, n := compressedFloatParams(cfMin, cfMax, cfRes); m != 1<<24-2 || n != 24 {
+		c.n++
+		c.fails = append(c.fails, fmt.Sprintf("compressed_float overflow witness: max_integer_value %d in %d bits, expected %d in 24", m, n, 1<<24-2))
+	}
+	_, err = decodeCompressedFloat(NewBitReader([]byte{0xFE, 0xFF, 0xFF}), cfMin, cfMax, cfRes)
+	refuse("compressed_float top integer decoding to +inf", "non_finite_float", err)
+	if f, err := decodeCompressedFloat(NewBitReader([]byte{0xFD, 0xFF, 0xFF}), cfMin, cfMax, cfRes); !c.err("compressed_float one below the top decodes finite", err) {
+		c.eq("compressed_float one below the top is finite", float32BitsFinite(math.Float32bits(f)), true)
+	}
+
+	// end: one whole byte after the object is trailing_data, non-zero unused
+	// bits in the final byte are nonzero_padding, and the exact stream ends.
+	{
+		e := NewBitReader([]byte{0x05})
+		if _, err := e.bits(3); err == nil {
+			c.err("end of an exact stream", e.end())
+		}
+		e = NewBitReader([]byte{0x0D})
+		if _, err := e.bits(3); err == nil {
+			refuse("end with a non-zero unused bit", "nonzero_padding", e.end())
+		}
+		e = NewBitReader([]byte{0x05, 0x00})
+		if _, err := e.bits(3); err == nil {
+			refuse("end with a whole byte after the object", "trailing_data", e.end())
+		}
+		refuse("end of the empty object in a one byte stream", "trailing_data", NewBitReader([]byte{0x00}).end())
+		c.err("end of the empty object in an empty stream", NewBitReader(nil).end())
+	}
 
 	// ---- degenerate ranges: zero bits on every storage width --------------
 	//
@@ -797,25 +937,21 @@ func main() {
 	}
 	c.eq("degenerate decodes consumed zero bits", empty.i, 0)
 
-	// ---- trailing bits: the distinction, proven both ways ------------------
+	// ---- trailing bits: only the end looks at them -------------------------
 	//
-	// STANDARD.md (adopted 2026-08-15): writers must write zero; readers must
-	// not reject for non-zero; a diagnostic MAY flag non-zero as provenance
-	// evidence. Take the one-bit int_relative stream serialize.c emitted as
-	// 0x01 and set every trailing bit: 0x81. No conforming writer produces
-	// this stream, but its one meaningful bit is untouched, so:
-	//   (a) the reader is indifferent — the decode succeeds and yields
-	//       exactly what the clean stream yields; a decode that errors here
-	//       is a reader rejecting for trailing-bit contents, which the
-	//       document forbids;
-	//   (b) the diagnostic flags it — trailingBits reports non-zero, the
-	//       "was this really written by serialize?" signal.
+	// STANDARD.md, "end": no operation but end examines the unused bits of the
+	// final byte, and end refuses them non-zero. Take the one-bit int_relative
+	// stream serialize.c emitted as 0x01 and set every trailing bit: 0x81.
+	//   (a) the field itself decodes exactly as the clean stream does — a
+	//       field read never looks past its own bits;
+	//   (b) the end refuses the stream, as nonzero_padding.
 	doctored := []byte{0x81}
 	db := NewBitReader(doctored)
-	if got, err := relative(db, 100); !c.err("doctored trailing bits: reader accepts", err) {
-		c.eq("doctored trailing bits: reader decodes identically", got, int64(101))
+	if got, err := relative(db, 100); !c.err("doctored trailing bits: the field decodes", err) {
+		c.eq("doctored trailing bits: the field decodes identically", got, int64(101))
 	}
-	c.eq("doctored trailing bits: diagnostic flags the stream", trailingBits(doctored, db.i) != 0, true)
+	c.eq("doctored trailing bits: they are non-zero", trailingBits(doctored, db.i) != 0, true)
+	refuse("doctored trailing bits: the end refuses them", "nonzero_padding", db.end())
 
 	// ---- the shared corpus ------------------------------------------------
 	//
@@ -824,6 +960,11 @@ func main() {
 	// re-encoded and measured by the same document-derived machinery. See
 	// corpus.go. A corpus file this checker cannot drive FAILS.
 	runCorpus(c, root)
+
+	// ---- every rule cites its vectors -------------------------------------
+	//
+	// STANDARD.md states no rule without the vectors that prove it. See citations.go.
+	runCitations(c, root)
 
 	fmt.Printf("%d checks against STANDARD.md, %d failures\n", c.n, len(c.fails))
 	for _, f := range c.fails {

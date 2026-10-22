@@ -77,7 +77,7 @@ param fraction_bits = 8
 param min = -100
 param max = 100
 bytes 01 C8
-expect refused
+expect refused value_out_of_range
 
 operation fixed
 name fixed-q8-8-refuse-offset-all-ones
@@ -86,7 +86,7 @@ param fraction_bits = 8
 param min = -100
 param max = 100
 bytes FF FF
-expect refused
+expect refused value_out_of_range
 
 # fraction_bits = 0: the operation is a ranged integer.
 
@@ -119,7 +119,7 @@ param fraction_bits = 0
 param min = 0
 param max = 5
 bytes 06
-expect refused
+expect refused value_out_of_range
 
 # A degenerate range is legal and costs ZERO BITS — on every storage width.
 # STANDARD.md is explicit that the storage width must not change this: a
@@ -206,7 +206,7 @@ param fraction_bits = 16
 param min = -32768
 param max = 32767
 bytes 01 00 FF FF
-expect refused
+expect refused value_out_of_range
 
 operation fixed
 name fixed-q16-16-refuse-offset-all-ones
@@ -215,7 +215,7 @@ param fraction_bits = 16
 param min = -32768
 param max = 32767
 bytes FF FF FF FF
-expect refused
+expect refused value_out_of_range
 
 # A 34-bit raw span in Q48.16: two groups, 32 bits then a 2-bit remainder.
 
@@ -248,7 +248,7 @@ param fraction_bits = 16
 param min = 0
 param max = 131072
 bytes 01 00 00 00 02
-expect refused
+expect refused value_out_of_range
 
 # A 75-bit raw span in Q112.16 — the golden message's wide field shape: two
 # full 32-bit groups from the bottom, then an 11-bit remainder on top. Each of
@@ -296,7 +296,7 @@ param fraction_bits = 16
 param min = 0
 param max = 288230376151711744
 bytes 01 00 00 00 00 00 00 00 00 04
-expect refused
+expect refused value_out_of_range
 
 operation fixed
 name fixed-q112-16-refuse-offset-all-ones
@@ -305,7 +305,7 @@ param fraction_bits = 16
 param min = 0
 param max = 288230376151711744
 bytes FF FF FF FF FF FF FF FF FF 07
-expect refused
+expect refused value_out_of_range
 
 # The same width with a negative raw minimum, so the offset must be added to a
 # negative raw base at 128-bit precision.
@@ -389,7 +389,7 @@ param fraction_bits = 64
 param min = 0
 param max = 9223372036854775807
 bytes 01 00 00 00 00 00 00 00 FF FF FF FF FF FF FF 7F
-expect refused
+expect refused value_out_of_range
 
 operation fixed
 name fixed-q64-64-refuse-offset-all-ones
@@ -398,7 +398,7 @@ param fraction_bits = 64
 param min = 0
 param max = 9223372036854775807
 bytes FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF 7F
-expect refused
+expect refused value_out_of_range
 
 # Reading past the end.
 
@@ -409,7 +409,7 @@ param fraction_bits = 8
 param min = -100
 param max = 100
 bytes C0
-expect refused
+expect refused past_end
 
 operation fixed
 name fixed-refuse-past-end-empty-stream
@@ -418,4 +418,4 @@ param fraction_bits = 16
 param min = -32768
 param max = 32767
 bytes
-expect refused
+expect refused past_end

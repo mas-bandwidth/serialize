@@ -1,0 +1,11 @@
+# The vectors a reader fails when this rule is deleted, and no others:
+# a 64 bit value is carried exactly, never through a double.
+#
+# CMakeLists.txt builds that reader, and ctest requires its failures to be
+# exactly this list. A vector added to the corpus that pins the rule belongs here.
+
+int64-span-64-bits-accepts-its-maximum
+int64-full-range-exact-2p53-plus-1
+int64-full-range-exact-minus-2p53-minus-1
+int64-full-range-exact-2p63-minus-2
+int64-full-range-exact-minus-2p63-plus-1

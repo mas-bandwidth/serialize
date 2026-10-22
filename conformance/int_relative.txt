@@ -37,10 +37,16 @@
 #
 # 3. Reading PAST THE END, in the flags and in each tier's payload.
 #
-# A writer emits the FIRST tier a difference fits, so the absolute-tier vectors
-# whose difference is small are reader-only: no conforming writer produces
-# them, and marking them `writer = canonical` would demand wire the document
-# forbids. The tier-first-fit vectors carry the mark instead.
+# 4. The CANONICAL tier. A writer emits the first tier a difference fits, so
+#    the absolute tier carries only differences above 69914, and one that
+#    would have fit a bounded tier is a second encoding of the same value,
+#    refused as non_canonical. The domain and ordering rule comes first: a
+#    current outside the domain, or not above previous, is value_out_of_range
+#    whatever its difference. The bounded tiers need no such rule, because each
+#    one's payload range starts one past the tier before it.
+#
+# Every accepted vector here is an encoding a conforming writer produces, and
+# the ones that state the writer's bytes for their value carry the mark.
 
 # ---------------------------------------------------------------------------
 # the one-bit tier
@@ -51,7 +57,7 @@ operation int_relative
 name ladder-refuse-past-end-empty-stream
 param previous = 100
 bytes
-expect refused
+expect refused past_end
 
 operation int_relative
 name one-bit-accept
@@ -65,7 +71,7 @@ operation int_relative
 name one-bit-refuse-past-domain
 param previous = 2147483647
 bytes 01
-expect refused
+expect refused value_out_of_range
 
 operation int_relative
 name one-bit-accept-at-domain-top
@@ -99,19 +105,19 @@ operation int_relative
 name bounded-3-refuse-payload-one-past-the-span
 param previous = 100
 bytes 16
-expect refused
+expect refused value_out_of_range
 
 operation int_relative
 name bounded-3-refuse-payload-all-three-bits
 param previous = 100
 bytes 1E
-expect refused
+expect refused value_out_of_range
 
 operation int_relative
 name bounded-3-refuse-past-domain
 param previous = 2147483647
 bytes 02
-expect refused
+expect refused value_out_of_range
 
 operation int_relative
 name bounded-3-accept-at-domain-top
@@ -145,19 +151,19 @@ operation int_relative
 name bounded-5-refuse-payload-one-past-the-span
 param previous = 100
 bytes 8C
-expect refused
+expect refused value_out_of_range
 
 operation int_relative
 name bounded-5-refuse-payload-all-five-bits
 param previous = 100
 bytes FC
-expect refused
+expect refused value_out_of_range
 
 operation int_relative
 name bounded-5-refuse-past-domain
 param previous = 2147483647
 bytes 04
-expect refused
+expect refused value_out_of_range
 
 operation int_relative
 name bounded-5-accept-at-domain-top
@@ -191,19 +197,19 @@ operation int_relative
 name bounded-9-refuse-payload-one-past-the-span
 param previous = 100
 bytes 18 10
-expect refused
+expect refused value_out_of_range
 
 operation int_relative
 name bounded-9-refuse-payload-all-nine-bits
 param previous = 100
 bytes F8 1F
-expect refused
+expect refused value_out_of_range
 
 operation int_relative
 name bounded-9-refuse-past-domain
 param previous = 2147483647
 bytes 08 00
-expect refused
+expect refused value_out_of_range
 
 operation int_relative
 name bounded-9-accept-at-domain-top
@@ -217,7 +223,7 @@ operation int_relative
 name bounded-9-refuse-past-end-payload-truncated
 param previous = 100
 bytes 08
-expect refused
+expect refused past_end
 
 # ---------------------------------------------------------------------------
 # the bounded-13 tier: payload serialize_int( d, 281, 4377 ), span 4096 in 13
@@ -243,19 +249,19 @@ operation int_relative
 name bounded-13-refuse-payload-one-past-the-span
 param previous = 100
 bytes 30 00 02
-expect refused
+expect refused value_out_of_range
 
 operation int_relative
 name bounded-13-refuse-payload-all-thirteen-bits
 param previous = 100
 bytes F0 FF 03
-expect refused
+expect refused value_out_of_range
 
 operation int_relative
 name bounded-13-refuse-past-domain
 param previous = 2147483647
 bytes 10 00 00
-expect refused
+expect refused value_out_of_range
 
 operation int_relative
 name bounded-13-accept-at-domain-top
@@ -269,7 +275,7 @@ operation int_relative
 name bounded-13-refuse-past-end-payload-truncated
 param previous = 100
 bytes 10 00
-expect refused
+expect refused past_end
 
 # ---------------------------------------------------------------------------
 # the bounded-17 tier: payload serialize_int( d, 4378, 69914 ), span 65536 in
@@ -298,19 +304,19 @@ operation int_relative
 name bounded-17-refuse-payload-one-past-the-span
 param previous = 100
 bytes 60 00 40
-expect refused
+expect refused value_out_of_range
 
 operation int_relative
 name bounded-17-refuse-payload-all-seventeen-bits
 param previous = 100
 bytes E0 FF 7F
-expect refused
+expect refused value_out_of_range
 
 operation int_relative
 name bounded-17-refuse-past-domain
 param previous = 2147483647
 bytes 20 00 00
-expect refused
+expect refused value_out_of_range
 
 operation int_relative
 name bounded-17-accept-at-domain-top
@@ -324,7 +330,7 @@ operation int_relative
 name bounded-17-refuse-past-end-payload-truncated
 param previous = 100
 bytes 20 00
-expect refused
+expect refused past_end
 
 # ---------------------------------------------------------------------------
 # the absolute tier. "The final tier transmits current, not the difference."
@@ -333,8 +339,8 @@ expect refused
 # sequence type first has already left the domain, and the two readings
 # disagree about the same byte sequence.
 #
-# A writer reaches this tier only when the difference exceeds 69914, so the
-# small-difference vectors here are reader-only.
+# A writer reaches this tier only when the difference exceeds 69914, and a
+# reader refuses the tier carrying anything smaller as non_canonical.
 
 operation int_relative
 name absolute-accept-domain-maximum
@@ -356,42 +362,74 @@ operation int_relative
 name absolute-refuse-not-increasing
 param previous = 2147483647
 bytes C0 FF FF FF 1F
-expect refused
+expect refused value_out_of_range
+
+# The same bytes three ways. Against a previous one below the domain maximum
+# the difference is 1, which the one-bit tier carries: non_canonical. Against a
+# previous 69915 below it the absolute tier is the only tier that fits, and the
+# read is accepted. Against the maximum itself the value is not increasing.
 
 operation int_relative
-name absolute-accept-one-above-previous
+name absolute-refuse-non-canonical-difference-of-one
 param previous = 2147483646
+bytes C0 FF FF FF 1F
+expect refused non_canonical
+
+operation int_relative
+name absolute-accept-domain-maximum-from-the-last-tier-boundary
+param previous = 2147413732
 bytes C0 FF FF FF 1F
 expect value = 2147483647
 consumed 38
+writer canonical
+
+# The last difference the bounded-17 tier carries, sent absolute: non_canonical.
+# Its accepted twin one difference up is absolute-accept-first-difference-past-
+# the-last-tier.
+
+operation int_relative
+name absolute-refuse-non-canonical-last-bounded-difference
+param previous = 100
+bytes 80 5F 44 00 00
+expect refused non_canonical
 
 operation int_relative
 name absolute-refuse-current-equal-to-previous
 param previous = 100
 bytes 00 19 00 00 00
-expect refused
+expect refused value_out_of_range
 
 operation int_relative
 name absolute-refuse-current-below-previous
 param previous = 100
 bytes 80 0C 00 00 00
-expect refused
+expect refused value_out_of_range
 
 operation int_relative
 name absolute-refuse-top-bit-set
 param previous = 100
 bytes 00 00 00 00 20
-expect refused
+expect refused value_out_of_range
 
 operation int_relative
 name absolute-refuse-all-bits-set
 param previous = 100
 bytes C0 FF FF FF 3F
-expect refused
+expect refused value_out_of_range
 
 operation int_relative
 name absolute-refuse-past-end-payload-truncated
 param previous = 100
 bytes 00 00 00 00
-expect refused
+expect refused past_end
 
+
+# Outside the domain with a difference of 1: the domain rule comes first, so
+# this is value_out_of_range and never non_canonical. A reader that tests the
+# difference first, or subtracts in 32 bits, reports the wrong reason.
+
+operation int_relative
+name absolute-refuse-past-domain-with-a-small-difference
+param previous = 2147483647
+bytes 00 00 00 00 20
+expect refused value_out_of_range

@@ -1,0 +1,7 @@
+# The vectors a reader fails when this rule is deleted, and no others:
+# a compressed float decode that is not finite is refused.
+#
+# CMakeLists.txt builds that reader, and ctest requires its failures to be
+# exactly this list. A vector added to the corpus that pins the rule belongs here.
+
+compressed-float-refuse-decode-rounding-to-infinity

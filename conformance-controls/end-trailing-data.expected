@@ -1,0 +1,12 @@
+# The vectors a reader fails when this rule is deleted, and no others:
+# an end refuses a whole byte after the object.
+#
+# CMakeLists.txt builds that reader, and ctest requires its failures to be
+# exactly this list. A vector added to the corpus that pins the rule belongs here.
+
+end-refuse-one-zero-byte-after-the-empty-object
+end-refuse-one-set-byte-after-the-empty-object
+end-refuse-zero-byte-after-an-unaligned-object
+end-refuse-zero-byte-after-an-aligned-object
+end-refuse-a-byte-after-bytes
+end-refuse-trailing-data-before-padding

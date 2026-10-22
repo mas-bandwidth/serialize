@@ -1,0 +1,14 @@
+# The vectors a reader fails when this rule is deleted, and no others:
+# a float read refuses NaN and the infinities.
+#
+# CMakeLists.txt builds that reader, and ctest requires its failures to be
+# exactly this list. A vector added to the corpus that pins the rule belongs here.
+
+float-refuse-positive-infinity
+float-refuse-negative-infinity
+float-refuse-quiet-nan
+float-refuse-negative-quiet-nan
+float-refuse-signaling-nan
+float-refuse-nan-with-payload
+float-refuse-negative-nan-all-payload-bits
+float-refuse-nan-all-payload-bits

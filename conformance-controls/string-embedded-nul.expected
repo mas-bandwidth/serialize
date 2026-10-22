@@ -1,0 +1,11 @@
+# The vectors a reader fails when this rule is deleted, and no others:
+# a string read refuses a zero byte among its payload.
+#
+# CMakeLists.txt builds that reader, and ctest requires its failures to be
+# exactly this list. A vector added to the corpus that pins the rule belongs here.
+
+string-refuse-nul-as-the-only-byte
+string-refuse-nul-as-the-first-byte
+string-refuse-nul-in-the-middle
+string-refuse-nul-as-the-last-byte
+string-refuse-nul-before-encoding

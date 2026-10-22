@@ -29,7 +29,7 @@ serialize is in `homebrew/core`, so no tap is needed:
 brew install serialize
 ```
 
-The formula installs `serialize.h` and the CMake package config, so both `#include <serialize.h>` and `find_package(serialize CONFIG)` work out of the box. The `consumer` CI job builds a fresh CMake project outside this repository against the installed formula, on every push and every night, and fails while homebrew/core is behind this repository, naming both versions. At the time of writing it is failing: the formula serves 1.16.0 and this repository is at 1.17.0.
+The formula installs `serialize.h` and the CMake package config, so both `#include <serialize.h>` and `find_package(serialize CONFIG)` work out of the box. The `consumer` CI job builds a fresh CMake project outside this repository against the installed formula, on every push and every night, and fails while homebrew/core is behind this repository, naming both versions. It fails after every release until the formula catches up, and 2.0.0 is a major version: a consumer that asks `find_package(serialize 1 CONFIG)` does not accept it, by design, because 2.0 removes `serialize_wstring` and refuses streams 1.x accepted.
 
 ## Using serialize in your project
 
@@ -38,7 +38,7 @@ serialize is a single header. The simplest thing is to copy `serialize.h` into y
 If you use CMake, you can consume it as a target instead — via FetchContent:
 
     include(FetchContent)
-    FetchContent_Declare(serialize GIT_REPOSITORY https://github.com/mas-bandwidth/serialize.git GIT_TAG v1.17.0)
+    FetchContent_Declare(serialize GIT_REPOSITORY https://github.com/mas-bandwidth/serialize.git GIT_TAG v2.0.0)
     FetchContent_MakeAvailable(serialize)
     target_link_libraries(your_target PRIVATE serialize::serialize)
 

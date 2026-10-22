@@ -98,7 +98,7 @@ name int64-span-33-bits-refuse-offset-one-past-the-span
 param min = 0
 param max = 4294967296
 bytes 01 00 00 00 01
-expect refused
+expect refused value_out_of_range
 
 operation int64
 name int64-span-33-bits-accepts-its-full-width
@@ -144,7 +144,7 @@ name int64-span-42-bits-refuse-offset-one-past-the-span
 param min = -1099511627776
 param max = 1099511627776
 bytes 01 00 00 00 00 02
-expect refused
+expect refused value_out_of_range
 
 # The full int64 range: the span is 2^64 - 1, so the width is 64 and every
 # 64-bit offset is legal. No refusal vector exists for this declaration, which
@@ -195,7 +195,7 @@ name int64-span-64-bits-refuse-offset-one-past-the-span
 param min = -9223372036854775808
 param max = 9223372036854775806
 bytes FF FF FF FF FF FF FF FF
-expect refused
+expect refused value_out_of_range
 
 # Reading past the end.
 
@@ -204,7 +204,7 @@ name int64-refuse-past-end-41-of-32
 param min = 0
 param max = 1099511627776
 bytes FF FF FF FF
-expect refused
+expect refused past_end
 
 operation int64
 name int64-accept-41-bits-of-41
@@ -220,4 +220,68 @@ name int64-refuse-past-end-empty-stream
 param min = 0
 param max = 1
 bytes
-expect refused
+expect refused past_end
+
+# ---------------------------------------------------------------------------
+# WIDE INTEGERS ARE EXACT (STANDARD.md, "Wide integers are exact"). A 64 or
+# 128 bit value is an integer on the wire and must be one in every reader: an
+# implementation that carries it through a double holds every integer up to
+# 2^53 and loses the rest. The edges come in threes around each limit, because
+# a power of two survives a double and its neighbours do not: 2^53 + 1 is the
+# first integer a double cannot hold, 2^63 - 1 rounds up to 2^63, and 2^64 - 1
+# rounds past the width entirely. A reader that passes every vector below
+# carries the width exactly.
+
+operation int64
+name int64-full-range-exact-2p53-minus-1
+param min = -9223372036854775808
+param max = 9223372036854775807
+bytes FF FF FF FF FF FF 1F 80
+expect value = 9007199254740991
+consumed 64
+writer canonical
+
+operation int64
+name int64-full-range-exact-2p53
+param min = -9223372036854775808
+param max = 9223372036854775807
+bytes 00 00 00 00 00 00 20 80
+expect value = 9007199254740992
+consumed 64
+writer canonical
+
+operation int64
+name int64-full-range-exact-2p53-plus-1
+param min = -9223372036854775808
+param max = 9223372036854775807
+bytes 01 00 00 00 00 00 20 80
+expect value = 9007199254740993
+consumed 64
+writer canonical
+
+operation int64
+name int64-full-range-exact-minus-2p53-minus-1
+param min = -9223372036854775808
+param max = 9223372036854775807
+bytes FF FF FF FF FF FF DF 7F
+expect value = -9007199254740993
+consumed 64
+writer canonical
+
+operation int64
+name int64-full-range-exact-2p63-minus-2
+param min = -9223372036854775808
+param max = 9223372036854775807
+bytes FE FF FF FF FF FF FF FF
+expect value = 9223372036854775806
+consumed 64
+writer canonical
+
+operation int64
+name int64-full-range-exact-minus-2p63-plus-1
+param min = -9223372036854775808
+param max = 9223372036854775807
+bytes 01 00 00 00 00 00 00 00
+expect value = -9223372036854775807
+consumed 64
+writer canonical

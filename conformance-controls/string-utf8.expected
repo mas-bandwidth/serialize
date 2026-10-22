@@ -1,0 +1,19 @@
+# The vectors a reader fails when this rule is deleted, and no others:
+# a string read refuses a payload that is not well formed UTF-8.
+#
+# CMakeLists.txt builds that reader, and ctest requires its failures to be
+# exactly this list. A vector added to the corpus that pins the rule belongs here.
+
+string-refuse-overlong-two-byte-nul
+string-refuse-overlong-two-byte-slash
+string-refuse-overlong-three-byte-slash
+string-refuse-surrogate-encoded-in-utf8
+string-refuse-low-surrogate-encoded-in-utf8
+string-refuse-code-point-above-10FFFF
+string-refuse-five-byte-sequence
+string-refuse-lone-continuation-byte
+string-refuse-continuation-byte-after-ascii
+string-refuse-truncated-two-byte-sequence
+string-refuse-truncated-three-byte-sequence
+string-refuse-byte-fe
+string-refuse-byte-ff

@@ -21,7 +21,7 @@ as the ctest target `conformance`. Neither replaces the other.
 
 ## The whole golden message
 
-STANDARD.md prints the message's 112 bytes and `conformance/message.txt` carries
+STANDARD.md prints the message's 106 bytes and `conformance/message.txt` carries
 them as a vector. Neither is copied out of `serialize.h`. The steps and values are
 stated in [golden_message.go](golden_message.go), encoded by the corpus encoder in
 [corpus.go](corpus.go), which is written from the document, and three things must
@@ -43,9 +43,11 @@ It is a hand-verified byte-exact snapshot of a message exercising every
 primitive: all four raw bit widths, a narrow and a full-range ranged int, a
 bool, a float, a quantized compressed float, a double, four unsigned widths,
 both interesting tiers of the relative-integer ladder, a byte block, a narrow
-string, a wide string, and four fixed point fields across signed, unsigned,
-16/32/64-bit storage. If a decoder written from the document reproduces all
-of them and consumes exactly the right number of bits, the document is right.
+string, a second string of real multibyte text (碁石, go stones, as its UTF-8
+bytes), and six fixed point fields across signed, unsigned, 16/32/64/128-bit
+storage, then the end of the object. If a decoder written from the document
+reproduces all of them, consumes exactly the right number of bits and finds
+the stream ending where the message does, the document is right.
 The library's second, additive pin — `golden_uint128_bytes` — is decoded the
 same way to verify the uint128 half order.
 
@@ -77,16 +79,36 @@ property. So the checker additionally carries the discriminating battery:
 - **Degenerate-range vectors** decoded from an empty stream, proving
   `min == max` costs zero bits on every storage width.
 
-## Trailing bits: the writer obligation and the diagnostic
+## Refusal reasons
 
-STANDARD.md (adopted 2026-08-15) makes the writer's zeroed trailing bits an
-obligation, keeps readers indifferent to their contents, and licenses a
-diagnostic that may treat non-zero trailing bits as evidence a stream was not
-produced by a conforming writer. The checker enforces the writer side against
-pinned real emissions — `golden_wire_bytes` (the C++ writer) and the
-`int_relative` tier-boundary streams (serialize.c) — and proves the
-distinction both ways on a doctored stream: the document's reader accepts it
-and decodes identical values, and the diagnostic flags it. The check
-exercises 2 of the 5 writers; Go, C# and Rust emissions are not pinned in
-this repo yet. The diagnostic lives here by rule: it never moves into a read
-path.
+Every refusal this checker's decoder makes names one reason from STANDARD.md's
+closed list — `past_end`, `value_out_of_range`, `nonzero_padding`,
+`trailing_data`, `non_finite_float`, `invalid_utf8`, `embedded_nul`,
+`non_canonical` — and every refused vector states the one it expects as
+`expect refused <reason>`. A vector refused for a different reason FAILS, a
+sequence reports its first refusal, and a refused vector with no reason, or a
+reason outside the list, is a malformed file.
+
+Format version 2.0 refusals the checker carries from the document alone:
+`float` and `double` patterns that are NaN or an infinity (`non_finite_float`;
+`-0` and subnormals pass bit exact), a `compressed_float` decode that rounds
+to an infinity (witness `[3 * 2^103, FLT_MAX]` at resolution `2^104`), an
+`int_relative` absolute tier carrying a difference a bounded tier carries
+(`non_canonical`), and the `end` of an object with a whole byte after it
+(`trailing_data`) or non-zero unused bits in its final byte
+(`nonzero_padding`). `wstring` is gone from the format, so a `wstring` vector
+is an operation this checker cannot drive, and fails.
+
+A `compressed_float` record may carry `writer_input bits = 0x...`: the float32
+a writer is handed, which must quantize to exactly the record's bytes. That is
+how the corpus pins between-quanta writer inputs, which a decode alone cannot.
+
+## The end of the object and the writer obligation
+
+STANDARD.md's `end` makes the writer's zeroed trailing bits checkable on the
+read path: no field read looks past its own bits, and `end` consumes the final
+byte's unused bits, refusing them non-zero, and refuses any whole byte after
+the object. The checker holds pinned real emissions to the writer obligation —
+`golden_wire_bytes` (the C++ writer) and the `int_relative` tier-boundary
+streams (serialize.c) — and proves on a doctored stream that the field still
+decodes while `end` refuses it.

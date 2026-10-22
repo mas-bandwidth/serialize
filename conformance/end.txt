@@ -1,0 +1,186 @@
+# serialize conformance vectors: serialize_end
+#
+# The format is specified in STANDARD.md, "The vector format". Records are
+# separated by blank lines.
+#
+# STANDARD.md, "end": the object ends at the bit index after its last field,
+# and the stream must end there too. A reader's end consumes the unused bits of
+# the final byte and requires them to be zero, which is what every conforming
+# writer leaves there, and refuses any whole byte that follows:
+#
+#   - a whole byte or more after the object is refused as trailing_data, even
+#     when every bit of it is zero;
+#   - a set bit among the final byte's unused bits is refused as
+#     nonzero_padding.
+#
+# With both rules, one value has one byte sequence: the bytes a writer reports
+# for the object, and no others. A writer's end emits nothing, and a measure's
+# costs nothing.
+#
+# `consumed` on an accepted end counts the padding it read, so it is always
+# the whole stream: eight times the byte count. An end has no value of its own,
+# and its expect entry is `-` in a sequence and `0` alone, as align's is.
+
+# The empty object: nothing written, nothing read.
+
+operation end
+name end-accept-empty-stream
+bytes
+expect value = 0
+consumed 0
+writer canonical
+
+# A single byte where the empty object should end, zero or not, is a whole byte
+# after the object.
+
+operation end
+name end-refuse-one-zero-byte-after-the-empty-object
+bytes 00
+expect refused trailing_data
+
+operation end
+name end-refuse-one-set-byte-after-the-empty-object
+bytes FF
+expect refused trailing_data
+
+# An object of three bits: its byte carries five bits of padding, zero.
+
+operation sequence
+name end-accept-after-three-bits
+param step = bits 3
+param step = end
+bytes 05
+expect value = 5 | -
+consumed 8
+measure_at_least 3
+writer canonical
+
+# Each padding bit, alone. The lowest and the highest of the five, so a reader
+# that checks only part of the remainder fails one of them.
+
+operation sequence
+name end-refuse-lowest-padding-bit
+param step = bits 3
+param step = end
+bytes 0D
+expect refused nonzero_padding
+
+operation sequence
+name end-refuse-highest-padding-bit
+param step = bits 3
+param step = end
+bytes 85
+expect refused nonzero_padding
+
+# The three bits themselves are the field's, and a reader's end never looks at
+# them: 0x07 is the field's value 7 with clean padding.
+
+operation sequence
+name end-accept-every-field-bit-set
+param step = bits 3
+param step = end
+bytes 07
+expect value = 7 | -
+consumed 8
+writer canonical
+
+# A zero byte after an unaligned object: clean padding, then trailing data.
+
+operation sequence
+name end-refuse-zero-byte-after-an-unaligned-object
+param step = bits 3
+param step = end
+bytes 05 00
+expect refused trailing_data
+
+# An aligned object has no padding, so its end checks only for trailing data.
+
+operation sequence
+name end-accept-after-an-aligned-object
+param step = bits 8
+param step = end
+bytes AB
+expect value = 171 | -
+consumed 8
+measure_at_least 8
+writer canonical
+
+operation sequence
+name end-refuse-zero-byte-after-an-aligned-object
+param step = bits 8
+param step = end
+bytes AB 00
+expect refused trailing_data
+
+# Seven bits of padding, all of them read: the most an end ever consumes.
+
+operation sequence
+name end-accept-seven-bits-of-padding
+param step = bool
+param step = end
+bytes 01
+expect value = true | -
+consumed 8
+writer canonical
+
+operation sequence
+name end-refuse-seventh-padding-bit
+param step = bool
+param step = end
+bytes 81
+expect refused nonzero_padding
+
+# The end is a read like any other: a failed stream refuses it, and the reason
+# stays the first refusal's. The ranged int's offset 9 is past its span of 8,
+# so the read is refused for the value, never for the padding or the end.
+
+operation sequence
+name end-refuse-after-a-refused-field-keeps-the-first-reason
+param step = int 0 8
+param step = end
+bytes 09
+expect refused value_out_of_range
+
+# Nothing is left after the end: a read after it runs past the end of the
+# stream, even a one-bit read.
+
+operation sequence
+name end-then-a-further-read-is-past-the-end
+param step = bits 3
+param step = end
+param step = bool
+bytes 05
+expect refused past_end
+
+# An end after bytes: the payload is aligned, so the end checks for trailing
+# data only, and a payload byte counted as padding would pass a broken reader.
+
+operation sequence
+name end-accept-after-bytes
+param step = bits 1
+param step = bytes 2
+param step = end
+bytes 01 CA FE
+expect value = 1 | CA FE | -
+consumed 24
+measure_at_least 24
+writer canonical
+
+operation sequence
+name end-refuse-a-byte-after-bytes
+param step = bits 1
+param step = bytes 2
+param step = end
+bytes 01 CA FE 00
+expect refused trailing_data
+
+# Both rules at once: a set padding bit AND a whole byte after the object. The
+# trailing data rule is checked first, so the reason is trailing_data: with a
+# byte after it, the object's byte is not the final byte of the stream.
+
+operation sequence
+name end-refuse-trailing-data-before-padding
+param step = bits 3
+param step = end
+bytes 0D 00
+expect refused trailing_data

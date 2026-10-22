@@ -118,13 +118,13 @@ operation string
 name string-refuse-length-one-past-the-buffer
 param buffer_size = 10
 bytes 0A
-expect refused
+expect refused value_out_of_range
 
 operation string
 name string-refuse-length-all-four-bits
 param buffer_size = 10
 bytes 0F
-expect refused
+expect refused value_out_of_range
 
 # The alignment padding must be zero. The low four bits are a length of 1, the
 # high four are the padding, and only the padding differs between this vector
@@ -134,7 +134,7 @@ operation string
 name string-refuse-non-zero-align-padding
 param buffer_size = 16
 bytes F1 41
-expect refused
+expect refused nonzero_padding
 
 # Reading past the end, in the length field and in the payload.
 
@@ -142,13 +142,13 @@ operation string
 name string-refuse-past-end-payload-truncated
 param buffer_size = 16
 bytes 06 67 6F 6C
-expect refused
+expect refused past_end
 
 operation string
 name string-refuse-past-end-empty-stream
 param buffer_size = 16
 bytes
-expect refused
+expect refused past_end
 
 # ---------------------------------------------------------------------------
 # the interior NUL rule. A conforming writer derives length from strlen, so no
@@ -164,25 +164,25 @@ operation string
 name string-refuse-nul-as-the-only-byte
 param buffer_size = 16
 bytes 01 00
-expect refused
+expect refused embedded_nul
 
 operation string
 name string-refuse-nul-as-the-first-byte
 param buffer_size = 16
 bytes 03 00 61 62
-expect refused
+expect refused embedded_nul
 
 operation string
 name string-refuse-nul-in-the-middle
 param buffer_size = 16
 bytes 03 61 00 62
-expect refused
+expect refused embedded_nul
 
 operation string
 name string-refuse-nul-as-the-last-byte
 param buffer_size = 16
 bytes 03 61 62 00
-expect refused
+expect refused embedded_nul
 
 operation string
 name string-accept-the-same-three-bytes-without-a-nul
@@ -209,13 +209,13 @@ operation string
 name string-refuse-overlong-two-byte-nul
 param buffer_size = 16
 bytes 02 C0 80
-expect refused
+expect refused invalid_utf8
 
 operation string
 name string-refuse-overlong-two-byte-slash
 param buffer_size = 16
 bytes 02 C1 AF
-expect refused
+expect refused invalid_utf8
 
 operation string
 name string-accept-shortest-three-byte-sequence
@@ -229,7 +229,7 @@ operation string
 name string-refuse-overlong-three-byte-slash
 param buffer_size = 16
 bytes 03 E0 80 AF
-expect refused
+expect refused invalid_utf8
 
 operation string
 name string-accept-just-below-the-surrogate-block
@@ -243,13 +243,13 @@ operation string
 name string-refuse-surrogate-encoded-in-utf8
 param buffer_size = 16
 bytes 03 ED A0 80
-expect refused
+expect refused invalid_utf8
 
 operation string
 name string-refuse-low-surrogate-encoded-in-utf8
 param buffer_size = 16
 bytes 03 ED BF BF
-expect refused
+expect refused invalid_utf8
 
 operation string
 name string-accept-just-above-the-surrogate-block
@@ -279,31 +279,31 @@ operation string
 name string-refuse-code-point-above-10FFFF
 param buffer_size = 16
 bytes 04 F4 90 80 80
-expect refused
+expect refused invalid_utf8
 
 operation string
 name string-refuse-five-byte-sequence
 param buffer_size = 16
 bytes 05 F8 88 80 80 80
-expect refused
+expect refused invalid_utf8
 
 operation string
 name string-refuse-lone-continuation-byte
 param buffer_size = 16
 bytes 01 80
-expect refused
+expect refused invalid_utf8
 
 operation string
 name string-refuse-continuation-byte-after-ascii
 param buffer_size = 16
 bytes 02 41 BF
-expect refused
+expect refused invalid_utf8
 
 operation string
 name string-refuse-truncated-two-byte-sequence
 param buffer_size = 16
 bytes 01 C3
-expect refused
+expect refused invalid_utf8
 
 operation string
 name string-accept-the-same-two-byte-sequence-completed
@@ -317,7 +317,7 @@ operation string
 name string-refuse-truncated-three-byte-sequence
 param buffer_size = 16
 bytes 02 E2 82
-expect refused
+expect refused invalid_utf8
 
 operation string
 name string-accept-the-same-three-byte-sequence-completed
@@ -331,10 +331,183 @@ operation string
 name string-refuse-byte-fe
 param buffer_size = 16
 bytes 01 FE
-expect refused
+expect refused invalid_utf8
 
 operation string
 name string-refuse-byte-ff
 param buffer_size = 16
 bytes 01 FF
-expect refused
+expect refused invalid_utf8
+
+# ---------------------------------------------------------------------------
+# REAL TEXT, BYTE FOR BYTE. Validation refuses illegal byte sequences and
+# nothing else: every vector below is well-formed UTF-8 carrying real text, and
+# a reader must hand back exactly the bytes sent. No normalization, no
+# reordering, no replacement character, no stripped byte order mark. A runtime
+# that decodes into a native string type must round trip these bytes through
+# it unchanged. The buffer is 32 bytes, so the length is five bits and the
+# string's own align pads the first byte: the first byte is the length.
+
+# Chinese: weiqi, the game of go. Three-byte sequences.
+
+operation string
+name string-text-chinese-weiqi
+param buffer_size = 32
+bytes 06 E5 9B B4 E6 A3 8B
+expect value = E5 9B B4 E6 A3 8B
+consumed 56
+writer canonical
+
+# Japanese: go stones, the golden message's second string.
+
+operation string
+name string-text-japanese-go-stones
+param buffer_size = 32
+bytes 06 E7 A2 81 E7 9F B3
+expect value = E7 A2 81 E7 9F B3
+consumed 56
+writer canonical
+
+# Japanese: black and white, two three-byte characters around an ASCII slash.
+
+operation string
+name string-text-japanese-black-and-white
+param buffer_size = 32
+bytes 07 E9 BB 92 2F E7 99 BD
+expect value = E9 BB 92 2F E7 99 BD
+consumed 64
+writer canonical
+
+# Korean: baduk. Precomposed Hangul syllables, which a reader must not
+# decompose.
+
+operation string
+name string-text-korean-baduk
+param buffer_size = 32
+bytes 06 EB B0 94 EB 91 91
+expect value = EB B0 94 EB 91 91
+consumed 56
+writer canonical
+
+# Arabic, right to left: chess. Direction is a property of the text, never of
+# the bytes, and a reader must not reorder them.
+
+operation string
+name string-text-arabic-right-to-left
+param buffer_size = 32
+bytes 0E D8 A7 D9 84 D8 B4 D8 B7 D8 B1 D9 86 D8 AC
+expect value = D8 A7 D9 84 D8 B4 D8 B7 D8 B1 D9 86 D8 AC
+consumed 120
+writer canonical
+
+# e followed by U+0301 COMBINING ACUTE ACCENT. Two code points, three bytes,
+# and they must arrive as sent: a reader that normalizes to NFC produces the
+# precomposed C3 A9, a different byte sequence.
+
+operation string
+name string-text-combining-acute-not-normalized
+param buffer_size = 32
+bytes 03 65 CC 81
+expect value = 65 CC 81
+consumed 32
+writer canonical
+
+# The precomposed twin of the vector above: U+00E9, two bytes. Both are real
+# text, both are accepted, and neither becomes the other.
+
+operation string
+name string-text-precomposed-e-acute
+param buffer_size = 32
+bytes 02 C3 A9
+expect value = C3 A9
+consumed 24
+writer canonical
+
+# U+1F600, a four-byte sequence outside the Basic Multilingual Plane. A reader
+# that thinks in UTF-16 sees a surrogate pair here, and must not refuse it:
+# the bytes are a scalar value, not a surrogate.
+
+operation string
+name string-text-emoji-four-byte
+param buffer_size = 32
+bytes 04 F0 9F 98 80
+expect value = F0 9F 98 80
+consumed 40
+writer canonical
+
+# U+20B9F, a CJK Unified Ideographs Extension B character in everyday Japanese
+# use. Four bytes.
+
+operation string
+name string-text-cjk-extension-b-four-byte
+param buffer_size = 32
+bytes 04 F0 A0 AE 9F
+expect value = F0 A0 AE 9F
+consumed 40
+writer canonical
+
+# U+10FFFF, the last code point: F4 8F BF BF is well formed, and F4 90 80 80
+# one above it is not.
+
+operation string
+name string-text-highest-code-point
+param buffer_size = 32
+bytes 04 F4 8F BF BF
+expect value = F4 8F BF BF
+consumed 40
+writer canonical
+
+# U+FEFF at the start of the payload. It is a real character and it travels: a
+# reader that strips a leading byte order mark hands back a different string.
+
+operation string
+name string-text-byte-order-mark-kept
+param buffer_size = 32
+bytes 05 EF BB BF 67 6F
+expect value = EF BB BF 67 6F
+consumed 48
+writer canonical
+
+# U+FFFF is a noncharacter, and noncharacters are well formed: Unicode
+# reserves them for internal use but never makes them illegal. Validation
+# refuses illegal byte sequences, never a real code point.
+
+operation string
+name string-text-noncharacter-kept
+param buffer_size = 32
+bytes 03 EF BF BF
+expect value = EF BF BF
+consumed 32
+writer canonical
+
+# Several scripts, ASCII spaces and a four-byte symbol in one payload.
+
+operation string
+name string-text-mixed-scripts
+param buffer_size = 32
+bytes 15 67 6F 20 E5 9B B2 E7 A2 81 20 EB B0 94 EB 91 91 20 F0 9F 80 84
+expect value = 67 6F 20 E5 9B B2 E7 A2 81 20 EB B0 94 EB 91 91 20 F0 9F 80 84
+consumed 176
+writer canonical
+
+# ---------------------------------------------------------------------------
+# REFUSAL ORDER. A payload breaking both string rules: FF is never UTF-8, and
+# the zero byte after it is a NUL. The NUL rule is checked over the whole
+# payload before the encoding, so the reason is embedded_nul. A single pass
+# validator stops at FF and reports invalid_utf8.
+
+operation string
+name string-refuse-nul-before-encoding
+param buffer_size = 16
+bytes 02 FF 00
+expect refused embedded_nul
+
+# Set align padding AND a payload past the end: the length is 3 (low four bits
+# 0011), the padding bits are set, and no payload follows. The align comes
+# before the payload, so the reason is nonzero_padding, never past_end.
+
+operation string
+name string-refuse-padding-before-a-truncated-payload
+param buffer_size = 16
+bytes F3
+expect refused nonzero_padding

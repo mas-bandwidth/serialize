@@ -1,0 +1,18 @@
+# The vectors a reader fails when this rule is deleted, and no others:
+# readers must verify that the alignment padding bits are zero.
+#
+# CMakeLists.txt builds that reader, and ctest requires its failures to be
+# exactly this list. A vector added to the corpus that pins the rule belongs here.
+
+align-refuse-one-non-zero-pad-bit
+align-refuse-four-non-zero-pad-bits
+align-refuse-seven-non-zero-pad-bits
+align-refuse-only-the-highest-pad-bit-set
+align-refuse-only-the-lowest-pad-bit-set
+bytes-zero-count-refuse-non-zero-align-padding
+bytes-refuse-non-zero-align-padding
+object-refusal-propagates-out-of-the-nesting
+sequence-refusal-is-terminal-after-bad-alignment
+string-refuse-non-zero-align-padding
+bytes-refuse-padding-before-a-truncated-payload
+string-refuse-padding-before-a-truncated-payload

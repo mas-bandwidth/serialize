@@ -65,7 +65,7 @@ func (w *BitWriter) writeBytes(data []byte) {
 	}
 }
 
-// flush rounds the stream up to a whole byte. STANDARD.md, "Trailing bits":
+// flush rounds the stream up to a whole byte. STANDARD.md, "General Conventions":
 // writers must emit ZERO in the unused bits of the final byte, which this
 // writer does by construction because it never sets a bit it was not asked to.
 func (w *BitWriter) flush() []byte {
@@ -95,8 +95,12 @@ const (
 	stepCompressedFloat
 	stepBytes
 	stepString
-	stepWString
 	stepFixed
+	// stepEnd is STANDARD.md's "end": the object ends here and so must the
+	// stream. It writes nothing, measures nothing, and on read refuses a whole
+	// byte left over (trailing_data) or non-zero unused bits in the final byte
+	// (nonzero_padding), consuming those bits when they are zero.
+	stepEnd
 	// stepObject wraps the steps that follow it. STANDARD.md, "object": it
 	// contributes NO BYTES OF ITS OWN — composition, not an encoding — so the
 	// nested run is exactly the steps it wraps and nothing else.
@@ -117,7 +121,6 @@ type step struct {
 	bits   *big.Int
 	flag   bool
 	data   []byte
-	units  []uint16
 }
 
 // aligns reports whether the step performs an alignment, which is what the
@@ -274,7 +277,7 @@ func decodeStep(r *BitReader, s *step) error {
 			return err
 		}
 		if v.Cmp(span) > 0 {
-			return fmt.Errorf("ranged offset %s exceeds span %s — reject, never clamp", v, span)
+			return refusalf("value_out_of_range", "ranged offset %s exceeds span %s — reject, never clamp", v, span)
 		}
 		s.number = toSigned128(new(big.Int).Add(v, s.lo))
 		return nil
@@ -292,6 +295,11 @@ func decodeStep(r *BitReader, s *step) error {
 		if err != nil {
 			return err
 		}
+		// STANDARD.md, "float": finite values only. NaN with any payload or
+		// sign and both infinities are refused; -0 and subnormals pass bit exact
+		if !float32BitsFinite(uint32(v)) {
+			return refusalf("non_finite_float", "float pattern 0x%08X is not finite", v)
+		}
 		s.bits = new(big.Int).SetUint64(v)
 		return nil
 
@@ -300,8 +308,14 @@ func decodeStep(r *BitReader, s *step) error {
 		if err != nil {
 			return err
 		}
+		if !float64BitsFinite(v.Uint64()) {
+			return refusalf("non_finite_float", "double pattern 0x%016X is not finite", v.Uint64())
+		}
 		s.bits = v
 		return nil
+
+	case stepEnd:
+		return r.end()
 
 	case stepCompressedFloat:
 		f, err := decodeCompressedFloat(r, s.fmin, s.fmax, s.fres)
@@ -328,44 +342,19 @@ func decodeStep(r *BitReader, s *step) error {
 		if err != nil {
 			return err
 		}
-		// STANDARD.md: invalid UTF-8 fails the read, and so does an interior
-		// NUL — a zero byte anywhere among the transmitted bytes.
-		if !utf8.Valid(b) {
-			return fmt.Errorf("string payload is not well-formed UTF-8")
-		}
+		// STANDARD.md: an interior NUL — a zero byte anywhere among the
+		// transmitted bytes — fails the read, and so does invalid UTF-8. The
+		// NUL rule is checked first, so a payload breaking both is refused as
+		// embedded_nul.
 		for _, c := range b {
 			if c == 0 {
-				return fmt.Errorf("string payload carries an interior NUL")
+				return refusalf("embedded_nul", "string payload carries an interior NUL")
 			}
+		}
+		if !utf8.Valid(b) {
+			return refusalf("invalid_utf8", "string payload is not well-formed UTF-8")
 		}
 		s.data = append([]byte(nil), b...)
-		return nil
-
-	case stepWString:
-		n, err := decodeRangedInt(r, 0, s.width-1)
-		if err != nil {
-			return err
-		}
-		units := make([]uint16, 0, n)
-		for i := int64(0); i < n; i++ {
-			g, err := r.bits(32)
-			if err != nil {
-				return err
-			}
-			// a group above 0xFFFF is not a UTF-16 code unit, and the reader
-			// must refuse it on every platform
-			if g > 0xFFFF {
-				return fmt.Errorf("wstring group 0x%X is above 0xFFFF and is not a code unit", g)
-			}
-			if g == 0 {
-				return fmt.Errorf("wstring payload carries an interior NUL group")
-			}
-			units = append(units, uint16(g))
-		}
-		if err := checkUTF16(units); err != nil {
-			return err
-		}
-		s.units = units
 		return nil
 
 	case stepFixed:
@@ -377,7 +366,7 @@ func decodeStep(r *BitReader, s *step) error {
 			return err
 		}
 		if v.Cmp(span) > 0 {
-			return fmt.Errorf("fixed offset %s exceeds raw span %s — reject, never clamp", v, span)
+			return refusalf("value_out_of_range", "fixed offset %s exceeds raw span %s — reject, never clamp", v, span)
 		}
 		s.number = new(big.Int).Add(v, rawLo)
 		return nil
@@ -385,33 +374,9 @@ func decodeStep(r *BitReader, s *step) error {
 	return fmt.Errorf("no decoder for this step")
 }
 
-// decodeRangedInt is the length field shared by string and wstring.
+// decodeRangedInt is string's length field.
 func decodeRangedInt(r *BitReader, lo, hi int64) (int64, error) {
 	return sint(r, lo, hi)
-}
-
-// checkUTF16 applies STANDARD.md's unpaired-surrogate rule: a high surrogate
-// not immediately followed by a low one, a low surrogate not immediately
-// preceded by a high one, or a high surrogate as the final transmitted group.
-func checkUTF16(units []uint16) error {
-	for i := 0; i < len(units); i++ {
-		u := units[i]
-		if u >= 0xD800 && u <= 0xDBFF {
-			if i+1 >= len(units) {
-				return fmt.Errorf("wstring ends on a high surrogate 0x%04X", u)
-			}
-			next := units[i+1]
-			if next < 0xDC00 || next > 0xDFFF {
-				return fmt.Errorf("wstring high surrogate 0x%04X is not followed by a low surrogate", u)
-			}
-			i++
-			continue
-		}
-		if u >= 0xDC00 && u <= 0xDFFF {
-			return fmt.Errorf("wstring low surrogate 0x%04X is not preceded by a high surrogate", u)
-		}
-	}
-	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -451,11 +416,8 @@ func encodeStep(w *BitWriter, s *step) error {
 	case stepString:
 		writeGroups(w, big.NewInt(int64(len(s.data))), bitsRequiredBig(big.NewInt(s.width-1)))
 		w.writeBytes(s.data)
-	case stepWString:
-		writeGroups(w, big.NewInt(int64(len(s.units))), bitsRequiredBig(big.NewInt(s.width-1)))
-		for _, u := range s.units {
-			w.bits(uint64(u), 32)
-		}
+	case stepEnd:
+		// nothing: the writer already leaves the final byte's unused bits zero
 	case stepFixed:
 		rawLo, rawHi := s.rawBounds()
 		span := new(big.Int).Sub(rawHi, rawLo)
@@ -543,8 +505,8 @@ func stepExactBits(s *step, bitIndex int) int {
 	case stepString:
 		n := bitsRequiredBig(big.NewInt(s.width - 1))
 		return n + (8-((bitIndex+n)%8))%8 + 8*len(s.data)
-	case stepWString:
-		return bitsRequiredBig(big.NewInt(s.width-1)) + 32*len(s.units)
+	case stepEnd:
+		return 0
 	case stepFixed:
 		rawLo, rawHi := s.rawBounds()
 		return bitsRequiredBig(new(big.Int).Sub(rawHi, rawLo))
@@ -582,6 +544,8 @@ type vector struct {
 	bytes       []byte
 	expectKind  string // "refused", "value", "bits"
 	expect      string
+	reason      string   // the refusal reason a refused vector states
+	writerInput *big.Int // writer_input: the float32 pattern a writer is handed, compressed_float only
 	consumed    int64
 	hasCons     bool
 	measureMin  int64
@@ -642,8 +606,13 @@ func parseVectorFile(path string) ([]*vector, error) {
 			}
 			cur.bytes = b
 		case "expect":
-			if value == "refused" {
-				cur.expectKind = "refused"
+			if fields := strings.Fields(value); len(fields) > 0 && fields[0] == "refused" {
+				// STANDARD.md, "Refusal reasons": every refused vector states
+				// the one reason a conforming reader refuses it for
+				if len(fields) != 2 || !refusalReasons[fields[1]] {
+					return nil, fmt.Errorf("%s: a refused vector must state exactly one refusal reason from the closed list, got %q", path, text)
+				}
+				cur.expectKind, cur.reason = "refused", fields[1]
 				break
 			}
 			eq := strings.IndexByte(value, '=')
@@ -667,6 +636,16 @@ func parseVectorFile(path string) ([]*vector, error) {
 				return nil, fmt.Errorf("%s: %v", path, err)
 			}
 			cur.measureMin, cur.hasMeasure = n, true
+		case "writer_input":
+			eq := strings.IndexByte(value, '=')
+			if eq < 0 || strings.TrimSpace(value[:eq]) != "bits" {
+				return nil, fmt.Errorf("%s: malformed writer_input line %q, expected bits = 0x...", path, text)
+			}
+			n, ok := parseNumber(value[eq+1:])
+			if !ok || n.Sign() < 0 || n.BitLen() > 32 {
+				return nil, fmt.Errorf("%s: writer_input %q is not a float32 bit pattern", path, value)
+			}
+			cur.writerInput = n
 		case "writer":
 			if value != "canonical" {
 				return nil, fmt.Errorf("%s: unknown writer mode %q", path, value)
@@ -731,8 +710,8 @@ func buildStep(spec string) (*step, error) {
 		s.kind, s.width = stepBytes, num(1)
 	case "string":
 		s.kind, s.width = stepString, num(1)
-	case "wstring":
-		s.kind, s.width = stepWString, num(1)
+	case "end":
+		s.kind = stepEnd
 	case "double":
 		s.kind = stepDouble
 	case "uint128":
@@ -876,15 +855,14 @@ func buildSteps(v *vector) ([]*step, error) {
 			return nil, err
 		}
 		s.kind, s.width = stepBytes, n.Int64()
-	case "string", "wstring":
+	case "string":
 		n, err := numParam("buffer_size")
 		if err != nil {
 			return nil, err
 		}
 		s.kind, s.width = stepString, n.Int64()
-		if v.operation == "wstring" {
-			s.kind = stepWString
-		}
+	case "end":
+		s.kind = stepEnd
 	case "fixed":
 		fb, err := numParam("fraction_bits")
 		if err != nil {
@@ -925,7 +903,7 @@ func renderStep(s *step) string {
 		return fmt.Sprintf("0x%032X", p)
 	}
 	switch s.kind {
-	case stepAlign, stepObject:
+	case stepAlign, stepObject, stepEnd:
 		return "0"
 	case stepBool:
 		if s.flag {
@@ -936,12 +914,6 @@ func renderStep(s *step) string {
 		parts := make([]string, len(s.data))
 		for i, c := range s.data {
 			parts[i] = fmt.Sprintf("%02X", c)
-		}
-		return strings.Join(parts, " ")
-	case stepWString:
-		parts := make([]string, len(s.units))
-		for i, u := range s.units {
-			parts[i] = fmt.Sprintf("%04X", u)
 		}
 		return strings.Join(parts, " ")
 	}
@@ -983,11 +955,21 @@ func runCorpusVector(c *checker, v *vector) {
 	}
 	r := &BitReader{b: stream[:len(v.bytes)]}
 
-	failedStep, _ := decodeSteps(r, steps)
+	failedStep, decodeErr := decodeSteps(r, steps)
+
+	if v.writerInput != nil && !checkWriterInput(v, steps, fail) {
+		return
+	}
 
 	if v.expectKind == "refused" {
 		if failedStep < 0 {
-			fail("the decode succeeded, the corpus requires refusal")
+			fail("the decode succeeded, the corpus requires refusal as %s", v.reason)
+			return
+		}
+		// STANDARD.md, "Refusal reasons": the reason is part of the verdict. A
+		// sequence reports its FIRST refusal, because the decode stops there.
+		if got := reasonOf(decodeErr); got != v.reason {
+			fail("refused as %q, the corpus requires %s (%v)", got, v.reason, decodeErr)
 			return
 		}
 		// failure is terminal: every step after the failing one must fail too.
@@ -998,7 +980,7 @@ func runCorpusVector(c *checker, v *vector) {
 		return
 	}
 	if failedStep >= 0 {
-		fail("step %d was refused, the corpus requires the read to be accepted", failedStep+1)
+		fail("step %d was refused (%v), the corpus requires the read to be accepted", failedStep+1, decodeErr)
 		return
 	}
 
@@ -1047,6 +1029,47 @@ func runCorpusVector(c *checker, v *vector) {
 			fail("measure_at_least states %d, the document's worst case over every starting bit position is %d", v.measureMin, worst)
 		}
 	}
+}
+
+// checkWriterInput holds a record's writer_input to the record's bytes: a writer
+// handed that float32 value must emit exactly those bytes. Only compressed_float
+// carries it, because only there does the value a writer is handed differ from
+// the value a reader decodes. Every step before the compressed_float one is
+// encoded from what the decode produced, so preceding_bits ride along.
+func checkWriterInput(v *vector, steps []*step, fail func(string, ...interface{})) bool {
+	if v.operation != "compressed_float" {
+		fail("writer_input is only meaningful on a compressed_float record")
+		return false
+	}
+	last := steps[len(steps)-1]
+	if last.kind != stepCompressedFloat {
+		fail("writer_input with no compressed_float step")
+		return false
+	}
+	input := math.Float32frombits(uint32(v.writerInput.Uint64()))
+	if !float32BitsFinite(uint32(v.writerInput.Uint64())) {
+		fail("writer_input 0x%08X is not finite, and a conforming writer is never handed one", v.writerInput.Uint64())
+		return false
+	}
+	w := &BitWriter{}
+	for _, s := range steps[:len(steps)-1] {
+		if s.bits == nil && s.kind == stepBits {
+			fail("writer_input: the step before the compressed_float did not decode")
+			return false
+		}
+		if err := encodeStep(w, s); err != nil {
+			fail("%v", err)
+			return false
+		}
+	}
+	_, n := compressedFloatParams(last.fmin, last.fmax, last.fres)
+	w.bits(quantizeCompressedFloat(input, last.fmin, last.fmax, last.fres), n)
+	got := w.flush()
+	if fmt.Sprintf("% X", got) != fmt.Sprintf("% X", v.bytes) {
+		fail("a writer handed 0x%08X emits % X, the corpus states % X", v.writerInput.Uint64(), got, v.bytes)
+		return false
+	}
+	return true
 }
 
 // runCorpus runs every vector in the corpus. With no arguments it walks the
