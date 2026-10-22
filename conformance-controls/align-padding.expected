@@ -14,3 +14,5 @@ bytes-refuse-non-zero-align-padding
 object-refusal-propagates-out-of-the-nesting
 sequence-refusal-is-terminal-after-bad-alignment
 string-refuse-non-zero-align-padding
+bytes-refuse-padding-before-a-truncated-payload
+string-refuse-padding-before-a-truncated-payload

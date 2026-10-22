@@ -489,3 +489,25 @@ bytes 15 67 6F 20 E5 9B B2 E7 A2 81 20 EB B0 94 EB 91 91 20 F0 9F 80 84
 expect value = 67 6F 20 E5 9B B2 E7 A2 81 20 EB B0 94 EB 91 91 20 F0 9F 80 84
 consumed 176
 writer canonical
+
+# ---------------------------------------------------------------------------
+# REFUSAL ORDER. A payload breaking both string rules: FF is never UTF-8, and
+# the zero byte after it is a NUL. The NUL rule is checked over the whole
+# payload before the encoding, so the reason is embedded_nul. A single pass
+# validator stops at FF and reports invalid_utf8.
+
+operation string
+name string-refuse-nul-before-encoding
+param buffer_size = 16
+bytes 02 FF 00
+expect refused embedded_nul
+
+# Set align padding AND a payload past the end: the length is 3 (low four bits
+# 0011), the padding bits are set, and no payload follows. The align comes
+# before the payload, so the reason is nonzero_padding, never past_end.
+
+operation string
+name string-refuse-padding-before-a-truncated-payload
+param buffer_size = 16
+bytes F3
+expect refused nonzero_padding

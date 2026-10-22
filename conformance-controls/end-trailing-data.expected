@@ -9,3 +9,4 @@ end-refuse-one-set-byte-after-the-empty-object
 end-refuse-zero-byte-after-an-unaligned-object
 end-refuse-zero-byte-after-an-aligned-object
 end-refuse-a-byte-after-bytes
+end-refuse-trailing-data-before-padding

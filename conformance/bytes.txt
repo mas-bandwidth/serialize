@@ -122,3 +122,14 @@ bytes 01 5A
 expect value = 5A
 consumed 16
 writer canonical
+
+# Set align padding AND too few bytes for the count: the align comes before the
+# payload, so the reason is nonzero_padding. A reader that checks the length
+# first reports past_end.
+
+operation bytes
+name bytes-refuse-padding-before-a-truncated-payload
+param preceding_bits = 4
+param count = 2
+bytes FA AB
+expect refused nonzero_padding

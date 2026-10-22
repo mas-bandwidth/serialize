@@ -173,3 +173,14 @@ param step = bytes 2
 param step = end
 bytes 01 CA FE 00
 expect refused trailing_data
+
+# Both rules at once: a set padding bit AND a whole byte after the object. The
+# trailing data rule is checked first, so the reason is trailing_data: with a
+# byte after it, the object's byte is not the final byte of the stream.
+
+operation sequence
+name end-refuse-trailing-data-before-padding
+param step = bits 3
+param step = end
+bytes 0D 00
+expect refused trailing_data

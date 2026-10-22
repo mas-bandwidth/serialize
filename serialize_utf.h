@@ -270,7 +270,10 @@ inline int serialize_wide_to_utf8( const wchar_t * input, char * output, int out
 {
     if ( !input )
         return serialize_utf_refuse( output, output_size );
-    const int units = (int) wcslen( input );
+    const size_t length_units = wcslen( input );
+    if ( length_units > 0x7FFFFFFF )
+        return serialize_utf_refuse( output, output_size );            // too long to count in an int
+    const int units = (int) length_units;
     // through a local rather than tested inline, so MSVC /W4 does not flag the constant conditional
     const bool wide_wchar = sizeof( wchar_t ) >= 4;
     if ( wide_wchar )
@@ -326,7 +329,11 @@ inline int serialize_utf8_to_wide( const char * input, wchar_t * output, int out
         return serialize_utf_refuse( output, output_size );
     int input_bytes = 0;
     while ( input[input_bytes] != '\0' )
+    {
+        if ( input_bytes == 0x7FFFFFFF )
+            return serialize_utf_refuse( output, output_size );        // too long to count in an int
         input_bytes++;
+    }
     const bool wide_wchar = sizeof( wchar_t ) >= 4;
     int length = 0;
     int i = 0;

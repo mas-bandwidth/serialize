@@ -38,7 +38,9 @@ operation:
   zero and the subnormals are finite and keep their exact bits. A 1.1 stream
   carrying a non-finite pattern is refused by a 2.0 reader. [vectors: float-refuse-quiet-nan, double-refuse-positive-infinity, float-negative-zero, double-smallest-positive-denormal]
 * **`compressed_float` refuses a non-finite decode.** A declaration whose top
-  decodes to an infinity is non-conforming. [vectors: compressed-float-refuse-decode-rounding-to-infinity]
+  decodes to an infinity is now non-conforming as a whole, so its writer asserts
+  in checked builds even for values that decode finite; its bytes in release
+  are unchanged. [vectors: compressed-float-refuse-decode-rounding-to-infinity]
 * **`int_relative` refuses a non-canonical tier.** The absolute tier carrying a
   difference a bounded tier would have taken is refused as `non_canonical`. [vectors: absolute-refuse-non-canonical-difference-of-one, absolute-refuse-non-canonical-last-bounded-difference]
 * **`end` is new.** A reader that has read the last field of an object reads
@@ -261,8 +263,8 @@ A runtime whose ordinary number is a double carries the value in an integer
 type, a big integer, or a pair of exact halves, because a double holds every
 integer up to `2^53` and loses the rest: `2^53 + 1` rounds to `2^53`, `2^63 - 1`
 rounds to `2^63`, and `2^64 - 1` rounds past the width. The corpus pins the
-edges in threes around each limit, because a power of two survives a double and
-its neighbours do not. [vectors: bits-64-exact-2p53-minus-1, bits-64-exact-2p53, bits-64-exact-2p53-plus-1, bits-64-exact-2p63-minus-1, bits-64-exact-2p63, bits-64-exact-2p64-minus-1, int64-full-range-exact-2p53-minus-1, int64-full-range-exact-2p53, int64-full-range-exact-2p53-plus-1, int64-full-range-exact-minus-2p53-minus-1, int64-full-range-exact-2p63-minus-2, int64-full-range-exact-minus-2p63-plus-1, uint128-exact-2p53-plus-1, uint128-exact-2p64-minus-1, uint128-exact-2p64, uint128-exact-2p64-plus-1, uint128-exact-2p127, uint128-exact-2p128-minus-2, int128-full-range-exact-2p53-plus-1, int128-full-range-exact-2p63, int128-full-range-exact-2p64-plus-1, int128-full-range-exact-minus-2p64-minus-1, int128-full-range-exact-2p127-minus-2, int128-full-range-exact-minus-2p127-plus-1] [controls: int64-through-double]
+edges around each limit, because a power of two survives a double and its
+neighbours do not. [vectors: bits-64-exact-2p53-minus-1, bits-64-exact-2p53, bits-64-exact-2p53-plus-1, bits-64-exact-2p63-minus-1, bits-64-exact-2p63, bits-64-exact-2p64-minus-1, int64-full-range-exact-2p53-minus-1, int64-full-range-exact-2p53, int64-full-range-exact-2p53-plus-1, int64-full-range-exact-minus-2p53-minus-1, int64-full-range-exact-2p63-minus-2, int64-full-range-exact-minus-2p63-plus-1, uint128-exact-2p53-plus-1, uint128-exact-2p64-minus-1, uint128-exact-2p64, uint128-exact-2p64-plus-1, uint128-exact-2p127, uint128-exact-2p128-minus-2, int128-full-range-exact-2p53-plus-1, int128-full-range-exact-2p63, int128-full-range-exact-2p64-plus-1, int128-full-range-exact-minus-2p64-minus-1, int128-full-range-exact-2p127-minus-2, int128-full-range-exact-minus-2p127-plus-1] [controls: int64-through-double]
 
 ### fixed (Q format, ranged)
 
@@ -344,7 +346,7 @@ encoding, and the absolute one is a second encoding of it. The domain and
 ordering rule comes first, so a `current` outside the domain is
 `value_out_of_range` whatever its difference. The bounded tiers need no such
 rule, because each one's payload range starts one past the tier before it.
-[vectors: absolute-refuse-non-canonical-difference-of-one, absolute-refuse-non-canonical-last-bounded-difference, absolute-accept-domain-maximum-from-the-last-tier-boundary] [controls: int-relative-canonical]
+[vectors: absolute-refuse-past-domain-with-a-small-difference, absolute-refuse-non-canonical-difference-of-one, absolute-refuse-non-canonical-last-bounded-difference, absolute-accept-domain-maximum-from-the-last-tier-boundary] [controls: int-relative-canonical]
 
 ## Floating Point
 
@@ -457,7 +459,7 @@ as it reads the same operations unnested. [vectors: object-flat-twin, object-add
 sides already agree on it. The alignment is performed when `count` is zero too,
 so a zero-length field still pads to the byte boundary. A reader must perform
 and verify the same alignment, refusing set padding as `nonzero_padding`,
-before it reads the bytes. [vectors: bytes-zero-count-aligned-start, bytes-zero-count-still-performs-the-align, bytes-single-byte-aligned-start, bytes-all-zero, bytes-seven-bytes-aligned-start, bytes-after-a-partial-byte, bytes-accept-one-byte-after-the-align, sequence-bytes-realigns-a-mid-byte-stream, bytes-zero-count-refuse-non-zero-align-padding, bytes-refuse-non-zero-align-padding]
+before it reads the bytes, so set padding is refused as `nonzero_padding` even when the payload would also run past the end. [vectors: bytes-refuse-padding-before-a-truncated-payload, string-refuse-padding-before-a-truncated-payload, bytes-zero-count-aligned-start, bytes-zero-count-still-performs-the-align, bytes-single-byte-aligned-start, bytes-all-zero, bytes-seven-bytes-aligned-start, bytes-after-a-partial-byte, bytes-accept-one-byte-after-the-align, sequence-bytes-realigns-a-mid-byte-stream, bytes-zero-count-refuse-non-zero-align-padding, bytes-refuse-non-zero-align-padding]
 
 ### string
 
@@ -485,7 +487,8 @@ A reader must refuse a zero byte among the transmitted bytes as
 `embedded_nul`, before it checks the encoding: a zero byte gives the payload two
 lengths, the wire's and the one every consumer that stops at a zero computes,
 and whatever sits between them rides past whichever side uses the other. NUL is
-well-formed UTF-8, which is why this is its own rule. [vectors: string-refuse-nul-as-the-only-byte, string-refuse-nul-as-the-first-byte, string-refuse-nul-in-the-middle, string-refuse-nul-as-the-last-byte, string-accept-the-same-three-bytes-without-a-nul] [controls: string-embedded-nul, wrong-reason]
+well-formed UTF-8, which is why this is its own rule, and a payload that
+breaks both rules is refused as `embedded_nul`. [vectors: string-refuse-nul-before-encoding, string-refuse-nul-as-the-only-byte, string-refuse-nul-as-the-first-byte, string-refuse-nul-in-the-middle, string-refuse-nul-as-the-last-byte, string-accept-the-same-three-bytes-without-a-nul] [controls: string-embedded-nul, wrong-reason]
 
 **Validation refuses illegal byte sequences, and never a real character.** A
 reader must accept every well-formed payload and hand back exactly the bytes it
@@ -507,16 +510,23 @@ a measure's costs nothing. A reader reads its end after the last field of the
 top-level object it was handed, with the stream holding exactly the bytes the
 writer reported, and the end consumes the final byte's padding.
 
+A reader of a packet must read the end after the last field of the packet's
+top-level object. The guarantee that one value has one byte sequence holds for
+a read that ends this way: without the end, trailing bytes and padding go
+unexamined. [vectors: message-golden-whole, end-refuse-zero-byte-after-an-aligned-object, end-refuse-lowest-padding-bit]
+
 A reader's end must refuse a whole byte or more after the object as
-`trailing_data`, even a zero byte. [vectors: end-accept-empty-stream, end-refuse-one-zero-byte-after-the-empty-object, end-refuse-one-set-byte-after-the-empty-object, end-refuse-zero-byte-after-an-unaligned-object, end-accept-after-an-aligned-object, end-refuse-zero-byte-after-an-aligned-object, end-accept-after-bytes, end-refuse-a-byte-after-bytes] [controls: end-trailing-data]
+`trailing_data`, even a zero byte. Trailing data is checked first: a stream with
+a whole byte left over is `trailing_data` whatever its padding holds. [vectors: end-refuse-trailing-data-before-padding, end-accept-empty-stream, end-refuse-one-zero-byte-after-the-empty-object, end-refuse-one-set-byte-after-the-empty-object, end-refuse-zero-byte-after-an-unaligned-object, end-accept-after-an-aligned-object, end-refuse-zero-byte-after-an-aligned-object, end-accept-after-bytes, end-refuse-a-byte-after-bytes] [controls: end-trailing-data]
 
 A reader's end must refuse a set bit among the final byte's unused bits as
 `nonzero_padding`, and must not look at the bits that belong to the last field.
 [vectors: end-accept-after-three-bits, end-refuse-lowest-padding-bit, end-refuse-highest-padding-bit, end-accept-every-field-bit-set, end-accept-seven-bits-of-padding, end-refuse-seventh-padding-bit] [controls: end-padding]
 
 An end is a read like any other: on a failed stream it is refused with the
-first refusal's reason, and nothing can be read after an accepted end, because
-nothing is left. [vectors: end-refuse-after-a-refused-field-keeps-the-first-reason, end-then-a-further-read-is-past-the-end, message-golden-whole]
+first refusal's reason, and no bit can be read after an accepted end, because
+nothing is left. A zero-bit read still succeeds there, as it does anywhere a
+stream is exactly consumed. [vectors: end-refuse-after-a-refused-field-keeps-the-first-reason, end-then-a-further-read-is-past-the-end, message-golden-whole]
 
 ## Worked Example
 

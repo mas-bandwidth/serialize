@@ -8,3 +8,4 @@ string-refuse-nul-as-the-only-byte
 string-refuse-nul-as-the-first-byte
 string-refuse-nul-in-the-middle
 string-refuse-nul-as-the-last-byte
+string-refuse-nul-before-encoding

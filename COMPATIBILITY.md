@@ -45,10 +45,13 @@ carry keeps its exact bytes.** What breaks:
   `non_finite_float`, and asserted on write. A 1.1 stream that carried one is
   refused. Negative zero and the subnormals keep their exact bits.
 * **`compressed_float` refuses a non-finite decode**, which only a
-  non-conforming declaration can produce.
+  non-conforming declaration can produce: one whose top, `min + delta`, rounds
+  to an infinity. Such a declaration is now non-conforming as a whole, and its
+  writer asserts in checked builds even for values that decode finite.
 * **`int_relative` refuses the absolute tier carrying a bounded difference** as
   `non_canonical`. No conforming 1.1 writer emitted it; a 1.1 reader accepted it.
-* **`serialize_end` is new**, and a reader that calls it refuses trailing bytes
+* **`serialize_end` is new**, and a packet reader is required to call it after
+  its top-level object. A reader that calls it refuses trailing bytes
   (`trailing_data`) and a set padding bit in the final byte (`nonzero_padding`).
   A reader handed a buffer larger than the packet now refuses it at the end.
 * **Every refusal has a reason** from a closed list, `ReadStream::GetRefusal`

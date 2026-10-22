@@ -423,3 +423,13 @@ param previous = 100
 bytes 00 00 00 00
 expect refused past_end
 
+
+# Outside the domain with a difference of 1: the domain rule comes first, so
+# this is value_out_of_range and never non_canonical. A reader that tests the
+# difference first, or subtracts in 32 bits, reports the wrong reason.
+
+operation int_relative
+name absolute-refuse-past-domain-with-a-small-difference
+param previous = 2147483647
+bytes 00 00 00 00 20
+expect refused value_out_of_range
