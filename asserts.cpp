@@ -46,6 +46,7 @@
 
 #include <stdio.h>
 #include <stdint.h>
+#include <string.h>
 
 static int assert_fires = 0;
 static const char * assert_condition = "";
@@ -222,6 +223,139 @@ static void test_initialize_padded_refuses_a_short_destination()
     }
 }
 
+static void write_float_bits( uint32_t bits )
+{
+    uint8_t buffer[64];
+    serialize::WriteStream stream( buffer, (int64_t) sizeof( buffer ) );
+    float value;
+    memcpy( &value, &bits, 4 );
+    serialize::serialize_float_internal( stream, value );
+}
+
+static void write_double_bits( uint64_t bits )
+{
+    uint8_t buffer[64];
+    serialize::WriteStream stream( buffer, (int64_t) sizeof( buffer ) );
+    double value;
+    memcpy( &value, &bits, 8 );
+    serialize::serialize_double_internal( stream, value );
+}
+
+static void test_float_and_double_writes_assert_finite()
+{
+    printf( "  serialize_float, serialize_double, write_float, write_double\n" );
+
+    // STANDARD.md, "Floating Point": the format carries finite values only. Writing NaN or an
+    // infinity is the caller's contract violation, asserted like an out of range int
+    const uint32_t refused_floats[] = { 0x7F800000u, 0xFF800000u, 0x7FC00000u, 0x7F800001u, 0xFFFFFFFFu };
+    for ( int i = 0; i < (int) ( sizeof( refused_floats ) / sizeof( refused_floats[0] ) ); i++ )
+    {
+        reset();
+        write_float_bits( refused_floats[i] );
+        check( assert_fires > 0, "a non-finite float trips the assertion" );
+    }
+    printf( "      assertion: %s\n", assert_condition );
+
+    const uint64_t refused_doubles[] = { 0x7FF0000000000000ULL, 0xFFF0000000000000ULL, 0x7FF8000000000000ULL, 0x7FF0000000000001ULL };
+    for ( int i = 0; i < (int) ( sizeof( refused_doubles ) / sizeof( refused_doubles[0] ) ); i++ )
+    {
+        reset();
+        write_double_bits( refused_doubles[i] );
+        check( assert_fires > 0, "a non-finite double trips the assertion" );
+    }
+    printf( "      assertion: %s\n", assert_condition );
+
+    // the negative control: -0, the subnormals and the largest finite values are finite
+    const uint32_t kept_floats[] = { 0x80000000u, 0x00000001u, 0x807FFFFFu, 0x7F7FFFFFu, 0xFF7FFFFFu };
+    for ( int i = 0; i < (int) ( sizeof( kept_floats ) / sizeof( kept_floats[0] ) ); i++ )
+    {
+        reset();
+        write_float_bits( kept_floats[i] );
+        check( assert_fires == 0, "a finite float, -0 and subnormals included, does not trip it" );
+    }
+    const uint64_t kept_doubles[] = { 0x8000000000000000ULL, 0x0000000000000001ULL, 0x7FEFFFFFFFFFFFFFULL };
+    for ( int i = 0; i < (int) ( sizeof( kept_doubles ) / sizeof( kept_doubles[0] ) ); i++ )
+    {
+        reset();
+        write_double_bits( kept_doubles[i] );
+        check( assert_fires == 0, "a finite double does not trip it" );
+    }
+
+    // write_float narrows its argument to float first, and a finite double above FLT_MAX
+    // narrows to an infinity: the assertion sees what would be sent
+    {
+        reset();
+        uint8_t buffer[64];
+        serialize::WriteStream stream( buffer, (int64_t) sizeof( buffer ) );
+        const double huge = 1.0e300;
+        write_float( stream, huge );
+        check( assert_fires > 0, "write_float of a double that narrows to infinity trips it" );
+    }
+    {
+        reset();
+        uint8_t buffer[64];
+        serialize::WriteStream stream( buffer, (int64_t) sizeof( buffer ) );
+        write_float( stream, 1.5 );
+        write_double( stream, -0.0 );
+        check( assert_fires == 0, "write_float and write_double of finite values do not trip it" );
+    }
+    {
+        reset();
+        uint8_t buffer[64];
+        serialize::WriteStream stream( buffer, (int64_t) sizeof( buffer ) );
+        uint64_t nan_bits = 0x7FF8000000000000ULL;
+        double nan_value;
+        memcpy( &nan_value, &nan_bits, 8 );
+        write_double( stream, nan_value );
+        check( assert_fires > 0, "write_double of NaN trips it" );
+    }
+}
+
+static void test_compressed_float_declaration_top_must_decode_finite()
+{
+    printf( "  serialize_compressed_float declaration\n" );
+
+    // [3 * 2^103, FLT_MAX] at resolution 2^104: delta and values are finite, and the top
+    // integer decodes to min + delta, which rounds to +inf. A non-conforming declaration
+    const float min = 3.0f * 10141204801825835211973625643008.0f;
+    const float max = 340282346638528859811704183484516925440.0f;
+    const float res = 20282409603651670423947251286016.0f;
+    {
+        reset();
+        uint8_t buffer[64];
+        serialize::WriteStream stream( buffer, (int64_t) sizeof( buffer ) );
+        float value = 1.0e38f;
+        serialize::serialize_compressed_float_internal( stream, value, min, max, res );
+        check( assert_fires > 0, "writing through a declaration whose top decodes to infinity trips the assertion" );
+        printf( "      assertion: %s\n", assert_condition );
+    }
+    {
+        reset();
+        uint8_t buffer[64];
+        serialize::ReadStream stream( buffer, 8 );
+        float value = 0.0f;
+        serialize::serialize_compressed_float_internal( stream, value, min, max, res );
+        check( assert_fires == 0, "reading through it does not: the reader refuses at runtime instead" );
+    }
+    {
+        reset();
+        uint8_t buffer[64];
+        serialize::WriteStream stream( buffer, (int64_t) sizeof( buffer ) );
+        float value = 1.0f;
+        const float delta = max - min;
+        serialize::serialize_compressed_float_precomputed_internal( stream, value, 16777214u, 24, delta, min );
+        check( assert_fires > 0, "and so does writing through its precomputed constants" );
+    }
+    {
+        reset();
+        uint8_t buffer[64];
+        serialize::WriteStream stream( buffer, (int64_t) sizeof( buffer ) );
+        float value = 3.0e38f;
+        serialize::serialize_compressed_float_internal( stream, value, 0.0f, 3.0e38f, 1.0e30f );
+        check( assert_fires == 0, "writing the top of a wide declaration that decodes finite does not trip it" );
+    }
+}
+
 int main()
 {
     printf( "\nwrite side assertions\n\n" );
@@ -232,6 +366,8 @@ int main()
     test_serialize_int_compile_time_asserts_on_the_callers_value();
 #endif
     test_initialize_padded_refuses_a_short_destination();
+    test_float_and_double_writes_assert_finite();
+    test_compressed_float_declaration_top_must_decode_finite();
 
     if ( failures > 0 )
     {

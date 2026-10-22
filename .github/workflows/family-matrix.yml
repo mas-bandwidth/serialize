@@ -1,7 +1,7 @@
 name: Family Matrix
 
-# The compatibility matrix is a gate, not a page. COMPATIBILITY.txt claims that nine
-# releases carry format version 1.1 and vendor one pinned commit of this repository's
+# The compatibility matrix is a gate, not a page. COMPATIBILITY.txt claims that its
+# releases carry one format version and vendor one pinned commit of this repository's
 # standard and corpus. This job proves every row of that claim against the actual
 # repositories, rather than against the claim itself.
 #

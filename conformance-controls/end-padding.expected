@@ -1,0 +1,9 @@
+# The vectors a reader fails when this rule is deleted, and no others:
+# an end refuses non-zero padding in the final byte.
+#
+# CMakeLists.txt builds that reader, and ctest requires its failures to be
+# exactly this list. A vector added to the corpus that pins the rule belongs here.
+
+end-refuse-lowest-padding-bit
+end-refuse-highest-padding-bit
+end-refuse-seventh-padding-bit

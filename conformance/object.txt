@@ -104,11 +104,11 @@ param step = object 1
 param step = align
 param step = bits 8
 bytes FD AB
-expect refused
+expect refused nonzero_padding
 
 operation sequence
 name object-refusal-past-the-end-propagates
 param step = object 1
 param step = bits 16
 bytes FF
-expect refused
+expect refused past_end

@@ -50,7 +50,7 @@ name bytes-zero-count-refuse-non-zero-align-padding
 param preceding_bits = 3
 param count = 0
 bytes FD
-expect refused
+expect refused nonzero_padding
 
 operation bytes
 name bytes-single-byte-aligned-start
@@ -95,14 +95,14 @@ name bytes-refuse-non-zero-align-padding
 param preceding_bits = 4
 param count = 2
 bytes FA AB CD
-expect refused
+expect refused nonzero_padding
 
 operation bytes
 name bytes-refuse-past-end
 param preceding_bits = 0
 param count = 4
 bytes DE AD BE
-expect refused
+expect refused past_end
 
 # The align lands exactly on the end of the stream and there is nothing left
 # for the payload. A reader that checks the length before aligning accepts.
@@ -112,7 +112,7 @@ name bytes-refuse-past-end-after-the-align
 param preceding_bits = 1
 param count = 1
 bytes 01
-expect refused
+expect refused past_end
 
 operation bytes
 name bytes-accept-one-byte-after-the-align

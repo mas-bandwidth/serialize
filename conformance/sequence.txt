@@ -18,7 +18,7 @@
 #     align                                          float
 #     bytes <count>                                  double
 #     string <buffer_size>                           uint128
-#     wstring <buffer_size>                          int <min> <max>
+#     end                                            int <min> <max>
 #     int64 <min> <max>                              int128 <min> <max>
 #     int_relative <previous>
 #     compressed_float <min> <max> <res>
@@ -97,7 +97,7 @@ param step = bits 3
 param step = align
 param step = bits 8
 bytes FD AB
-expect refused
+expect refused nonzero_padding
 
 # A second align costs nothing, because the first one left the stream aligned.
 
@@ -141,21 +141,6 @@ consumed 64
 measure_at_least 64
 writer canonical
 
-# The narrow string aligns and the wide string does not, in one stream: the
-# string ends byte-aligned at bit 32, and the wstring's three-bit length field
-# then puts its single character at bit 35. An implementation that mirrors the
-# narrow path in the wide one moves every byte from index 4 onward.
-
-operation sequence
-name sequence-string-aligns-and-wstring-does-not
-param step = string 16
-param step = wstring 8
-bytes 03 61 62 63 09 02 00 00 00
-expect value = 61 62 63 | 0041
-consumed 67
-measure_at_least 70
-writer canonical
-
 # float is bit-transparent at any bit index, and nothing aligns around it: the
 # bool before it leaves the stream at bit 1 and the 32-bit group runs from
 # there to bit 33.
@@ -181,7 +166,7 @@ name sequence-refusal-is-terminal-after-a-range-refusal
 param step = int 0 8
 param step = bits 8
 bytes 09 AB
-expect refused
+expect refused value_out_of_range
 
 # Terminal failure after a PAST-END refusal, with a zero-bit operation as the
 # successor: a degenerate range consumes nothing and would otherwise always
@@ -193,7 +178,7 @@ name sequence-refusal-is-terminal-before-a-zero-bit-field
 param step = bits 16
 param step = int 7 7
 bytes FF
-expect refused
+expect refused past_end
 
 # The same vector with a degenerate FIXED POINT field as the successor. The two
 # are twins on purpose: a zero-bit field is zero bits whatever operation
@@ -207,14 +192,15 @@ name sequence-refusal-is-terminal-before-a-zero-bit-fixed-field
 param step = bits 16
 param step = fixed 16 16 7 7
 bytes FF
-expect refused
+expect refused past_end
 
 # Terminal failure inside a composite: the string's payload runs past the end,
-# and the wstring after it must refuse rather than resynchronize.
+# and the second string after it must refuse rather than resynchronize, though
+# the bytes left could be read as one.
 
 operation sequence
 name sequence-refusal-is-terminal-after-a-string-refusal
 param step = string 16
-param step = wstring 8
+param step = string 16
 bytes 06 67 6F 6C
-expect refused
+expect refused past_end

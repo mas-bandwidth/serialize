@@ -90,7 +90,7 @@ param min = 0
 param max = 10
 param res = 0.01
 bytes E9 03
-expect refused
+expect refused value_out_of_range
 
 operation compressed_float
 name compressed-float-refuse-integer-all-ten-bits
@@ -98,7 +98,7 @@ param min = 0
 param max = 10
 param res = 0.01
 bytes FF 03
-expect refused
+expect refused value_out_of_range
 
 # A NON-ZERO min, where the reader's second rounding becomes visible: the
 # product rounds BEFORE min is added, and a fused decode lands one ulp away.
@@ -165,7 +165,7 @@ param min = -100
 param max = 100
 param res = 0.01
 bytes 21 4E
-expect refused
+expect refused value_out_of_range
 
 operation compressed_float
 name compressed-float-nonzero-min-refuse-integer-all-fifteen-bits
@@ -173,7 +173,7 @@ param min = -100
 param max = 100
 param res = 0.01
 bytes FF 7F
-expect refused
+expect refused value_out_of_range
 
 # The integer clamp's band, the first of the two declarations STANDARD.md names
 # (schema#109, adopted 2026-08-23): [0, 8388609] at resolution 1. Here
@@ -213,7 +213,7 @@ param min = 0
 param max = 8388609
 param res = 1
 bytes 02 00 80
-expect refused
+expect refused value_out_of_range
 
 operation compressed_float
 name compressed-float-clamp-band-refuse-integer-all-twenty-four-bits
@@ -221,7 +221,7 @@ param min = 0
 param max = 8388609
 param res = 1
 bytes FF FF FF
-expect refused
+expect refused value_out_of_range
 
 operation compressed_float
 name compressed-float-clamp-band-integer-zero
@@ -296,7 +296,7 @@ param min = 0
 param max = 8589934592
 param res = 1
 bytes 01 FF FF FF
-expect refused
+expect refused value_out_of_range
 
 operation compressed_float
 name compressed-float-values-clamped-refuse-integer-all-thirty-two-bits
@@ -304,7 +304,7 @@ param min = 0
 param max = 8589934592
 param res = 1
 bytes FF FF FF FF
-expect refused
+expect refused value_out_of_range
 
 # The LOW end of the values clamp: delta / res is below 1, so values clamps to
 # 1, max_integer_value is 1 and the field is a single bit. Every code is legal
@@ -336,7 +336,7 @@ param min = 0
 param max = 10
 param res = 0.01
 bytes FF
-expect refused
+expect refused past_end
 
 operation compressed_float
 name compressed-float-refuse-past-end-empty-stream
@@ -344,4 +344,92 @@ param min = 0
 param max = 10
 param res = 0.01
 bytes
-expect refused
+expect refused past_end
+
+# ---------------------------------------------------------------------------
+# WRITER INPUTS. A record carrying `writer_input bits = 0x...` hands a writer
+# that float and requires it to emit exactly the record's bytes, which is how
+# the quantization arithmetic is pinned for values that do not decode back to
+# themselves. These are the values STANDARD.md names: between quanta, where a
+# writer that widens to double writes 0, 2, 10 and 999 instead, and 2^23 in the
+# clamp band, where a writer that fuses the multiply and the add moves the
+# integer. The record's `expect bits` is the decode of the same bytes.
+
+operation compressed_float
+name compressed-float-writer-input-0p005-over-0-10
+param min = 0
+param max = 10
+param res = 0.01
+writer_input bits = 0x3BA3D70A
+bytes 01 00
+expect bits = 0x3C23D70B
+consumed 10
+
+operation compressed_float
+name compressed-float-writer-input-0p025-over-0-10
+param min = 0
+param max = 10
+param res = 0.01
+writer_input bits = 0x3CCCCCCD
+bytes 03 00
+expect bits = 0x3CF5C290
+consumed 10
+
+operation compressed_float
+name compressed-float-writer-input-0p105-over-0-10
+param min = 0
+param max = 10
+param res = 0.01
+writer_input bits = 0x3DD70A3D
+bytes 0B 00
+expect bits = 0x3DE147AE
+consumed 10
+
+operation compressed_float
+name compressed-float-writer-input-9p995-over-0-10
+param min = 0
+param max = 10
+param res = 0.01
+writer_input bits = 0x411FEB85
+bytes E8 03
+expect bits = 0x41200000
+consumed 10
+
+# 8388608.0 over [0, 16777215] at resolution 1: the product rounds to float32
+# before 0.5 is added. A fused writer emits a different integer here.
+
+operation compressed_float
+name compressed-float-writer-input-fusion-witness-2p23
+param min = 0
+param max = 16777215
+param res = 1
+writer_input bits = 0x4B000000
+bytes 00 00 80
+expect bits = 0x4B000000
+consumed 24
+
+# ---------------------------------------------------------------------------
+# THE DECODE MUST BE FINITE. Over [3 * 2^103, FLT_MAX] at resolution 2^104,
+# delta and delta / res are finite, and still the top integer decodes to
+# min + delta, which rounds to 2^128: +inf. STANDARD.md makes such a
+# declaration non-conforming, asserted in checked builds where it is derived,
+# and makes every reader refuse a non-finite decode in every build, so no
+# declaration can hand NaN or infinity to the far side of the wire. The integer
+# one below the top decodes finite and is accepted.
+
+operation compressed_float
+name compressed-float-refuse-decode-rounding-to-infinity
+param min = 30423614405477505635920876929024
+param max = 340282346638528859811704183484516925440
+param res = 20282409603651670423947251286016
+bytes FE FF FF
+expect refused non_finite_float
+
+operation compressed_float
+name compressed-float-accept-finite-decode-below-the-top
+param min = 30423614405477505635920876929024
+param max = 340282346638528859811704183484516925440
+param res = 20282409603651670423947251286016
+bytes FD FF FF
+expect bits = 0x7F7FFFFE
+consumed 24

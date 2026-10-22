@@ -11,7 +11,7 @@ import (
 
 // The golden message, as a step list built from STANDARD.md's rules alone.
 //
-// STANDARD.md's Worked Example prints this message's 112 bytes, and this is where that
+// STANDARD.md's Worked Example prints this message's bytes, and this is where that
 // claim is proved. The steps below are the operation sequence and the values, and the
 // bytes come out of the corpus encoder in corpus.go, which is written from the document
 // and knows nothing about serialize.h. Three things are then required to agree: the bytes
@@ -64,7 +64,8 @@ func goldenMessageSteps() []*step {
 		{kind: stepAlign},
 		{kind: stepBytes, width: 7, data: []byte{0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0x01}},
 		{kind: stepString, width: 16, data: []byte("golden")},
-		{kind: stepWString, width: 8, units: []uint16{0x043C, 0x0438, 0x0440}},
+		// go stones, U+7881 U+77F3: real text, as the UTF-8 bytes the wire carries
+		{kind: stepString, width: 8, data: []byte{0xE7, 0xA2, 0x81, 0xE7, 0x9F, 0xB3}},
 		{kind: stepAlign},
 		fixed(8, n(-100), n(100), n(-832)),
 		fixed(16, n(-2000), n(2000), q16_16),
@@ -73,6 +74,8 @@ func goldenMessageSteps() []*step {
 		{kind: stepAlign},
 		fixed(16, neg(pow2(57)), pow2(57), q112_16),
 		fixed(64, neg(pow2(63)), new(big.Int).Sub(pow2(63), n(1)), q64_64),
+		// the message ends here, and so must the stream
+		{kind: stepEnd},
 	}
 }
 
@@ -107,7 +110,9 @@ func formatGoldenBytes(data []byte) string {
 // goldenBytesFromStandard reads the byte block STANDARD.md prints under the marker line,
 // exactly as hexArray reads a byte array out of serialize.h. The page is a source of
 // bytes here, not prose: if it drifts, this goes red.
-var goldenPageMarker = "The whole message is 112 bytes:"
+// The marker carries the byte count, so it is matched as a pattern: the count is the
+// page's prose, the bytes under it are what is checked.
+var goldenPageMarker = regexp.MustCompile(`The whole message is \d+ bytes:`)
 
 func goldenBytesFromStandard(path string) ([]byte, error) {
 	text, err := os.ReadFile(path)
@@ -117,13 +122,13 @@ func goldenBytesFromStandard(path string) ([]byte, error) {
 	lines := strings.Split(string(text), "\n")
 	start := -1
 	for i, line := range lines {
-		if strings.Contains(line, goldenPageMarker) {
+		if goldenPageMarker.MatchString(line) {
 			start = i + 1
 			break
 		}
 	}
 	if start < 0 {
-		return nil, fmt.Errorf("STANDARD.md does not carry the line %q, so the page's golden bytes cannot be found", goldenPageMarker)
+		return nil, fmt.Errorf("STANDARD.md does not carry a line matching %q, so the page's golden bytes cannot be found", goldenPageMarker)
 	}
 	pair := regexp.MustCompile(`0x([0-9A-Fa-f]{2})`)
 	var out []byte
@@ -166,14 +171,14 @@ func checkGoldenMessage(c *checker, standardPath string, pinned []byte) {
 	consumed := w.i
 	encoded := w.flush()
 
-	c.eq("golden message: the document's own encoder reproduces the C++ writer's 112 bytes",
+	c.eq(fmt.Sprintf("golden message: the document's own encoder reproduces the C++ writer's %d bytes", len(pinned)),
 		fmt.Sprintf("%X", encoded), fmt.Sprintf("%X", pinned))
 
 	if os.Getenv("SERIALIZE_PRINT_GOLDEN") != "" {
 		parts := make([]string, 0, len(steps))
 		for _, st := range steps {
 			switch st.kind {
-			case stepAlign:
+			case stepAlign, stepEnd:
 				parts = append(parts, "-")
 			case stepFloat, stepDouble, stepCompressedFloat, stepBits:
 				parts = append(parts, fmt.Sprintf("0x%X", st.bits))

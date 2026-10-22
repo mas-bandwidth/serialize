@@ -1,0 +1,8 @@
+# The vectors a reader fails when this rule is deleted, and no others:
+# the absolute tier refuses a difference a bounded tier carries.
+#
+# CMakeLists.txt builds that reader, and ctest requires its failures to be
+# exactly this list. A vector added to the corpus that pins the rule belongs here.
+
+absolute-refuse-non-canonical-difference-of-one
+absolute-refuse-non-canonical-last-bounded-difference

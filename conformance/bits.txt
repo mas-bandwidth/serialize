@@ -33,9 +33,9 @@ expect value = 1
 consumed 1
 writer canonical
 
-# The low bit is the value; STANDARD.md, "Trailing bits": readers must not
-# reject a stream for the contents of the unused bits of the final byte. This
-# vector is reader-only because no conforming writer emits those bits set.
+# The low bit is the value, and a field read looks at its own bits and no
+# others: the other seven belong to whatever reads next. Only an end looks at
+# the unused bits of a final byte (end.txt), so this one-bit read is accepted.
 
 operation bits
 name bits-1-reader-ignores-trailing-bits
@@ -151,13 +151,13 @@ operation bits
 name bits-refuse-past-end-empty-stream
 param bits = 1
 bytes
-expect refused
+expect refused past_end
 
 operation bits
 name bits-refuse-past-end-16-of-8
 param bits = 16
 bytes FF
-expect refused
+expect refused past_end
 
 operation bits
 name bits-accept-16-of-16
@@ -171,10 +171,68 @@ operation bits
 name bits-refuse-past-end-33-of-32
 param bits = 33
 bytes FF FF FF FF
-expect refused
+expect refused past_end
 
 operation bits
 name bits-refuse-past-end-64-of-56
 param bits = 64
 bytes FF FF FF FF FF FF FF
-expect refused
+expect refused past_end
+
+# ---------------------------------------------------------------------------
+# WIDE INTEGERS ARE EXACT (STANDARD.md, "Wide integers are exact"). A 64 or
+# 128 bit value is an integer on the wire and must be one in every reader: an
+# implementation that carries it through a double holds every integer up to
+# 2^53 and loses the rest. The edges come in threes around each limit, because
+# a power of two survives a double and its neighbours do not: 2^53 + 1 is the
+# first integer a double cannot hold, 2^63 - 1 rounds up to 2^63, and 2^64 - 1
+# rounds past the width entirely. A reader that passes every vector below
+# carries the width exactly.
+
+operation bits
+name bits-64-exact-2p53-minus-1
+param bits = 64
+bytes FF FF FF FF FF FF 1F 00
+expect value = 9007199254740991
+consumed 64
+writer canonical
+
+operation bits
+name bits-64-exact-2p53
+param bits = 64
+bytes 00 00 00 00 00 00 20 00
+expect value = 9007199254740992
+consumed 64
+writer canonical
+
+operation bits
+name bits-64-exact-2p53-plus-1
+param bits = 64
+bytes 01 00 00 00 00 00 20 00
+expect value = 9007199254740993
+consumed 64
+writer canonical
+
+operation bits
+name bits-64-exact-2p63-minus-1
+param bits = 64
+bytes FF FF FF FF FF FF FF 7F
+expect value = 9223372036854775807
+consumed 64
+writer canonical
+
+operation bits
+name bits-64-exact-2p63
+param bits = 64
+bytes 00 00 00 00 00 00 00 80
+expect value = 9223372036854775808
+consumed 64
+writer canonical
+
+operation bits
+name bits-64-exact-2p64-minus-1
+param bits = 64
+bytes FF FF FF FF FF FF FF FF
+expect value = 18446744073709551615
+consumed 64
+writer canonical

@@ -1,0 +1,26 @@
+# The vectors a reader fails when this rule is deleted, and no others:
+# a ranged int whose offset is past the span is refused.
+#
+# CMakeLists.txt builds that reader, and ctest requires its failures to be
+# exactly this list. A vector added to the corpus that pins the rule belongs here.
+
+end-refuse-after-a-refused-field-keeps-the-first-reason
+int-range-0-8-refuse-offset-one-past-the-span
+int-range-0-8-refuse-offset-fifteen
+int-range-0-2-refuse-offset-three
+int-negative-min-refuse-offset-one-past-the-span
+int-negative-min-refuse-offset-all-ones
+int-span-31-bits-refuse-offset-one-past-the-span
+bounded-3-refuse-payload-one-past-the-span
+bounded-3-refuse-payload-all-three-bits
+bounded-5-refuse-payload-one-past-the-span
+bounded-5-refuse-payload-all-five-bits
+bounded-9-refuse-payload-one-past-the-span
+bounded-9-refuse-payload-all-nine-bits
+bounded-13-refuse-payload-one-past-the-span
+bounded-13-refuse-payload-all-thirteen-bits
+bounded-17-refuse-payload-one-past-the-span
+bounded-17-refuse-payload-all-seventeen-bits
+sequence-refusal-is-terminal-after-a-range-refusal
+string-refuse-length-one-past-the-buffer
+string-refuse-length-all-four-bits

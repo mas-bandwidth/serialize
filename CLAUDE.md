@@ -29,7 +29,14 @@ DECISIONS THAT READ AS BUGS (they are not — do not "fix" them)
   first refusal poisons `BitReader`'s position past the end, so the past-end check every read
   already performs refuses every later read — the latch costs the read path nothing. `Initialize`
   clears it. Refusals decided outside the stream route through `serialize::serialize_fail`.
-- `wstring` is 32 bits per character on the wire, for portability across 2/4-byte platforms.
+- **Format 2.0 (2026-10-22): the wire carries only integers and bytes, and every value has exactly one
+  encoding.** float/double are finite only (NaN/inf refused on read as non_finite_float, asserted on
+  write; -0 and subnormals bit exact); `wstring` is GONE (text is UTF-8 `string`; serialize_utf.h is the
+  migration helper, outside the format); `serialize_end` refuses trailing_data and nonzero_padding;
+  int_relative's absolute tier refuses a bounded difference as non_canonical. Every refusal carries a
+  reason from the closed list (`serialize::Refusal`, `ReadStream::GetRefusal`), and every rule in
+  STANDARD.md cites its vectors (tools/conformance fails an uncited rule). Do not reintroduce NaN
+  transparency or wstring.
 - **The `__restrict`-qualified `this` on BitWriter::WriteBits/WriteBytes/FlushBits is a
   measured optimization (writes up to +152% in generated code), not decoration** — and the
   spelling matters: LLVM DROPS restrict on data members (a member `__restrict` is a silent
@@ -54,7 +61,7 @@ DELIBERATELY ASSERT-ONLY ON WRITE, do NOT "fix":
     assert even in debug -- and the flush memcpys 8 bytes at offset 96, four PAST the end.
     Proved with a canary, 2026-07-26. Still the caller's responsibility: pass a multiple of 8.
     (yojimbo satisfies it on purpose at yojimbo_connection.cpp:248, `maxPacketBytes &= ~7`.)
-  - serialize_copy_string / serialize_copy_wstring (:3172, :3186) with dest_size 0 -- the
+  - serialize_copy_string with dest_size 0 -- the
     same size_t underflow as reliable_copy_string.
 NOTE FOR ANY SANITIZER WORK HERE: ASan does NOT report that FlushBits overflow. It is a
 partial-granule write (8 bytes at offset 96 of a 100-byte allocation) and ASan is blind to
@@ -153,17 +160,20 @@ performance work here must not relearn:
   with CONFIGURE_DEPENDS so an added or removed file re-runs it, and an empty directory is a
   configure error. It is deliberately not generated from this code: a suite that regenerates its
   own expectations proves only that the library agrees with itself.
-- Three ctest targets are NEGATIVE CONTROLS, inverted with `WILL_FAIL`, and they exist because a
-  gate nobody has seen go red is a claim rather than a measurement:
-  `conformance-control-unknown-operation` proves the runner fails a vector whose operation it
-  cannot drive, and the four `conformance-control-*` sabotage targets each build a scratch copy
-  of the header with one line of a refusal rule deleted and require the corpus to go red on
-  exactly the vectors that pin it: the align zero-padding check, the ranged int's
-  reconstruction, the ranged int's range check, and the failure state consult in the degenerate
-  fixed point field. A needle that stops matching is a configure error, never a silent no-op. A
-  rule guarded twice cannot be controlled this way, which is why the read side range rule lives
-  in exactly one place at each width.
-- The whole 112-byte golden message is printed in STANDARD.md and carried in
+- The ctest targets named `conformance-control-*` are NEGATIVE CONTROLS, and they exist because a
+  gate nobody has seen go red is a claim rather than a measurement.
+  `conformance-control-unknown-operation` (inverted with `WILL_FAIL`) proves the runner fails a
+  vector whose operation it cannot drive. Each sabotage control builds a scratch copy of the header
+  with one line of a refusal rule deleted, runs the corpus with `--expect-failures`, and passes only
+  when the failing vectors are EXACTLY the ones `conformance-controls/<control>.expected` names: the
+  align padding, the ranged int's reconstruction and range check, the degenerate fixed field's
+  failure-state consult, the float, double and compressed float finite rules, the end's trailing
+  data and padding rules, int_relative's canonical tier, the string NUL, UTF-8 and encoded
+  surrogate rules, a 64 bit reconstruction through a double, and a wrong refusal reason. A needle
+  that stops matching, or a control with no .expected list, is a configure error. A rule guarded
+  twice cannot be controlled this way, which is why each read side rule lives in exactly one place.
+  The Go checker carries the citation check's own control (`conformance-controls/uncited-rule.md`).
+- The whole 106-byte golden message is printed in STANDARD.md and carried in
   `conformance/message.txt`. Its bytes come from the corpus encoder in `tools/conformance`,
   which is written from the document, and the same tool requires that encoder, the page's byte
   block and `golden_wire_bytes` to agree byte for byte. An implementation's output never
@@ -254,10 +264,8 @@ confirmed as intentional design:
   0 to 2^31 - 1, and has no wrap semantics.
 - **A refused read leaves a scalar destination unwritten, and failure is
   terminal**: the stream refuses every later read until it is re-initialized.
-  A read into a caller-owned buffer (`bytes`, `string`, `wstring`) leaves that
+  A read into a caller-owned buffer (`bytes`, `string`) leaves that
   buffer unspecified, and the copy paths are not restructured for it.
-- `wstring` wire format is 32 bits per character — portable across 2/4-byte
-  `wchar_t` platforms, but wasteful.
 - `MeasureStream` is conservative: every align counts as 7 bits.
 
 ### Bottom line

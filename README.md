@@ -11,7 +11,8 @@ It has the following features:
 * Serialize a bool with only one bit
 * Serialize any integer value from [1,64] bits writing only that number of bits to the buffer
 * Serialize signed integer values with [min,max] writing only the required bits to the buffer, down to zero bits when min == max
-* Serialize floats, doubles, compressed floats, strings, byte arrays, and integers relative to another integer
+* Serialize finite floats and doubles bit exact, compressed floats, UTF-8 strings, byte arrays, and integers relative to another integer
+* Every value has exactly one encoding: readers refuse anything a correct writer cannot produce, with the reason, and `serialize_end` refuses trailing data
 * Serialize fixed point values with a compile time Q format and [min,max] bounds in whole units, writing only the required bits — round trips are exact, unlike compressed floats. Wide formats like Q112.16 work on every platform
 * Serialize 128 bit unsigned integers on every platform: native __int128 where the compiler has it, an emulated signed/unsigned pair where it doesn't, byte-identical on the wire
 * Alignment support so you can align your bitstream to a byte boundary whenever you want
@@ -27,7 +28,7 @@ serialize is in `homebrew/core`, so no tap is needed:
 brew install serialize
 ```
 
-That installs `serialize.h` and the CMake package config, so both `#include <serialize.h>` and `find_package(serialize CONFIG)` work. It is a single header, so copying `serialize.h` into your project works just as well. [BUILDING.md](BUILDING.md) covers building the tests, CMake consumption and the version claims.
+That installs `serialize.h` and the CMake package config, so both `#include <serialize.h>` and `find_package(serialize CONFIG)` work. It is a single header, so copying `serialize.h` into your project works just as well. `serialize_utf.h`, beside it, converts wide text to UTF-8 and back for code that used `serialize_wstring` before 2.0. [BUILDING.md](BUILDING.md) covers building the tests, CMake consumption and the version claims.
 
 # Usage
 
@@ -151,22 +152,25 @@ See [example.cpp](example.cpp) for more.
 
 Packets come off the network, so the read path validates in release builds and drops invalid data. Three rules govern what happens when it does, and code that reads packets should be written against them:
 
-* **A refused read leaves your value alone.** When a read of a scalar fails, the variable you passed holds exactly what it held before the call. You never end up holding a value the stream did not carry. The exception is a read into a buffer you own — `serialize_bytes`, `serialize_string` and `serialize_wstring` — where the buffer's contents after a refusal are unspecified.
+* **A refused read leaves your value alone.** When a read of a scalar fails, the variable you passed holds exactly what it held before the call. You never end up holding a value the stream did not carry. The exception is a read into a buffer you own — `serialize_bytes` and `serialize_string` — where the buffer's contents after a refusal are unspecified.
 * **Failure is terminal.** Nothing after a failing read has a defined position, so nothing after it is interpretable. The first refused read fails the `ReadStream`, and every later read on that stream fails too, consuming no bits and writing nothing. The stream recovers only when you point it at a new buffer with `Initialize` or `InitializePadded`, or discard it. You do not have to check the return code of every read to stay safe — though the serialize macros do it for you anyway, by returning `false` out of your serialize function the moment a read fails.
-* **Ranges are refused, never clamped.** A value off the wire outside `[min,max]`, an offset past its span, non-zero alignment padding, a malformed UTF-8 or UTF-16 payload: each fails the read rather than being repaired into something plausible.
+* **Ranges are refused, never clamped.** A value off the wire outside `[min,max]`, an offset past its span, non-zero alignment padding, a malformed UTF-8 payload or a zero byte inside one, a float or double that is NaN or infinite: each fails the read rather than being repaired into something plausible.
+* **Every refusal has a reason.** `ReadStream::GetRefusal` returns the first refusal's reason from the closed list in STANDARD.md (`past_end`, `value_out_of_range`, `nonzero_padding`, `trailing_data`, `non_finite_float`, `invalid_utf8`, `embedded_nul`, `non_canonical`), and `serialize::refusal_name` spells it as every implementation in the family does.
+* **A packet ends where its object does.** Call `serialize_end( stream )` after the last field of the packet's top level object, and initialize the read stream with exactly the bytes the writer reported. The end refuses a whole byte left over (`trailing_data`) and a set bit in the final byte's padding (`nonzero_padding`), so one value always reads from one byte sequence. On write and measure it does nothing.
 
-`serialize_int_relative` carries one more rule worth stating on its own. It encodes a strictly increasing sequence over the domain `0` to `2^31 - 1`, and there are no wrap semantics: a caller with a wrapping counter unwraps it before serializing. Both the previous and the current value lie in that domain. The previous value is your own state and never arrives off the wire, so one outside the domain — negative, or `2^31` and above — is caller error, and debug builds assert it. The current value does arrive off the wire: every tier reconstructs it in a width that cannot wrap, then checks it against the domain and against the previous value, and refuses the read unless it lies in the domain and is strictly greater.
+`serialize_int_relative` carries one more rule worth stating on its own. It encodes a strictly increasing sequence over the domain `0` to `2^31 - 1`, and there are no wrap semantics: a caller with a wrapping counter unwraps it before serializing. Both the previous and the current value lie in that domain. The previous value is your own state and never arrives off the wire, so one outside the domain — negative, or `2^31` and above — is caller error, and debug builds assert it. The current value does arrive off the wire: every tier reconstructs it in a width that cannot wrap, then checks it against the domain and against the previous value, and refuses the read unless it lies in the domain and is strictly greater. The absolute tier carrying a difference a smaller tier would have taken is refused as non-canonical.
 
 The wire format itself is specified in [STANDARD.md](STANDARD.md), and the vectors every implementation in the family must agree on live in [conformance/](conformance). The test suite runs all of them.
 
-serialize is one of nine implementations of that format, in C, C++, C#, Dart, Elixir, Go, Java, JavaScript and Rust. Two endpoints interoperate when they run releases carrying the same format version, and [COMPATIBILITY.md](COMPATIBILITY.md) lists the release of each implementation that carries the current one.
+serialize is the reference implementation of that format, and the family ports it to C, C#, Dart, Elixir, Go, Java, JavaScript, Rust, Lua, Luau, Squirrel, Goose, Lobster and moo. Two endpoints interoperate when they run releases carrying the same format version, and [COMPATIBILITY.md](COMPATIBILITY.md) lists the release of each implementation that carries the current one.
 
 # Limitations
 
 * Write buffer sizes must be a multiple of 8 bytes, because the bit writer flushes qwords to memory. Bytes past the end of the written data are only ever written as zeros. Buffers do not need any particular alignment: all memory access goes through memcpy.
 * Read buffer sizes may be any number of bytes, but the underlying allocation must extend at least 8 bytes past the end of the packet data, because the bit reader loads 64 bit windows at byte granularity. The bytes past the end are loaded but never interpreted. A payload in an exactly sized allocation does not meet that contract: `ReadStream::InitializePadded` copies it into a destination you supply, zeroes the 8 slack bytes, and refuses in every build a destination too small to hold both.
 * Buffer sizes are effectively unlimited, because bit counts are stored in 64 bit signed integers.
-* Wide strings are serialized as 32 bits per UTF-16 code unit, so streams are byte identical between platforms with 2 and 4 byte wchar_t. A platform with 4 byte wchar_t converts at the boundary: a code point above 0xFFFF splits into its surrogate pair on write, and the pair recombines on read.
+* Text is UTF-8 only. `serialize_wstring` was removed in 2.0: convert `wchar_t`, UTF-16 or UTF-32 text with `serialize_utf.h` and send it as a string.
+* Floats and doubles carry finite values only. NaN and the infinities are refused on read and asserted on write; -0 and subnormals keep their exact bits.
 
 # Author
 
