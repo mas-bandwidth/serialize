@@ -20,8 +20,8 @@ release of its own; until it does, it carries format version 1.1, below, and a
 Every release above vendors the standard and the corpus from one commit of this
 repository:
 
-    standard_commit  PINNED_COMMIT
-    corpus_commit    PINNED_COMMIT
+    standard_commit  d8d1a04fe49ee62a1b3f0fda8afd9f9d7ecf2ccc
+    corpus_commit    d8d1a04fe49ee62a1b3f0fda8afd9f9d7ecf2ccc
 
 The pin names a commit and never a branch. `main` moves, so a claim proved
 against `main` is a claim about whatever `main` happened to be that morning. The
