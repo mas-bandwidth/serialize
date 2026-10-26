@@ -1379,7 +1379,12 @@ static void fail_unless_stream_is_terminal( const Vector & vector,
         return;
     }
 
-    if ( strcmp( vector.file, "object.txt" ) == 0 )
+    const char * slash = strrchr( vector.file, '/' );
+    const char * bslash = strrchr( vector.file, '\\' );
+    const char * base = vector.file;
+    if ( slash && slash + 1 > base ) base = slash + 1;
+    if ( bslash && bslash + 1 > base ) base = bslash + 1;
+    if ( strcmp( base, "object.txt" ) == 0 )
     {
         NestedObject emptyObject;
         if ( run_nested_object( stream, emptyObject ) )
