@@ -168,15 +168,16 @@ param step = bits 8
 bytes 09 AB
 expect refused value_out_of_range
 
-# Terminal failure after a PAST-END refusal, with a zero-bit operation as the
-# successor: a degenerate range consumes nothing and would otherwise always
-# succeed, so this is the vector a reader that treats "consumes no bits" as
-# "cannot fail" gets wrong.
+# Terminal failure after a PAST-END refusal, with a zero-bit operation and an
+# empty nested object as the successors: a degenerate range and an empty object
+# consume nothing and would otherwise always succeed, so this is the vector a
+# reader that treats "consumes no bits" as "cannot fail" gets wrong.
 
 operation sequence
 name sequence-refusal-is-terminal-before-a-zero-bit-field
 param step = bits 16
 param step = int 7 7
+param step = object 0
 bytes FF
 expect refused past_end
 

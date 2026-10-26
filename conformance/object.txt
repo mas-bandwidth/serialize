@@ -95,7 +95,8 @@ writer canonical
 
 # A refusal inside a nested object propagates out of it. The nested align finds
 # non-zero padding, and the read must fail — the composition must not swallow
-# the refusal, and the operation after the object must refuse too.
+# the refusal, and the operations after the object (including a zero-bit empty
+# nested object) must refuse too.
 
 operation sequence
 name object-refusal-propagates-out-of-the-nesting
@@ -103,6 +104,7 @@ param step = bits 3
 param step = object 1
 param step = align
 param step = bits 8
+param step = object 0
 bytes FD AB
 expect refused nonzero_padding
 
@@ -110,5 +112,6 @@ operation sequence
 name object-refusal-past-the-end-propagates
 param step = object 1
 param step = bits 16
+param step = object 0
 bytes FF
 expect refused past_end

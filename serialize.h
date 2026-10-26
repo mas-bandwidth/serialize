@@ -2068,7 +2068,7 @@ namespace serialize
         SERIALIZE_ALWAYS_INLINE bool Fail( Refusal refusal )
         {
             serialize_assert( refusal != REFUSAL_NONE );
-            if ( m_refusal == REFUSAL_NONE )
+            if ( m_refusal == REFUSAL_NONE && !m_reader.WouldReadPastEnd( 0 ) )
             {
                 m_refusal = refusal;
             }
@@ -2324,6 +2324,8 @@ namespace serialize
 
     private:
 
+        template <typename Stream> friend struct StreamRefusal;
+
         BitReader m_reader;             ///< The bit reader used for all bitpacked read operations.
         Refusal m_refusal;              ///< The first refusal since the stream was initialized. Written only on the refusal path.
     };
@@ -2506,11 +2508,15 @@ namespace serialize
     template <typename Stream> struct StreamRefusal
     {
         static SERIALIZE_ALWAYS_INLINE bool Fail( Stream &, Refusal ) { return false; }
+        static SERIALIZE_ALWAYS_INLINE bool IsFailed( const Stream & ) { return false; }
+        static SERIALIZE_ALWAYS_INLINE bool Latch( Stream & ) { return false; }
     };
 
     template <> struct StreamRefusal<ReadStream>
     {
         static SERIALIZE_ALWAYS_INLINE bool Fail( ReadStream & stream, Refusal refusal ) { return stream.Fail( refusal ); }
+        static SERIALIZE_ALWAYS_INLINE bool IsFailed( const ReadStream & stream ) { return stream.m_reader.WouldReadPastEnd( 0 ); }
+        static SERIALIZE_ALWAYS_INLINE bool Latch( ReadStream & stream ) { stream.m_reader.PoisonPosition(); return false; }
     };
 
     /**
@@ -2524,6 +2530,30 @@ namespace serialize
     template <typename Stream> SERIALIZE_ALWAYS_INLINE bool serialize_fail( Stream & stream, Refusal refusal )
     {
         return StreamRefusal<Stream>::Fail( stream, refusal );
+    }
+
+    /**
+        Has this stream latched into the failed state?
+        Only a read stream has a failure state; write and measure streams answer false.
+        @param stream The stream to inspect.
+        @returns True if the stream is a read stream whose position has been poisoned by a prior failure.
+     */
+
+    template <typename Stream> SERIALIZE_ALWAYS_INLINE bool serialize_stream_failed( const Stream & stream )
+    {
+        return StreamRefusal<Stream>::IsFailed( stream );
+    }
+
+    /**
+        Latch this stream into the failed state without recording a primitive wire refusal reason.
+        Used when a nested object's own Serialize returns false: if an inner primitive already refused, its reason is kept; if the callback refused on its own, the stream is poisoned so every later read refuses, while GetRefusal() stays REFUSAL_NONE.
+        @param stream The stream to latch.
+        @returns Always false.
+     */
+
+    template <typename Stream> SERIALIZE_ALWAYS_INLINE bool serialize_latch_failure( Stream & stream )
+    {
+        return StreamRefusal<Stream>::Latch( stream );
     }
 
     /**
@@ -3314,6 +3344,7 @@ namespace serialize
         @param object The object to serialize. Must have a serialize method on it.
      */
 
+#if defined( SERIALIZE_CONFORMANCE_CONTROL_OBJECT_TERMINAL )
     #define serialize_object( stream, object )                                              \
         do                                                                                  \
         {                                                                                   \
@@ -3323,6 +3354,21 @@ namespace serialize
             }                                                                               \
         }                                                                                   \
         while(0)
+#else // #if defined( SERIALIZE_CONFORMANCE_CONTROL_OBJECT_TERMINAL )
+    #define serialize_object( stream, object )                                              \
+        do                                                                                  \
+        {                                                                                   \
+            if ( serialize::serialize_stream_failed( stream ) )                             \
+            {                                                                               \
+                return false;                                                               \
+            }                                                                               \
+            if ( !( object ).Serialize( stream ) || serialize::serialize_stream_failed( stream ) ) \
+            {                                                                               \
+                return serialize::serialize_latch_failure( stream );                        \
+            }                                                                               \
+        }                                                                                   \
+        while(0)
+#endif // #if defined( SERIALIZE_CONFORMANCE_CONTROL_OBJECT_TERMINAL )
 
     /**
         The int_relative domain: 0 to 2^31 - 1 inclusive.
@@ -5762,6 +5808,66 @@ inline void test_wide_integers_exact()
     }
 }
 
+struct TestTerminalEmptyObject
+{
+    bool called;
+    TestTerminalEmptyObject() : called( false ) {}
+
+    template <typename Stream> bool Serialize( Stream & )
+    {
+        called = true;
+        return true;
+    }
+};
+
+struct TestTerminalCallbackRefusesObject
+{
+    bool called;
+    TestTerminalCallbackRefusesObject() : called( false ) {}
+
+    template <typename Stream> bool Serialize( Stream & )
+    {
+        called = true;
+        return false;
+    }
+};
+
+struct TestTerminalSwallowingObject
+{
+    int value;
+    TestTerminalSwallowingObject() : value( -77 ) {}
+
+    template <typename Stream> bool Serialize( Stream & stream )
+    {
+        (void) stream.SerializeInteger( value, 0, 10 );
+        return true;
+    }
+};
+
+struct TestTerminalByteObject
+{
+    uint32_t value;
+    TestTerminalByteObject() : value( 0 ) {}
+
+    template <typename Stream> bool Serialize( Stream & stream )
+    {
+        serialize_bits( stream, value, 8 );
+        return true;
+    }
+};
+
+template <typename Stream, typename Object> inline bool test_run_serialize_object( Stream & stream, Object & object )
+{
+    serialize_object( stream, object );
+    return true;
+}
+
+template <typename Stream> inline bool test_run_degenerate_fixed( Stream & stream, int32_t & value )
+{
+    serialize_fixed( stream, value, 16, 16, 7, 7 );
+    return true;
+}
+
 inline void test_read_stream_failure_is_terminal()
 {
     uint8_t buffer[64 + 8] = { 0 };             // + 8: read buffer allocations extend 8 bytes past the data
@@ -5877,6 +5983,105 @@ inline void test_read_stream_failure_is_terminal()
         readStream.Initialize( buffer, writtenBytes );
         serialize_check( readStream.SerializeBits( value, 8 ) == true );
         serialize_check( value == 0xAF );
+    }
+
+    // prior failure before serialize_object: a failed stream refuses serialize_object without invoking Serialize
+    {
+        serialize::ReadStream readStream( buffer, writtenBytes );
+        int out_of_range = -1;
+        serialize_check( readStream.SerializeInteger( out_of_range, 0, 10 ) == false );
+        serialize_check( out_of_range == -1 );
+        serialize_check( readStream.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
+        const int64_t bitsAfterFailure = readStream.GetBitsProcessed();
+
+        TestTerminalEmptyObject emptyObj;
+        serialize_check( test_run_serialize_object( readStream, emptyObj ) == false );
+        serialize_check( emptyObj.called == false );
+        serialize_check( readStream.GetBitsProcessed() == bitsAfterFailure );
+        serialize_check( readStream.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
+    }
+
+    // callback-only refusal in serialize_object latches the stream and keeps refusal REFUSAL_NONE
+    {
+        serialize::ReadStream readStream( buffer, writtenBytes );
+        uint32_t leading = 0;
+        serialize_check( readStream.SerializeBits( leading, 4 ) == true );
+        serialize_check( leading == 0x0F );
+
+        TestTerminalCallbackRefusesObject refusingObj;
+        serialize_check( test_run_serialize_object( readStream, refusingObj ) == false );
+        serialize_check( refusingObj.called == true );
+        serialize_check( readStream.GetRefusal() == serialize::REFUSAL_NONE );
+        const int64_t poisonedBits = readStream.GetBitsProcessed();
+
+        TestTerminalEmptyObject postEmpty;
+        serialize_check( test_run_serialize_object( readStream, postEmpty ) == false );
+        serialize_check( postEmpty.called == false );
+
+        int zeroBitInt = -99;
+        serialize_check( readStream.SerializeInteger( zeroBitInt, 5, 5 ) == false );
+        serialize_check( zeroBitInt == -99 );
+
+        int32_t zeroBitFixed = -123;
+        serialize_check( test_run_degenerate_fixed( readStream, zeroBitFixed ) == false );
+        serialize_check( zeroBitFixed == -123 );
+
+        uint32_t afterBits = 0xFFFFFFFF;
+        serialize_check( readStream.SerializeBits( afterBits, 4 ) == false );
+        serialize_check( afterBits == 0xFFFFFFFF );
+
+        serialize_check( readStream.SerializeAlign() == false );
+        serialize_check( readStream.SerializeEnd() == false );
+        serialize_check( readStream.GetBitsProcessed() == poisonedBits );
+        serialize_check( readStream.GetRefusal() == serialize::REFUSAL_NONE );
+
+        // Initialize and InitializePadded clear the callback-only object latch
+        readStream.Initialize( buffer, writtenBytes );
+        serialize_check( readStream.GetRefusal() == serialize::REFUSAL_NONE );
+        TestTerminalByteObject byteObj;
+        serialize_check( test_run_serialize_object( readStream, byteObj ) == true );
+        serialize_check( byteObj.value == 0xAF );
+
+        TestTerminalCallbackRefusesObject refusingAgain;
+        serialize_check( test_run_serialize_object( readStream, refusingAgain ) == false );
+        uint8_t paddedStorage[64 + 8] = { 0 };
+        serialize_check( readStream.InitializePadded( paddedStorage, sizeof( paddedStorage ), buffer, writtenBytes ) );
+        serialize_check( readStream.GetRefusal() == serialize::REFUSAL_NONE );
+        TestTerminalByteObject paddedByteObj;
+        serialize_check( test_run_serialize_object( readStream, paddedByteObj ) == true );
+        serialize_check( paddedByteObj.value == 0xAF );
+    }
+
+    // inner primitive failure inside serialize_object where callback returns true still fails and preserves refusal
+    {
+        serialize::ReadStream readStream( buffer, writtenBytes );
+        TestTerminalSwallowingObject swallowingObj;
+        serialize_check( test_run_serialize_object( readStream, swallowingObj ) == false );
+        serialize_check( swallowingObj.value == -77 );
+        serialize_check( readStream.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
+
+        TestTerminalEmptyObject postEmpty;
+        serialize_check( test_run_serialize_object( readStream, postEmpty ) == false );
+        serialize_check( postEmpty.called == false );
+        int zeroBitInt = -99;
+        serialize_check( readStream.SerializeInteger( zeroBitInt, 5, 5 ) == false );
+        serialize_check( zeroBitInt == -99 );
+        serialize_check( readStream.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
+    }
+
+    // healthy empty object at exact end of stream succeeds without latching
+    {
+        uint8_t oneByte[1 + 8] = { 0x5A, 0, 0, 0, 0, 0, 0, 0, 0 };
+        serialize::ReadStream readStream( oneByte, 1 );
+        uint32_t v = 0;
+        serialize_check( readStream.SerializeBits( v, 8 ) == true );
+        serialize_check( v == 0x5A );
+
+        TestTerminalEmptyObject exactEndEmpty;
+        serialize_check( test_run_serialize_object( readStream, exactEndEmpty ) == true );
+        serialize_check( exactEndEmpty.called == true );
+        serialize_check( readStream.GetRefusal() == serialize::REFUSAL_NONE );
+        serialize_check( readStream.SerializeEnd() == true );
     }
 }
 
