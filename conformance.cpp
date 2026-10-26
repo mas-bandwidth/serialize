@@ -269,31 +269,6 @@ static void fail( const Vector & vector, const char * detail )
     failures++;
 }
 
-// Failure is terminal (STANDARD.md, Reader Obligations), and a refused vector is where that
-// rule is testable: the stream is checked by behavior rather than by an accessor, so the same
-// check ports to every implementation in the family. A further read must fail, consume no bits
-// and leave its destination alone.
-
-static void fail_unless_stream_is_terminal( const Vector & vector, serialize::ReadStream & stream )
-{
-    uint32_t after = 0xFFFFFFFF;
-    const int64_t bitsBefore = stream.GetBitsProcessed();
-    if ( stream.SerializeBits( after, 8 ) )
-    {
-        fail( vector, "the stream accepted a read after the refusal: failure is not terminal" );
-        return;
-    }
-    if ( after != 0xFFFFFFFF )
-    {
-        fail( vector, "the read after the refusal wrote to its destination" );
-        return;
-    }
-    if ( stream.GetBitsProcessed() != bitsBefore )
-    {
-        fail( vector, "the read after the refusal consumed bits" );
-    }
-}
-
 // ---------------------------------------------------------------------------------------
 // parameter access. A parameter the runner does not understand is a failure rather than a
 // silent default: a vector whose declaration is not the one being exercised proves nothing.
@@ -816,10 +791,36 @@ struct NestedObject
 {
     Step * steps;
     int count;
+    bool called;
+
+    NestedObject() : steps( NULL ), count( 0 ), called( false ) {}
 
     template <typename Stream> bool Serialize( Stream & stream )
     {
+        called = true;
         return run_steps( stream, steps, count );
+    }
+};
+
+struct CallbackRefusesObject
+{
+    template <typename Stream> bool Serialize( Stream & )
+    {
+        return false;
+    }
+};
+
+struct SwallowingObject
+{
+    Step * steps;
+    int count;
+
+    SwallowingObject( Step * s, int c ) : steps( s ), count( c ) {}
+
+    template <typename Stream> bool Serialize( Stream & stream )
+    {
+        (void) run_steps( stream, steps, count );
+        return true;
     }
 };
 
@@ -827,6 +828,30 @@ template <typename Stream> static bool run_nested_object( Stream & stream, Neste
 {
     serialize_object( stream, object );
     return true;
+}
+
+template <typename Stream> static bool run_callback_refuses_object( Stream & stream )
+{
+    CallbackRefusesObject object;
+    serialize_object( stream, object );
+    return true;
+}
+
+template <typename Stream> static bool run_swallowing_object( Stream & stream, Step * steps, int count )
+{
+    SwallowingObject object( steps, count );
+    serialize_object( stream, object );
+    return true;
+}
+
+template <typename Stream> static bool stream_already_poisoned( const Stream & )
+{
+    return false;
+}
+
+template <> bool stream_already_poisoned<serialize::ReadStream>( const serialize::ReadStream & stream )
+{
+    return serialize::serialize_stream_failed( stream );
 }
 
 // advances past the steps a nested object owns, so a top level walk sees one step per object
@@ -846,11 +871,16 @@ template <typename Stream> static bool run_steps( Stream & stream, Step * steps,
     {
         if ( steps[i].kind == STEP_OBJECT )
         {
+            const bool alreadyPoisoned = stream_already_poisoned( stream );
             NestedObject object;
             object.steps = steps + i + 1;
             object.count = (int) steps[i].width;
             if ( !run_nested_object( stream, object ) )
             {
+                if ( alreadyPoisoned && object.called )
+                {
+                    return true;
+                }
                 if ( stoppedAt ) *stoppedAt = i;
                 return false;
             }
@@ -1313,6 +1343,115 @@ static int split_expect( const char * text, char entries[MaxSteps][MaxLine] )
 // ---------------------------------------------------------------------------------------
 // running one vector
 
+// Failure is terminal (STANDARD.md, Reader Obligations), and a refused vector is where that
+// rule is testable: the stream is checked by behavior rather than by an accessor, so the same
+// check ports to every implementation in the family. A further read must fail, consume no bits
+// and leave its destination alone.
+
+static void fail_unless_stream_is_terminal( const Vector & vector,
+                                            serialize::ReadStream & stream,
+                                            const StreamBuffer & buffer,
+                                            Step * steps,
+                                            int numSteps )
+{
+    uint32_t after = 0xFFFFFFFF;
+    const int64_t bitsBefore = stream.GetBitsProcessed();
+    const serialize::Refusal reasonBefore = stream.GetRefusal();
+
+    if ( stream.SerializeBits( after, 8 ) )
+    {
+        fail( vector, "the stream accepted a read after the refusal: failure is not terminal" );
+        return;
+    }
+    if ( after != 0xFFFFFFFF )
+    {
+        fail( vector, "the read after the refusal wrote to its destination" );
+        return;
+    }
+    if ( stream.GetBitsProcessed() != bitsBefore )
+    {
+        fail( vector, "the read after the refusal consumed bits" );
+        return;
+    }
+    if ( stream.GetRefusal() != reasonBefore )
+    {
+        fail( vector, "the read after the refusal overwrote the refusal reason" );
+        return;
+    }
+
+    const char * slash = strrchr( vector.file, '/' );
+    const char * bslash = strrchr( vector.file, '\\' );
+    const char * base = vector.file;
+    if ( slash && slash + 1 > base ) base = slash + 1;
+    if ( bslash && bslash + 1 > base ) base = bslash + 1;
+    if ( strcmp( base, "object.txt" ) == 0 )
+    {
+        NestedObject emptyObject;
+        if ( run_nested_object( stream, emptyObject ) )
+        {
+            fail( vector, "the stream accepted an object read after the refusal: failure is not terminal" );
+            return;
+        }
+        if ( emptyObject.called )
+        {
+            fail( vector, "the object read after the refusal invoked Serialize" );
+            return;
+        }
+        if ( stream.GetBitsProcessed() != bitsBefore || stream.GetRefusal() != reasonBefore )
+        {
+            fail( vector, "the object read after the refusal mutated stream cursor or refusal reason" );
+            return;
+        }
+
+        serialize::ReadStream callbackRefused( buffer.data, buffer.bytes );
+        if ( run_callback_refuses_object( callbackRefused ) )
+        {
+            fail( vector, "serialize_object accepted a callback returning false" );
+            return;
+        }
+        if ( callbackRefused.GetRefusal() != serialize::REFUSAL_NONE )
+        {
+            fail( vector, "serialize_object callback-only refusal set a wire refusal reason" );
+            return;
+        }
+        int32_t probe = 12345;
+        if ( callbackRefused.SerializeInteger( probe, 7, 7 ) || probe != 12345 )
+        {
+            fail( vector, "zero-bit read succeeded after serialize_object callback refusal" );
+            return;
+        }
+        NestedObject postCallbackObject;
+        if ( run_nested_object( callbackRefused, postCallbackObject ) || postCallbackObject.called )
+        {
+            fail( vector, "nested object read succeeded or invoked Serialize after serialize_object callback refusal" );
+            return;
+        }
+        uint32_t probeBits = 0xFFFFFFFF;
+        if ( callbackRefused.SerializeBits( probeBits, 8 ) || probeBits != 0xFFFFFFFF )
+        {
+            fail( vector, "nonzero-bit read succeeded after serialize_object callback refusal" );
+            return;
+        }
+        if ( callbackRefused.GetRefusal() != serialize::REFUSAL_NONE )
+        {
+            fail( vector, "echo reads after serialize_object callback-only refusal overwrote REFUSAL_NONE" );
+            return;
+        }
+
+        serialize::ReadStream swallowed( buffer.data, buffer.bytes );
+        if ( run_swallowing_object( swallowed, steps, numSteps ) )
+        {
+            fail( vector, "serialize_object accepted a callback that returned true after an inner refusal" );
+            return;
+        }
+        if ( swallowed.GetRefusal() != reasonBefore )
+        {
+            fail( vector, "serialize_object did not preserve the inner refusal when the callback returned true" );
+            return;
+        }
+    }
+}
+
 static void run_reader( const Vector & vector, Step * steps, int numSteps )
 {
     StreamBuffer buffer;
@@ -1393,7 +1532,7 @@ static void run_reader( const Vector & vector, Step * steps, int numSteps )
 
         // and the same rule against a read the vector does not name, so every refused vector
         // carries the terminality check and not only the sequences that spell a successor
-        fail_unless_stream_is_terminal( vector, stream );
+        fail_unless_stream_is_terminal( vector, stream, buffer, steps, numSteps );
         return;
     }
 
