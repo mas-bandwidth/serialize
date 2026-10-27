@@ -1,0 +1,8 @@
+# The vectors a reader fails when this rule is deleted, and no others:
+# serialize_reject refuses as rejected.
+#
+# CMakeLists.txt builds that reader, and ctest requires its failures to be
+# exactly this list. A vector added to the corpus that pins the rule belongs here.
+
+sequence-reject-at-the-top-level
+sequence-reject-is-terminal

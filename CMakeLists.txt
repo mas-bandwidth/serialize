@@ -11,7 +11,7 @@ if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
     set(CMAKE_TARGET_MESSAGES OFF)
 endif()
 
-project(serialize VERSION 2.0.1 LANGUAGES CXX)
+project(serialize VERSION 2.1.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
@@ -179,7 +179,8 @@ if(SERIALIZE_BUILD_TESTS)
         int-relative-canonical
         string-embedded-nul string-utf8 string-utf8-surrogate
         int64-through-double object-terminal
-        wrong-reason)
+        wrong-reason
+        object-latch-rejected reject-reason)
 
     set(SERIALIZE_CONTROL_RULE_align-padding "readers must verify that the alignment padding bits are zero")
     set(SERIALIZE_CONTROL_NEEDLE_align-padding
@@ -295,6 +296,26 @@ if(SERIALIZE_BUILD_TESTS)
         "                    return serialize_fail( stream, REFUSAL_EMBEDDED_NUL );")
     set(SERIALIZE_CONTROL_PATCH_wrong-reason
         "                    return serialize_fail( stream, REFUSAL_INVALID_UTF8 ); // NEGATIVE CONTROL: the wrong reason on purpose")
+
+    # The rejected rule, twice, one per way a caller refuses (STANDARD.md, "Refusal reasons";
+    # tla/ReadStreamLatch.tla). The first puts serialize_latch_failure back to what it did before
+    # 2.1: it poisons the stream and records nothing, so a nested object whose Serialize returns
+    # false on its own leaves the refused stream reporting none. The stream is still terminal, so
+    # what goes red is the reason, which is exactly the rule.
+    set(SERIALIZE_CONTROL_RULE_object-latch-rejected "a nested object that refuses on its own latches rejected")
+    set(SERIALIZE_CONTROL_NEEDLE_object-latch-rejected
+        "        static SERIALIZE_ALWAYS_INLINE bool Latch( ReadStream & stream ) { return stream.Fail( REFUSAL_REJECTED ); }")
+    set(SERIALIZE_CONTROL_PATCH_object-latch-rejected
+        "        static SERIALIZE_ALWAYS_INLINE bool Latch( ReadStream & stream ) { stream.m_reader.PoisonPosition(); return false; } // NEGATIVE CONTROL: the 2.0 latch, recording no reason, on purpose")
+
+    # The second makes serialize_reject refuse under a wire rule's name. The stream still fails
+    # and stays failed; only the reason is wrong, and the caller's decision is reported as if the
+    # bytes had broken a rule of the format
+    set(SERIALIZE_CONTROL_RULE_reject-reason "serialize_reject refuses as rejected")
+    set(SERIALIZE_CONTROL_NEEDLE_reject-reason
+        "            return serialize::serialize_fail( stream, serialize::REFUSAL_REJECTED );        \\")
+    set(SERIALIZE_CONTROL_PATCH_reject-reason
+        "            return serialize::serialize_fail( stream, serialize::REFUSAL_VALUE_OUT_OF_RANGE ); /* NEGATIVE CONTROL: the wrong reason on purpose */ \\")
 
     file(READ ${CMAKE_CURRENT_SOURCE_DIR}/serialize.h SERIALIZE_HEADER_TEXT)
     foreach(control ${SERIALIZE_CONTROL_NAMES})

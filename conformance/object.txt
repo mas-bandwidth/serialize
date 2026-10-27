@@ -19,10 +19,18 @@
 # different bytes for the nested vector than for its flat twin, and one of the
 # pair goes red.
 #
-# The operation has no refusal rule of its own — it consumes nothing and decides
-# nothing — so the refusals below are the nested operations' own, and what they
-# pin is that a refusal inside a nested object propagates out of it rather than
-# being swallowed by the composition.
+# The operation has no wire refusal rule of its own — it consumes nothing — so
+# the wire refusals below are the nested operations' own, and what they pin is
+# that a refusal inside a nested object propagates out of it rather than being
+# swallowed by the composition.
+#
+# What the object does decide is the caller's refusal. A `reject` step inside an
+# object is the object's serialize function returning failure at that point
+# without refusing on its own (sequence.txt, the step spellings), and the object
+# must latch the stream as `rejected` (STANDARD.md, "Refusal reasons"). If a
+# primitive inside the object already refused, that first reason is kept. The
+# top level twins of these vectors, where the caller rejects through the reject
+# entry point instead, are the sequence-reject vectors in sequence.txt.
 
 # The flat twin, for comparison: four bits, a bool, then a byte.
 
@@ -115,3 +123,67 @@ param step = bits 16
 param step = object 0
 bytes FF
 expect refused past_end
+
+# The callback reads four well formed bits and then returns failure on its own.
+# Nothing on the wire refused, so the object latches `rejected`: a reader whose
+# object latches with no reason, or a wire reason, fails here.
+
+operation sequence
+name object-callback-rejects
+param step = object 2
+param step = bits 4
+param step = reject
+bytes 05
+expect refused rejected
+
+# The rejection is terminal. A whole readable byte and an empty nested object
+# follow the rejecting object, and both must refuse.
+
+operation sequence
+name object-callback-rejects-is-terminal
+param step = object 1
+param step = reject
+param step = bits 8
+param step = object 0
+bytes AB
+expect refused rejected
+
+# The first reason wins. A primitive inside the object refuses past the end, and
+# the callback then returns failure: the object must keep past_end rather than
+# overwrite it with `rejected`.
+
+operation sequence
+name object-wire-refusal-then-callback-rejects-keeps-past-end
+param step = object 2
+param step = bits 16
+param step = reject
+bytes FF
+expect refused past_end
+
+# The same rule over a refusal that leaves readable bytes behind: the align in
+# the object refuses its set padding, the callback returns failure, and the
+# reason stays nonzero_padding through the byte that follows.
+
+operation sequence
+name object-wire-refusal-then-callback-rejects-keeps-nonzero-padding
+param step = bits 3
+param step = object 2
+param step = align
+param step = reject
+param step = bits 8
+bytes FD AB
+expect refused nonzero_padding
+
+# The negative case: an object whose callback reads accepted fields and does not
+# reject is accepted, decoding what the first two steps of object-flat-twin
+# decode from the same low five bits.
+
+operation sequence
+name object-accepted-when-the-callback-does-not-reject
+param step = object 2
+param step = bits 4
+param step = bool
+bytes 1A
+expect value = - | 10 | true
+consumed 5
+writer canonical

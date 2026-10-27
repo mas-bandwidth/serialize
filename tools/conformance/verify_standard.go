@@ -40,6 +40,7 @@ var refusalReasons = map[string]bool{
 	"invalid_utf8":       true,
 	"embedded_nul":       true,
 	"non_canonical":      true,
+	"rejected":           true,
 }
 
 // refusal is a read the document says must be refused, carrying its reason.

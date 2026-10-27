@@ -105,6 +105,13 @@ const (
 	// contributes NO BYTES OF ITS OWN — composition, not an encoding — so the
 	// nested run is exactly the steps it wraps and nothing else.
 	stepObject
+	// stepReject is the caller refusing here, a value whose bytes were well
+	// formed. STANDARD.md, "Refusal reasons": it refuses as `rejected`, and the
+	// first reason wins, which this decoder keeps by construction because it
+	// stops at the first refusal. It reads nothing, writes nothing and measures
+	// nothing; inside an object it is the object's own serialize function
+	// failing, which the document maps to the same reason.
+	stepReject
 )
 
 type step struct {
@@ -370,6 +377,9 @@ func decodeStep(r *BitReader, s *step) error {
 		}
 		s.number = new(big.Int).Add(v, rawLo)
 		return nil
+
+	case stepReject:
+		return refusalf("rejected", "the caller refused a well formed value")
 	}
 	return fmt.Errorf("no decoder for this step")
 }
@@ -418,6 +428,10 @@ func encodeStep(w *BitWriter, s *step) error {
 		w.writeBytes(s.data)
 	case stepEnd:
 		// nothing: the writer already leaves the final byte's unused bits zero
+	case stepReject:
+		// a writer has nothing to refuse: reject is read only, and a vector
+		// that asks a writer to emit one is malformed
+		return fmt.Errorf("a reject step has no encoding: reject belongs to refused vectors only")
 	case stepFixed:
 		rawLo, rawHi := s.rawBounds()
 		span := new(big.Int).Sub(rawHi, rawLo)
@@ -510,7 +524,7 @@ func stepExactBits(s *step, bitIndex int) int {
 	case stepFixed:
 		rawLo, rawHi := s.rawBounds()
 		return bitsRequiredBig(new(big.Int).Sub(rawHi, rawLo))
-	case stepObject:
+	case stepObject, stepReject:
 		return 0
 	}
 	return 0
@@ -704,6 +718,11 @@ func buildStep(spec string) (*step, error) {
 		s.kind = stepAlign
 	case "object":
 		s.kind, s.width = stepObject, num(1)
+	case "reject":
+		if len(words) != 1 {
+			return nil, fmt.Errorf("reject takes no parameters: %q", spec)
+		}
+		s.kind = stepReject
 	case "float":
 		s.kind = stepFloat
 	case "bytes":
@@ -903,7 +922,7 @@ func renderStep(s *step) string {
 		return fmt.Sprintf("0x%032X", p)
 	}
 	switch s.kind {
-	case stepAlign, stepObject, stepEnd:
+	case stepAlign, stepObject, stepEnd, stepReject:
 		return "0"
 	case stepBool:
 		if s.flag {

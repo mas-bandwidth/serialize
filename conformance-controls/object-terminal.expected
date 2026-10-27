@@ -7,3 +7,8 @@
 object-refusal-propagates-out-of-the-nesting
 object-refusal-past-the-end-propagates
 sequence-refusal-is-terminal-before-a-zero-bit-field
+object-callback-rejects
+object-callback-rejects-is-terminal
+object-wire-refusal-then-callback-rejects-keeps-past-end
+object-wire-refusal-then-callback-rejects-keeps-nonzero-padding
+sequence-reject-is-terminal
