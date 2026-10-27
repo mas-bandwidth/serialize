@@ -156,7 +156,7 @@ other implementations do not carry them: one stream abstraction with a read, a
 write and a measure conformer carries every operation. They are one of the
 allowed extras (U15).
 
-## Uniform behaviour: U1 to U15
+## Uniform behaviour: U1 to U16
 
 *(Rowan's rulings from the cross-port audit, 2026-10-27, on Glenn's requirement
 that behaviour be uniform across every port and in the spec.)* None of these can
@@ -190,8 +190,10 @@ NUL cannot reach the wire from C++ by construction.)*
 
 **U5. `int` bounds are int32.** A `min` or `max` outside int32 is caller error and
 must be caught on the caller's original value, before anything narrows it. Never
-a silent zero-bit or narrowed field. *(C++ 2.1: `serialize_int`, `read_int` and
-`write_int` assert `serialize::int_bounds_are_int32`; asserts.cpp proves it.)*
+a silent zero-bit or narrowed field. On read it is a bad declaration, refused as
+`value_out_of_range` (U7, U16). *(C++ 2.1: `serialize_int`, `read_int` and
+`write_int` assert `serialize::int_bounds_are_int32` on write and measure and
+refuse on read; asserts.cpp and test_uniform_rules prove it.)*
 
 **U6. A measure stream refuses nothing** (STANDARD.md, "The Measure Stream").
 Misuse on a measure follows the implementation's write-misuse mechanism, and a
@@ -201,13 +203,23 @@ returns false and records nothing; test_uniform_rules.)*
 **U7. A reader never traps.** Caller misuse on read, such as a negative byte
 count or a string buffer size below 1, must refuse as `value_out_of_range`, and
 never raise, abort, assert or throw. The failure state is checked first, so a
-stream that already failed keeps its first reason. *(C++ 2.1: a string buffer
-below 1 on read used to reach the length field's `min <= max` assertion; it now
-refuses. test_uniform_rules.)*
+stream that already failed keeps its first reason. *(C++ 2.1, from the
+2026-10-27 reference audit: a string buffer below 1 on read reached the length
+field's `min <= max` assertion in a checked build and, in release, a length range
+of `[0, -1]` that let the wire choose a payload copied past the caller's buffer;
+it now refuses. A read stream over a negative byte count refused but reported
+none; it now latches `value_out_of_range` at initialization. A ranged read with
+`min > max` accepted wrong data; it now refuses. test_uniform_rules.)*
 
-**U8. Release output after write misuse is unspecified.** A writer need not mask
-an over-wide value, and each implementation keeps whatever its measured fast path
-does. Documented, not tested.
+**U8. Over-wide values on write are caught in the checked build.** Every
+implementation's checked build (debug, dev, `-ea`, or an always-checked port)
+must catch a value that does not fit its bit width, as "The check model" above
+says; masking is not checking. Release output after write misuse is
+unspecified, and no mask is required on the fast path. *(C++: `serialize_bits`
+asserts `value_fits_in_bits` on the caller's value before narrowing; the ranged
+macros assert `value_in_int64_range` / `value_in_int128_range` on the caller's
+value as passed, sign included, so an unsigned `2^64 - 1` is not mistaken for
+`-1`; asserts.cpp proves both.)*
 
 **U9. One write-misuse mechanism per implementation**, applied to every operation,
 `compressed_float` included: an assertion in checked builds, an error flag, or a
@@ -250,3 +262,19 @@ numbers are Q48.16, so its exact `*Bits` float forms are its primary API,
 documented as such, and moo's runner must drive the `*Bits` forms. A missing
 reference operation is a gap, never an extra: `serialize_copy_string` and
 `compressed_float_precomputed` must exist everywhere they are missing today.
+
+**U16. Caller declarations are validated on every stream before any bits move.**
+A `bits` count is an integer in its range; a fixed point `min` and `max` fit the
+Q format; `compressed_float` precomputed constants are exactly what the params
+function derives, with `max_integer_value` a uint32; a ranged `min` does not
+exceed its `max`; `buffer_size` and destination capacity fit the read. A bad
+declaration is caller error by the implementation's write-misuse mechanism on
+write and measure, and must refuse as `value_out_of_range` on read (U7). Never
+wrong data, and never a trap the wire chooses. *(C++ 2.1: `SerializeBits` and
+`serialize_bits` refuse a bit count outside their range on read; the ranged
+reads refuse `min > max`; the precomputed `compressed_float` refuses on read
+constants whose bit count is not `bits_required( 0, max_integer_value )`, a
+`max_integer_value` below 1, or a `delta` that is not positive and finite; a
+fixed point declaration that does not fit its Q format is a compile error;
+string `buffer_size` is U7. On write and measure each of these stays a debug
+assertion. test_uniform_rules proves the read refusals.)*

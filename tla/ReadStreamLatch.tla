@@ -14,8 +14,10 @@
 (* objects are open, and the result of the last operation.                 *)
 (*                                                                         *)
 (* Every refusal goes through Fail, which is ReadStream::Fail exactly: it  *)
-(* records the reason only when none is recorded and the position is not  *)
-(* yet poisoned, and it always poisons. The actions are the operations and *)
+(* records the reason only when none is recorded, whatever the position   *)
+(* (2.1: a stream over a negative byte count is past its end before any   *)
+(* read and must still record why), and it always poisons. The actions    *)
+(* are the operations and                                                  *)
 (* the outside events: a primitive read the wire accepts, a primitive read *)
 (* the wire refuses for reason r, the caller's serialize_reject, entering  *)
 (* a nested object (serialize_object's entry check), and leaving one with  *)
@@ -34,8 +36,8 @@
 (* and MaxDepth 3:                                                         *)
 (*   ReadStreamLatch.cfg     152 states generated, 21 distinct, depth 6,   *)
 (*                           no error: every invariant and property holds. *)
-(*   ReadStreamLatchOld.cfg  RefusedIffReason violated in 3 states:        *)
-(*                           Init, ObjectEnter, ObjectExit(FALSE) leaves   *)
+(*   ReadStreamLatchOld.cfg  RefusedIffReason violated within 4 states:    *)
+(*                           ObjectEnter then ObjectExit(FALSE) leaves     *)
 (*                           refused = TRUE with reason = "none", which is *)
 (*                           what the 2.0 header did (its unit test        *)
 (*                           asserted REFUSAL_NONE after a callback-only   *)
@@ -76,7 +78,7 @@ Init ==
 
 \* ReadStream::Fail
 Fail(r) ==
-    /\ reason' = IF reason = NONE /\ ~refused THEN r ELSE reason
+    /\ reason' = IF reason = NONE THEN r ELSE reason
     /\ refused' = TRUE
     /\ last' = "fail"
 

@@ -62,11 +62,18 @@ refusal is the only thing that changes, and the corpus gains the `reject` step
 that pins it. [vectors: sequence-reject-at-the-top-level, object-callback-rejects] [controls: object-latch-rejected, reject-reason]
 
 2.1 also states, in [IMPLEMENTING.md](IMPLEMENTING.md), the uniform behaviour
-rules U1 to U15: write buffers, write and measure misuse, a reader that never
-traps, `end` on a writer, re-initialization, the refusal names, and the extras
-an implementation may carry. No stream can observe them, so they are not rules
-of this document and no vector cites them; every implementation keeps them and
-proves them with its own unit tests.
+rules U1 to U16: write buffers, write and measure misuse, a reader that never
+traps, caller declarations validated before any bits move, `end` on a writer,
+re-initialization, the refusal names, and the extras an implementation may
+carry. No stream can observe them, so they are not rules of this document and no
+vector cites them; every implementation keeps them and proves them with its own
+unit tests.
+
+2.1 also pins two things 2.0 already required and no vector discriminated: a
+finite `double` whose 32-bit halves are shaped like `float32` signalling NaNs,
+and its neighbours beside a `float`, keep their exact bits; and a
+`compressed_float` decode lies in `[min, min + delta]`, which can exceed `max`.
+Both were found by the cross-port audits of 2026-10-27. [vectors: double-finite-high-half-snan-shaped, float-finite-between-snan-shaped-groups, compressed-float-top-integer-decodes-above-max-by-delta-rounding]
 
 Format version 1.1 was the rulings of 2026-08-15, 2026-08-23 and 2026-09-04 over
 the document as first written (1.0); every one of them stands in 2.0.
@@ -399,6 +406,14 @@ and the bits a reader returns must be the bits it read. Flush to zero is an
 arithmetic concern of the program that uses the value, never of storage.
 [vectors: float-positive-zero, float-negative-zero, float-one, float-negative-one, float-pi, float-smallest-positive-denormal, float-largest-denormal, float-negative-denormal, float-largest-negative-denormal, float-smallest-positive-normal, float-largest-finite, float-most-negative-finite, double-positive-zero, double-negative-zero, double-one, double-one-third, double-low-half-only, double-high-half-only, double-smallest-positive-denormal, double-largest-denormal, double-negative-denormal, double-smallest-positive-normal, double-largest-finite, double-most-negative-finite, sequence-float-unaligned-between-bools]
 
+**No bits pass through a `float32` view on their way to or from the wire.** A
+finite `double` whose 32-bit halves are shaped like `float32` signalling NaNs,
+and a raw 32-bit group of that shape beside a `float`, must be read and written
+with their exact bits: a runtime that moves 32-bit groups through a `float32`
+value or typed-array view may quiet them, turning a finite `double` into a NaN
+or an infinity, so an implementation on such a runtime moves the groups as
+integers. [vectors: double-finite-high-half-snan-shaped, double-finite-high-half-snan-shaped-low-half-zero, double-finite-low-half-snan-shaped, double-finite-both-halves-snan-shaped, double-finite-negative-both-halves-snan-shaped, float-finite-between-snan-shaped-groups, float-largest-finite-between-snan-shaped-groups-unaligned]
+
 Conformance vectors for these operations compare **bit patterns, not values**:
 `-0.0 == 0.0` in value space, and a tolerance comparison cannot see a flushed
 subnormal.
@@ -440,6 +455,12 @@ The decode is `float32` with every step rounding: the quotient rounds, the
 product rounds before `min` is added, and the sum rounds. A reader must decode
 to exactly those bits, never widened and never fused. Fused, a decode over a
 non-zero `min` lands one ulp away. [vectors: compressed-float-zero-integer-over-0-10, compressed-float-on-quantum-anchor-over-0-10, compressed-float-integer-one-over-0-10, compressed-float-accepts-max-integer-value-over-0-10, compressed-float-nonzero-min-integer-zero, compressed-float-nonzero-min-midpoint, compressed-float-nonzero-min-fused-decode-differs-by-one-ulp, compressed-float-nonzero-min-off-quantum, compressed-float-nonzero-min-accepts-max-integer-value, compressed-float-clamp-band-integer-zero, compressed-float-wire-divergence-band-integer-zero, compressed-float-values-clamped-at-the-high-end, compressed-float-values-clamped-integer-zero, compressed-float-values-clamped-at-the-low-end-zero, compressed-float-values-clamped-at-the-low-end-one]
+
+**A decode lies in `[min, min + delta]`, not in `[min, max]`.** `delta` is
+`max - min` rounded to `float32`, so it can exceed the span: over
+`[-1, 16777218]` at resolution `1` it is `16777220`, and the top integer
+decodes to `16777220`, above `max`. A reader must accept that decode with its
+exact bits, never clamp it to `max` and never refuse it. [vectors: compressed-float-top-integer-decodes-above-max-by-delta-rounding]
 
 A reader must refuse an integer greater than `max_integer_value` as
 `value_out_of_range`. [vectors: compressed-float-refuse-integer-one-past-max-integer-value, compressed-float-refuse-integer-all-ten-bits, compressed-float-nonzero-min-refuse-integer-one-past-max-integer-value, compressed-float-nonzero-min-refuse-integer-all-fifteen-bits, compressed-float-clamp-band-refuse-integer-one-past-max-integer-value, compressed-float-clamp-band-refuse-integer-all-twenty-four-bits, compressed-float-values-clamped-refuse-integer-one-past-max-integer-value, compressed-float-values-clamped-refuse-integer-all-thirty-two-bits]

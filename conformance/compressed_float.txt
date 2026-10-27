@@ -84,6 +84,23 @@ bytes E8 03
 expect bits = 0x41200000
 consumed 10
 
+# The decode is bounded by [min, min + delta], not by [min, max]. Over [-1,
+# 16777218] the span 16777219 is not a float32: delta rounds to 16777220, so
+# max_integer_value is 16777220 at 25 bits, and the top integer decodes to
+# min + delta = 16777219, which rounds to 16777220, ABOVE max. It is finite and
+# must be accepted with exactly those bits: a reader that clamps to max, or
+# refuses a decode above max, disagrees with the document. Found by the
+# cross-port audit of serialize.go, 2026-10-27.
+
+operation compressed_float
+name compressed-float-top-integer-decodes-above-max-by-delta-rounding
+param min = -1
+param max = 16777218
+param res = 1
+bytes 04 00 00 01
+expect bits = 0x4B800002
+consumed 25
+
 operation compressed_float
 name compressed-float-refuse-integer-one-past-max-integer-value
 param min = 0

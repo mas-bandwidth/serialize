@@ -168,3 +168,35 @@ operation float
 name float-refuse-past-end-empty-stream
 bytes
 expect refused past_end
+
+# A finite float between two raw 32-bit groups shaped like float32 signalling
+# NaNs (exponent all ones, top mantissa bit clear, mantissa non-zero), one on
+# each side of it. A finite float can never be sNaN shaped itself, so the
+# discriminating case is its neighbours: an implementation that moves 32-bit
+# groups through a float32 view (dart2wasm canonicalises signalling NaNs that
+# way) quiets the raw groups and changes their bytes, in either direction.
+# Found by the cross-port security audit, 2026-10-27.
+
+operation sequence
+name float-finite-between-snan-shaped-groups
+param step = bits 32
+param step = float
+param step = bits 32
+bytes 00 00 A0 7F 00 00 80 3F 01 00 80 FF
+expect value = 0x7FA00000 | 0x3F800000 | 0xFF800001
+consumed 96
+writer canonical
+
+# The largest finite float, whose exponent field is one below all ones, beside
+# an sNaN-shaped group on each side, unaligned by a leading bool.
+
+operation sequence
+name float-largest-finite-between-snan-shaped-groups-unaligned
+param step = bool
+param step = bits 32
+param step = float
+param step = bits 32
+bytes 03 00 40 FF FE FF FF FE 02 00 00 FF 01
+expect value = true | 0x7FA00001 | 0x7F7FFFFF | 0xFF800001
+consumed 97
+writer canonical

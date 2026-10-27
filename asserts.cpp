@@ -500,9 +500,108 @@ static void test_fail_on_write_and_measure_never_asserts()
     }
 }
 
+// The reference audit's narrowing reproducer (audit/int64_narrowing_assert.cpp): the int64 and
+// int128 write assertions used to compare int64_t( value ), after the narrowing, so an unsigned
+// 2^64 - 1 became -1, landed inside [-1, 0], and went on the wire as -1 with no assertion. The
+// assertion now judges the caller's value as passed, sign included
+
+template <typename Stream> static bool run_int64( Stream & stream, uint64_t & value )
+{
+    serialize_int64( stream, value, -1, 0 );
+    return true;
+}
+
+template <typename Stream> static bool run_write_int64( Stream & stream, uint64_t value )
+{
+    write_int64( stream, value, -1, 0 );
+    return true;
+}
+
+template <typename Stream> static bool run_int_wide( Stream & stream, uint64_t & value )
+{
+    serialize_int( stream, value, -1, 0 );
+    return true;
+}
+
+template <typename Stream> static bool run_int128( Stream & stream, serialize::uint128_t & value )
+{
+    serialize_int128( stream, value, serialize::int128_t( -1 ), serialize::int128_t( 0 ) );
+    return true;
+}
+
+#if defined( SERIALIZE_HAS_COMPILE_TIME_SURFACE )
+template <typename Stream> static bool run_int64_compile_time( Stream & stream, uint64_t & value )
+{
+    serialize_int64_compile_time( stream, value, -1, 0 );
+    return true;
+}
+#endif // #if defined( SERIALIZE_HAS_COMPILE_TIME_SURFACE )
+
+static void test_int64_asserts_before_narrowing()
+{
+    printf( "  int64 and int128 range assertions before narrowing\n" );
+
+    uint8_t buffer[64];
+    memset( buffer, 0, sizeof( buffer ) );
+    const uint64_t all_ones = ~uint64_t( 0 );
+    {
+        reset();
+        serialize::WriteStream stream( buffer, (int64_t) sizeof( buffer ) );
+        uint64_t value = all_ones;
+        run_int64( stream, value );
+        check( assert_fires > 0, "serialize_int64: an unsigned 2^64 - 1 in [-1, 0] trips the assertion" );
+        printf( "      assertion: %s\n", assert_condition );
+    }
+    {
+        reset();
+        serialize::WriteStream stream( buffer, (int64_t) sizeof( buffer ) );
+        run_write_int64( stream, all_ones );
+        check( assert_fires > 0, "write_int64: the same" );
+    }
+    {
+        reset();
+        serialize::MeasureStream stream;
+        uint64_t value = all_ones;
+        run_int64( stream, value );
+        check( assert_fires > 0, "and on a measure stream" );
+    }
+    {
+        reset();
+        serialize::WriteStream stream( buffer, (int64_t) sizeof( buffer ) );
+        uint64_t value = all_ones;
+        run_int_wide( stream, value );
+        check( assert_fires > 0, "serialize_int: an unsigned 2^64 - 1 in [-1, 0] trips it too" );
+    }
+    {
+        reset();
+        serialize::WriteStream stream( buffer, (int64_t) sizeof( buffer ) );
+        serialize::uint128_t value = ~serialize::uint128_t( 0 );
+        run_int128( stream, value );
+        check( assert_fires > 0, "serialize_int128: an unsigned 2^128 - 1 in [-1, 0] trips the assertion" );
+    }
+#if defined( SERIALIZE_HAS_COMPILE_TIME_SURFACE )
+    {
+        reset();
+        serialize::WriteStream stream( buffer, (int64_t) sizeof( buffer ) );
+        uint64_t value = all_ones;
+        run_int64_compile_time( stream, value );
+        check( assert_fires > 0, "serialize_int64_compile_time: the same" );
+    }
+#endif // #if defined( SERIALIZE_HAS_COMPILE_TIME_SURFACE )
+    {
+        reset();
+        serialize::WriteStream stream( buffer, (int64_t) sizeof( buffer ) );
+        uint64_t value = 0;
+        run_int64( stream, value );
+        check( assert_fires == 0, "an unsigned 0 in [-1, 0] does not" );
+    }
+}
+
 int main()
 {
     printf( "\nwrite side assertions\n\n" );
+
+    test_int64_asserts_before_narrowing();
 
     test_reject_asserts_on_write_and_measure();
     test_int_bounds_are_int32();

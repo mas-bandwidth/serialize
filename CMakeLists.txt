@@ -122,12 +122,17 @@ if(SERIALIZE_BUILD_TESTS)
     add_executable(serialize_asserts asserts.cpp serialize.h)
     set_target_properties(serialize_asserts PROPERTIES OUTPUT_NAME asserts)
 
+    # the buffer edges, differentially: tight multiple-of-8 write buffers with a canary, and read
+    # slack of 0x00 and 0xFF that must never change a value or a decision (edge.cpp)
+    add_executable(serialize_edge edge.cpp serialize.h)
+    set_target_properties(serialize_edge PROPERTIES OUTPUT_NAME edge CXX_STANDARD 11 CXX_STANDARD_REQUIRED ON)
+
     # serialize_utf.h, the wstring migration helper: wide text to UTF-8 and back, outside the
     # format and outside serialize.h's stream API
     add_executable(serialize_utf utf.cpp serialize.h serialize_utf.h)
     set_target_properties(serialize_utf PROPERTIES OUTPUT_NAME utf)
 
-    foreach(target serialize_test example serialize_conformance serialize_asserts serialize_utf)
+    foreach(target serialize_test example serialize_conformance serialize_asserts serialize_utf serialize_edge)
         target_link_libraries(${target} PRIVATE serialize)
         target_compile_options(${target} PRIVATE ${SERIALIZE_DEV_FLAGS})
         target_compile_definitions(${target} PRIVATE
@@ -350,6 +355,7 @@ if(SERIALIZE_BUILD_TESTS)
     endforeach()
     add_test(NAME asserts COMMAND serialize_asserts)
     add_test(NAME utf COMMAND serialize_utf)
+    add_test(NAME edge COMMAND serialize_edge)
 
     # THE SAME SUITE A SECOND TIME AT -ffp-contract=on, AND A THIRD TIME AT
     # -ffp-contract=fast. This is not belt and braces; these are the only builds in which the
