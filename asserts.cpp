@@ -356,9 +356,293 @@ static void test_compressed_float_declaration_top_must_decode_finite()
     }
 }
 
+// serialize_reject is a read side refusal. On a write or measure stream there is nothing to
+// refuse, so calling it is caller error, asserted like any other write side misuse; with the
+// recording assert the macro still returns false, which is what a release build does.
+
+template <typename Stream> static bool run_reject( Stream & stream )
+{
+    serialize_reject( stream );
+}
+
+static void test_reject_asserts_on_write_and_measure()
+{
+    printf( "  serialize_reject\n" );
+
+    uint8_t buffer[64];
+    memset( buffer, 0, sizeof( buffer ) );
+    {
+        reset();
+        serialize::WriteStream stream( buffer, (int64_t) sizeof( buffer ) );
+        const bool result = run_reject( stream );
+        check( assert_fires > 0, "rejecting on a write stream trips the assertion" );
+        check( result == false, "and the macro still returns false" );
+        printf( "      assertion: %s\n", assert_condition );
+    }
+    {
+        reset();
+        serialize::MeasureStream stream;
+        const bool result = run_reject( stream );
+        check( assert_fires > 0, "rejecting on a measure stream trips the assertion" );
+        check( result == false, "and the macro still returns false" );
+    }
+    {
+        reset();
+        serialize::ReadStream stream( buffer, 8 );
+        const bool result = run_reject( stream );
+        check( assert_fires == 0, "rejecting on a read stream does not: it is a refusal" );
+        check( result == false && stream.GetRefusal() == serialize::REFUSAL_REJECTED, "and it refuses as rejected" );
+    }
+}
+
+// IMPLEMENTING.md U5: serialize_int's bounds are int32. A bound outside int32 is caller error,
+// caught on the caller's original expression, never narrowed into a silently different field
+
+template <typename Stream> static bool run_int( Stream & stream, int64_t value, int64_t min, int64_t max )
+{
+    serialize_int( stream, value, min, max );
+    return true;
+}
+
+static void test_int_bounds_are_int32()
+{
+    printf( "  serialize_int bounds\n" );
+
+    uint8_t buffer[64];
+    memset( buffer, 0, sizeof( buffer ) );
+    {
+        reset();
+        serialize::WriteStream stream( buffer, (int64_t) sizeof( buffer ) );
+        run_int( stream, 5, 0, int64_t( 4294967301LL ) );                     // 2^32 + 5: narrowed, a legal max of 5
+        check( assert_fires > 0, "a max past int32 trips the assertion" );
+        printf( "      assertion: %s\n", assert_condition );
+    }
+    {
+        reset();
+        serialize::MeasureStream stream;
+        run_int( stream, 0, int64_t( -2147483647LL ) - 2, 10 );
+        check( assert_fires > 0, "a min below int32 trips it on a measure too" );
+    }
+    {
+        reset();
+        serialize::WriteStream stream( buffer, (int64_t) sizeof( buffer ) );
+        run_int( stream, 0, int64_t( -2147483647LL ) - 1, int64_t( 2147483647LL ) );
+        check( assert_fires == 0, "the full int32 range does not" );
+    }
+}
+
+// IMPLEMENTING.md U10: a write checks room for the whole operation before it writes any of it.
+// With the recording assertion the operation carries on, so the FIRST assertion to fire is the
+// one that names the whole operation, ahead of any piece of it
+
+template <typename Stream> static bool run_string( Stream & stream, char * string, int buffer_size )
+{
+    serialize_string( stream, string, buffer_size );
+    return true;
+}
+
+static void test_write_checks_room_for_the_whole_operation()
+{
+    printf( "  whole operation room\n" );
+
+    uint8_t buffer[64];
+    memset( buffer, 0, sizeof( buffer ) );
+    {
+        reset();
+        serialize::WriteStream stream( buffer, 8 );                             // 64 bits
+        uint32_t lead = 0;
+        stream.SerializeBits( lead, 3 );
+        char text[16] = "abcdefgh";                                             // 4 + 1 + 64 bits after the 3, 61 left
+        run_string( stream, text, 16 );
+        check( assert_fires > 0, "a string whose payload does not fit trips the assertion" );
+        check( strstr( assert_condition, "serialize_write_has_room" ) != NULL, "and the first to fire is the whole operation check" );
+        printf( "      assertion: %s\n", assert_condition );
+    }
+    {
+        reset();
+        serialize::WriteStream stream( buffer, 8 );
+        uint32_t lead = 0;
+        stream.SerializeBits( lead, 3 );
+        char text[16] = "abcdef";                                               // 3 + 4 + 1 + 48 + ... fits
+        run_string( stream, text, 16 );
+        check( assert_fires == 0, "a string that fits does not" );
+    }
+    {
+        reset();
+        serialize::WriteStream stream( buffer, 8 );
+        uint32_t lead = 0;
+        stream.SerializeBits( lead, 1 );
+        uint8_t data[8] = { 0 };
+        stream.SerializeBytes( data, 8 );                                       // 1 + 7 + 64 bits of a 64 bit buffer
+        check( assert_fires > 0, "bytes whose payload does not fit after the align trip the assertion" );
+        check( strstr( assert_condition, "GetAlignBits" ) != NULL, "and the first to fire counts the align with the payload" );
+        printf( "      assertion: %s\n", assert_condition );
+    }
+}
+
+// IMPLEMENTING.md U9 and U14: serialize_fail on a write or measure stream returns false and never
+// asserts: it is the one routing every refusal takes, and only a read stream has anything to latch
+
+static void test_fail_on_write_and_measure_never_asserts()
+{
+    printf( "  serialize_fail on write and measure\n" );
+
+    uint8_t buffer[64];
+    {
+        reset();
+        serialize::WriteStream stream( buffer, (int64_t) sizeof( buffer ) );
+        check( serialize::serialize_fail( stream, serialize::REFUSAL_PAST_END ) == false && assert_fires == 0, "a write stream returns false without asserting" );
+    }
+    {
+        reset();
+        serialize::MeasureStream stream;
+        check( serialize::serialize_fail( stream, serialize::REFUSAL_REJECTED ) == false && assert_fires == 0, "a measure stream returns false without asserting" );
+    }
+}
+
+// The reference audit's narrowing reproducer (audit/int64_narrowing_assert.cpp): the int64 and
+// int128 write assertions used to compare int64_t( value ), after the narrowing, so an unsigned
+// 2^64 - 1 became -1, landed inside [-1, 0], and went on the wire as -1 with no assertion. The
+// assertion now judges the caller's value as passed, sign included
+
+template <typename Stream> static bool run_int64( Stream & stream, uint64_t & value )
+{
+    serialize_int64( stream, value, -1, 0 );
+    return true;
+}
+
+template <typename Stream> static bool run_write_int64( Stream & stream, uint64_t value )
+{
+    write_int64( stream, value, -1, 0 );
+    return true;
+}
+
+template <typename Stream> static bool run_int_wide( Stream & stream, uint64_t & value )
+{
+    serialize_int( stream, value, -1, 0 );
+    return true;
+}
+
+template <typename Stream> static bool run_int128( Stream & stream, const serialize::uint128_t & value )
+{
+    write_int128( stream, value, serialize::int128_t( -1 ), serialize::int128_t( 0 ) );     // write only: an unsigned 128 bit destination has no read form on the emulated type
+    return true;
+}
+
+template <typename Stream> static bool run_write_int64_unsigned_bounds( Stream & stream, int64_t value, uint64_t min, uint64_t max )
+{
+    write_int64( stream, value, min, max );
+    return true;
+}
+
+template <typename Stream> static bool run_int64_unsigned_bounds( Stream & stream, int64_t & value, uint64_t min, uint64_t max )
+{
+    serialize_int64( stream, value, min, max );
+    return true;
+}
+
+#if defined( SERIALIZE_HAS_COMPILE_TIME_SURFACE )
+template <typename Stream> static bool run_int64_compile_time( Stream & stream, uint64_t & value )
+{
+    serialize_int64_compile_time( stream, value, -1, 0 );
+    return true;
+}
+#endif // #if defined( SERIALIZE_HAS_COMPILE_TIME_SURFACE )
+
+static void test_int64_asserts_before_narrowing()
+{
+    printf( "  int64 and int128 range assertions before narrowing\n" );
+
+    uint8_t buffer[64];
+    memset( buffer, 0, sizeof( buffer ) );
+    const uint64_t all_ones = ~uint64_t( 0 );
+    {
+        reset();
+        serialize::WriteStream stream( buffer, (int64_t) sizeof( buffer ) );
+        uint64_t value = all_ones;
+        run_int64( stream, value );
+        check( assert_fires > 0, "serialize_int64: an unsigned 2^64 - 1 in [-1, 0] trips the assertion" );
+        printf( "      assertion: %s\n", assert_condition );
+    }
+    {
+        reset();
+        serialize::WriteStream stream( buffer, (int64_t) sizeof( buffer ) );
+        run_write_int64( stream, all_ones );
+        check( assert_fires > 0, "write_int64: the same" );
+    }
+    {
+        reset();
+        serialize::MeasureStream stream;
+        uint64_t value = all_ones;
+        run_int64( stream, value );
+        check( assert_fires > 0, "and on a measure stream" );
+    }
+    {
+        reset();
+        serialize::WriteStream stream( buffer, (int64_t) sizeof( buffer ) );
+        uint64_t value = all_ones;
+        run_int_wide( stream, value );
+        check( assert_fires > 0, "serialize_int: an unsigned 2^64 - 1 in [-1, 0] trips it too" );
+    }
+    {
+        reset();
+        serialize::WriteStream stream( buffer, (int64_t) sizeof( buffer ) );
+        serialize::uint128_t value = ~serialize::uint128_t( 0 );
+        run_int128( stream, value );
+        check( assert_fires > 0, "write_int128: an unsigned 2^128 - 1 in [-1, 0] trips the assertion" );
+    }
+#if defined( SERIALIZE_HAS_COMPILE_TIME_SURFACE )
+    {
+        reset();
+        serialize::WriteStream stream( buffer, (int64_t) sizeof( buffer ) );
+        uint64_t value = all_ones;
+        run_int64_compile_time( stream, value );
+        check( assert_fires > 0, "serialize_int64_compile_time: the same" );
+    }
+#endif // #if defined( SERIALIZE_HAS_COMPILE_TIME_SURFACE )
+    {
+        reset();
+        serialize::WriteStream stream( buffer, (int64_t) sizeof( buffer ) );
+        uint64_t value = 0;
+        run_int64( stream, value );
+        check( assert_fires == 0, "an unsigned 0 in [-1, 0] does not" );
+    }
+
+    // U16: a bound that arrives as an unsigned 64 bit value above INT64_MAX does not fit, though it
+    // converts to a legal negative int64
+    {
+        reset();
+        serialize::WriteStream stream( buffer, (int64_t) sizeof( buffer ) );
+        run_write_int64_unsigned_bounds( stream, 0, all_ones, 0 );
+        check( assert_fires > 0, "write_int64: an unsigned 2^64 - 1 min trips the assertion" );
+        printf( "      assertion: %s\n", assert_condition );
+    }
+    {
+        reset();
+        serialize::MeasureStream stream;
+        int64_t value = 0;
+        run_int64_unsigned_bounds( stream, value, all_ones, 0 );
+        check( assert_fires > 0, "serialize_int64 on a measure: the same" );
+    }
+    {
+        reset();
+        serialize::WriteStream stream( buffer, (int64_t) sizeof( buffer ) );
+        int64_t value = 0;
+        run_int64_unsigned_bounds( stream, value, 0, 1 );
+        check( assert_fires == 0, "unsigned bounds that fit do not" );
+    }
+}
+
 int main()
 {
     printf( "\nwrite side assertions\n\n" );
+
+    test_int64_asserts_before_narrowing();
+
+    test_reject_asserts_on_write_and_measure();
+    test_int_bounds_are_int32();
+    test_write_checks_room_for_the_whole_operation();
+    test_fail_on_write_and_measure_never_asserts();
 
     test_value_in_int_relative_domain();
     test_write_int_relative_asserts_on_the_callers_value();

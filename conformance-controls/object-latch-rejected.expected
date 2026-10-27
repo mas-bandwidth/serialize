@@ -1,0 +1,17 @@
+# The vectors a reader fails when this rule is deleted, and no others:
+# a nested object that refuses on its own latches rejected.
+#
+# CMakeLists.txt builds that reader, and ctest requires its failures to be
+# exactly this list. A vector added to the corpus that pins the rule belongs here.
+#
+# The runner's object checks drive a callback that returns false against every
+# refused vector in object.txt, so each of them goes red when the latch records
+# nothing; the vectors the corpus states for the rule are the two object-callback
+# ones.
+
+object-callback-rejects
+object-callback-rejects-is-terminal
+object-refusal-propagates-out-of-the-nesting
+object-refusal-past-the-end-propagates
+object-wire-refusal-then-callback-rejects-keeps-past-end
+object-wire-refusal-then-callback-rejects-keeps-nonzero-padding

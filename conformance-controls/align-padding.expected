@@ -16,3 +16,5 @@ sequence-refusal-is-terminal-after-bad-alignment
 string-refuse-non-zero-align-padding
 bytes-refuse-padding-before-a-truncated-payload
 string-refuse-padding-before-a-truncated-payload
+object-wire-refusal-then-callback-rejects-keeps-nonzero-padding
+sequence-wire-refusal-then-reject-keeps-the-wire-reason

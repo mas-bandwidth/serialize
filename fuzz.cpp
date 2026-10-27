@@ -652,8 +652,10 @@ extern "C" int LLVMFuzzerTestOneInput( const uint8_t * data, size_t size )
 
     // pass 1: hostile read of arbitrary bytes
     {
-        // the buffer allocation must extend at least 8 bytes past the data, because the bit reader loads 64 bit windows
-        std::vector<uint8_t> buffer( payloadBytes + 8, 0 );
+        // the buffer allocation must extend at least 8 bytes past the data, because the bit reader loads 64 bit windows.
+        // The slack is all ones, not zeros: bytes past the end are loaded but must never be interpreted, and a
+        // reader that leaked them into a value or a decision would pass on zeros (end's padding check included)
+        std::vector<uint8_t> buffer( payloadBytes + 8, 0xFF );
         memcpy( buffer.data(), payload, payloadBytes );
 
         serialize::ReadStream stream( buffer.data(), (int) payloadBytes );
@@ -693,6 +695,31 @@ extern "C" int LLVMFuzzerTestOneInput( const uint8_t * data, size_t size )
         ValuePool writePool( payload, payloadBytes );
         fuzz_check( FuzzRoundTrip( writeStream, ops, NumOps, writePool ) == true );             // writing in-range values must always succeed
         writeStream.Flush();
+
+        // the same writes into a buffer that is exactly the smallest multiple of 8 holding them, followed by
+        // a canary. The qword flush must stay inside the buffer and produce the same bytes. ASan cannot see a
+        // partial-granule overrun past a tight allocation (CLAUDE.md), so the canary is the check
+        {
+            const int64_t written = writeStream.GetBytesProcessed();
+            int64_t tightBytes = ( ( written + 7 ) / 8 ) * 8;
+            if ( tightBytes == 0 )
+            {
+                tightBytes = 8;
+            }
+            const int CanaryBytes = 16;
+            std::vector<uint8_t> tight( (size_t) ( tightBytes + CanaryBytes ), 0xA5 );
+            memset( tight.data() + tightBytes, 0xAA, CanaryBytes );
+            serialize::WriteStream tightStream( tight.data(), tightBytes );
+            ValuePool tightPool( payload, payloadBytes );
+            fuzz_check( FuzzRoundTrip( tightStream, ops, NumOps, tightPool ) == true );
+            tightStream.Flush();
+            fuzz_check( tightStream.GetBytesProcessed() == written );
+            fuzz_check( written == 0 || memcmp( tight.data(), writeBuffer, (size_t) written ) == 0 );
+            for ( int i = 0; i < CanaryBytes; i++ )
+            {
+                fuzz_check( tight[(size_t) ( tightBytes + i )] == 0xAA );
+            }
+        }
 
         serialize::MeasureStream measureStream;
         ValuePool measurePool( payload, payloadBytes );

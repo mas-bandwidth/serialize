@@ -52,6 +52,29 @@ operation:
 * **Wide integers are exact.** The document now states it, and the corpus pins
   the edges where an implementation backed by a double loses bits. [controls: int64-through-double]
 
+**What 2.1 changed, and what it breaks.** The 2.1 revision of this document
+and its corpus leaves the wire at format 2.0: no byte a conforming 2.0 writer
+emits reads differently. It adds one refusal reason, `rejected`, for a refusal
+the caller decides rather than the wire, so every implementation's reasons
+agree where they used to disagree, and a refused stream never reports none. A
+2.0 reader that reported no reason, or a wire reason, for its caller's own
+refusal is the only thing that changes, and the corpus gains the `reject` step
+that pins it. [vectors: sequence-reject-at-the-top-level, object-callback-rejects] [controls: object-latch-rejected, reject-reason]
+
+2.1 also states, in [IMPLEMENTING.md](IMPLEMENTING.md), the uniform behaviour
+rules U1 to U16: write buffers, write and measure misuse, a reader that never
+traps, caller declarations validated before any bits move, `end` on a writer,
+re-initialization, the refusal names, and the extras an implementation may
+carry. No stream can observe them, so they are not rules of this document and no
+vector cites them; every implementation keeps them and proves them with its own
+unit tests.
+
+2.1 also pins two things 2.0 already required and no vector discriminated: a
+finite `double` whose 32-bit halves are shaped like `float32` signalling NaNs,
+and its neighbours beside a `float`, keep their exact bits; and a
+`compressed_float` decode lies in `[min, min + delta]`, which can exceed `max`.
+Both were found by the cross-port audits of 2026-10-27. [vectors: double-finite-high-half-snan-shaped, float-finite-between-snan-shaped-groups, compressed-float-top-integer-decodes-above-max-by-delta-rounding]
+
 Format version 1.1 was the rulings of 2026-08-15, 2026-08-23 and 2026-09-04 over
 the document as first written (1.0); every one of them stands in 2.0.
 
@@ -383,6 +406,14 @@ and the bits a reader returns must be the bits it read. Flush to zero is an
 arithmetic concern of the program that uses the value, never of storage.
 [vectors: float-positive-zero, float-negative-zero, float-one, float-negative-one, float-pi, float-smallest-positive-denormal, float-largest-denormal, float-negative-denormal, float-largest-negative-denormal, float-smallest-positive-normal, float-largest-finite, float-most-negative-finite, double-positive-zero, double-negative-zero, double-one, double-one-third, double-low-half-only, double-high-half-only, double-smallest-positive-denormal, double-largest-denormal, double-negative-denormal, double-smallest-positive-normal, double-largest-finite, double-most-negative-finite, sequence-float-unaligned-between-bools]
 
+**No bits pass through a `float32` view on their way to or from the wire.** A
+finite `double` whose 32-bit halves are shaped like `float32` signalling NaNs,
+and a raw 32-bit group of that shape beside a `float`, must be read and written
+with their exact bits: a runtime that moves 32-bit groups through a `float32`
+value or typed-array view may quiet them, turning a finite `double` into a NaN
+or an infinity, so an implementation on such a runtime moves the groups as
+integers. [vectors: double-finite-high-half-snan-shaped, double-finite-high-half-snan-shaped-low-half-zero, double-finite-low-half-snan-shaped, double-finite-both-halves-snan-shaped, double-finite-negative-both-halves-snan-shaped, float-finite-between-snan-shaped-groups, float-largest-finite-between-snan-shaped-groups-unaligned]
+
 Conformance vectors for these operations compare **bit patterns, not values**:
 `-0.0 == 0.0` in value space, and a tolerance comparison cannot see a flushed
 subnormal.
@@ -425,6 +456,12 @@ product rounds before `min` is added, and the sum rounds. A reader must decode
 to exactly those bits, never widened and never fused. Fused, a decode over a
 non-zero `min` lands one ulp away. [vectors: compressed-float-zero-integer-over-0-10, compressed-float-on-quantum-anchor-over-0-10, compressed-float-integer-one-over-0-10, compressed-float-accepts-max-integer-value-over-0-10, compressed-float-nonzero-min-integer-zero, compressed-float-nonzero-min-midpoint, compressed-float-nonzero-min-fused-decode-differs-by-one-ulp, compressed-float-nonzero-min-off-quantum, compressed-float-nonzero-min-accepts-max-integer-value, compressed-float-clamp-band-integer-zero, compressed-float-wire-divergence-band-integer-zero, compressed-float-values-clamped-at-the-high-end, compressed-float-values-clamped-integer-zero, compressed-float-values-clamped-at-the-low-end-zero, compressed-float-values-clamped-at-the-low-end-one]
 
+**A decode lies in `[min, min + delta]`, not in `[min, max]`.** `delta` is
+`max - min` rounded to `float32`, so it can exceed the span: over
+`[-1, 16777218]` at resolution `1` it is `16777220`, and the top integer
+decodes to `16777220`, above `max`. A reader must accept that decode with its
+exact bits, never clamp it to `max` and never refuse it. [vectors: compressed-float-top-integer-decodes-above-max-by-delta-rounding]
+
 A reader must refuse an integer greater than `max_integer_value` as
 `value_out_of_range`. [vectors: compressed-float-refuse-integer-one-past-max-integer-value, compressed-float-refuse-integer-all-ten-bits, compressed-float-nonzero-min-refuse-integer-one-past-max-integer-value, compressed-float-nonzero-min-refuse-integer-all-fifteen-bits, compressed-float-clamp-band-refuse-integer-one-past-max-integer-value, compressed-float-clamp-band-refuse-integer-all-twenty-four-bits, compressed-float-values-clamped-refuse-integer-one-past-max-integer-value, compressed-float-values-clamped-refuse-integer-all-thirty-two-bits]
 
@@ -448,6 +485,11 @@ of its own**: whatever the nested object writes appears at exactly this
 position, with no framing, length prefix or alignment around it, and a refusal
 inside it is a refusal of the whole. A reader must read a nested object exactly
 as it reads the same operations unnested. [vectors: object-flat-twin, object-adds-no-bytes-of-its-own, object-nested-in-the-middle-of-a-stream, object-inserts-no-alignment, object-containing-an-aligning-operation, object-refusal-propagates-out-of-the-nesting, object-refusal-past-the-end-propagates]
+
+**A nested object whose serialize function fails refuses the stream.** When
+nothing inside it refused, the reason is `rejected`; when a primitive inside it
+refused first, the reason is that primitive's. Either way the stream is failed
+from there on. [vectors: object-callback-rejects, object-callback-rejects-is-terminal, object-wire-refusal-then-callback-rejects-keeps-past-end, object-wire-refusal-then-callback-rejects-keeps-nonzero-padding] [controls: object-latch-rejected]
 
 ## Bytes and Strings
 
@@ -699,6 +741,30 @@ about the format however red the stream ends up. The reason reported is the
 | `invalid_utf8` | a string payload that is not well-formed UTF-8 |
 | `embedded_nul` | a zero byte among a string's transmitted bytes |
 | `non_canonical` | an encoding a conforming writer never produces for the value it carries: the `int_relative` absolute tier carrying a bounded difference |
+| `rejected` | the bytes were well formed, and the reader's caller refused the value they carry |
+
+**A refusal the caller decides, rather than the wire, is `rejected`.** Every
+other reason names a rule of this document; `rejected` names the caller's own
+validation, which refuses a value whose bytes broke no rule. Every
+implementation must give its caller a way to refuse a read, and a refusal made
+that way is `rejected`. A nested `object` whose serialize function fails without
+any refusal of its own must refuse as `rejected` too, so a refused stream
+always reports a reason and never none. So must a refusal made with no reason,
+or with any reason outside this list: it is the caller refusing without saying
+why, never an assertion or a trap, and a refused stream that reported none
+would be relabelled `past_end` by the next read. A refusal is a value, never a
+thrown exception. It is terminal like every other refusal: the stream is
+poisoned, and every later read on it refuses. The first
+reason wins here as everywhere: a caller that refuses after a primitive already
+refused, inside an object or at the top level, leaves the primitive's reason in
+place, and nothing done to a failed stream changes the reason it reports. An
+object whose fields are accepted and whose caller does not refuse is accepted.
+[vectors: sequence-reject-at-the-top-level, sequence-reject-is-terminal, sequence-wire-refusal-then-reject-keeps-the-wire-reason, object-callback-rejects, object-callback-rejects-is-terminal, object-wire-refusal-then-callback-rejects-keeps-past-end, object-wire-refusal-then-callback-rejects-keeps-nonzero-padding, object-accepted-when-the-callback-does-not-reject] [controls: object-latch-rejected, reject-reason]
+
+`rejected` changes no byte of the wire: a stream a conforming writer emits reads
+the same with it, and only a reader's caller ever chooses it. How an
+implementation spells the caller's side of it is in
+[IMPLEMENTING.md](IMPLEMENTING.md).
 
 ## Compatibility Notes
 
@@ -738,8 +804,8 @@ byte for byte and refuses every refused vector for its stated reason. [vectors: 
 | `bytes.txt` | the align first, and a zero count that still performs it |
 | `string.txt` | the length rule, UTF-8 refusals, the NUL refusal, and real text in every script round tripped byte for byte |
 | `end.txt` | trailing data and padding refused, an exact stream accepted |
-| `object.txt` | no bytes of its own, each vector twinned with the same operations unnested |
-| `sequence.txt` | alignment after an odd width, zero-bit fields, terminal failure, and the measure floor |
+| `object.txt` | no bytes of its own, each vector twinned with the same operations unnested, and a failing callback refused as `rejected` |
+| `sequence.txt` | alignment after an odd width, zero-bit fields, terminal failure, the caller's `reject`, and the measure floor |
 | `message.txt` | the worked example's run, and the whole golden message |
 
 **A runner discovers the directory and runs every vector in it.** A runner must
@@ -775,7 +841,11 @@ lists one entry per step separated by ` | `, with `-` for a step with no value
 of its own. There is one step spelling per operation, listed at the head of
 `conformance/sequence.txt`, so any message the format can carry can be stated
 as a sequence, the golden message included. `object <n>` wraps the next `n`
-steps in a nested object.
+steps in a nested object. `reject` is the caller refusing at that point, and
+appears only in refused vectors: at the top level a runner refuses through its
+implementation's way for a caller to refuse, and inside an `object` the object's
+serialize function fails there without refusing on its own. It reads nothing
+and states `-`. [vectors: sequence-reject-at-the-top-level, object-callback-rejects]
 
 **A harness presents every stream with the slack its implementation's buffer
 contract requires**, filled with a non-zero pattern, so a decode that depends on
@@ -804,7 +874,7 @@ skip; and, for each refusal rule, a reader with that one rule deleted, run
 against the real corpus, which must fail exactly the vectors its
 `conformance-controls/<rule>.expected` file names and no others. A control that
 stops finding anything to break is a failure of the control and not a licence
-to remove it. [controls: unknown-operation, align-padding, ranged-reconstruction, ranged-range, fixed-degenerate-terminal, float-finite, double-finite, compressed-float-finite, end-trailing-data, end-padding, int-relative-canonical, string-embedded-nul, string-utf8, string-utf8-surrogate, int64-through-double, wrong-reason]
+to remove it. [controls: unknown-operation, align-padding, ranged-reconstruction, ranged-range, fixed-degenerate-terminal, float-finite, double-finite, compressed-float-finite, end-trailing-data, end-padding, int-relative-canonical, string-embedded-nul, string-utf8, string-utf8-surrogate, int64-through-double, wrong-reason, object-latch-rejected, reject-reason]
 
 **Vectors discriminate.** A value from the middle of a range, or one where every
 plausible reading agrees, proves nothing: the `compressed_float` divergence

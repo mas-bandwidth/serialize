@@ -23,9 +23,18 @@
 #     int_relative <previous>
 #     compressed_float <min> <max> <res>
 #     fixed <integer_bits> <fraction_bits> <min> <max>
+#     reject
 #
 # There is one spelling per operation, so any message this format can carry can
 # be written as a sequence, the golden message in message.txt included.
+#
+# `reject` is not a wire operation: it is the caller refusing, here, a value
+# whose bytes were well formed (STANDARD.md, "Refusal reasons", `rejected`). It
+# reads nothing and has no value, so it states `-`. At the top level a runner
+# refuses through its implementation's reject entry point (serialize_reject in
+# the C++ reference); inside an `object` it is that object's serialize function
+# returning failure there without refusing on its own, which the object must
+# latch as `rejected`. It only appears in refused vectors.
 #
 # `expect value` lists one entry per step in order, separated by ` | `, with
 # `-` for a step that produces no value of its own. `consumed` is the total
@@ -205,3 +214,41 @@ param step = string 16
 param step = string 16
 bytes 06 67 6F 6C
 expect refused past_end
+
+# The caller's own refusal. The four bits are well formed and the read accepts
+# them; then the caller refuses the value they carry. The reason is `rejected`:
+# no wire rule refused, so no wire reason may be reported, and a reader that
+# latches nothing, or latches a wire reason such as value_out_of_range for the
+# caller's decision, fails here.
+
+operation sequence
+name sequence-reject-at-the-top-level
+param step = bits 4
+param step = reject
+bytes 05
+expect refused rejected
+
+# Rejection is terminal like every other refusal. A whole readable byte follows
+# the reject and an empty nested object after it, and both must refuse: the
+# stream is poisoned, not merely the caller's own function.
+
+operation sequence
+name sequence-reject-is-terminal
+param step = reject
+param step = bits 8
+param step = object 0
+bytes AB
+expect refused rejected
+
+# The first reason wins. The align refuses its set padding, then the caller
+# rejects on the failed stream: the reason stays the wire's, because the reject
+# is an echo of a stream that already refused.
+
+operation sequence
+name sequence-wire-refusal-then-reject-keeps-the-wire-reason
+param step = bits 3
+param step = align
+param step = reject
+param step = bits 8
+bytes FD AB
+expect refused nonzero_padding

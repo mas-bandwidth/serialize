@@ -153,3 +153,53 @@ operation double
 name double-refuse-past-end-empty-stream
 bytes
 expect refused past_end
+
+# Finite doubles whose 32-bit halves are shaped like a float32 signalling NaN:
+# exponent field all ones, top mantissa bit clear, mantissa non-zero. Each is a
+# finite double and must be accepted and reproduced bit for bit. A reader or
+# writer that moves either half through a float32 view (dart2wasm canonicalises
+# signalling NaNs that way) turns these finite values into NaN or an infinity,
+# or changes their bits. Found by the cross-port security audit, 2026-10-27.
+
+# The audit's witness, 1.6246e307: the high half 0x7FB72276 is sNaN shaped.
+
+operation double
+name double-finite-high-half-snan-shaped
+bytes 00 02 10 F2 76 22 B7 7F
+expect bits = 0x7FB72276F2100200
+consumed 64
+writer canonical
+
+# The second witness: the high half 0x7FB00000, the low half zero.
+
+operation double
+name double-finite-high-half-snan-shaped-low-half-zero
+bytes 00 00 00 00 00 00 B0 7F
+expect bits = 0x7FB0000000000000
+consumed 64
+writer canonical
+
+# The low half 0x7F800001 is sNaN shaped; the double is 1 plus a few ulps.
+
+operation double
+name double-finite-low-half-snan-shaped
+bytes 01 00 80 7F 00 00 F0 3F
+expect bits = 0x3FF000007F800001
+consumed 64
+writer canonical
+
+# Both halves sNaN shaped, and the same with the sign bit set.
+
+operation double
+name double-finite-both-halves-snan-shaped
+bytes 00 00 A0 7F 00 00 A0 7F
+expect bits = 0x7FA000007FA00000
+consumed 64
+writer canonical
+
+operation double
+name double-finite-negative-both-halves-snan-shaped
+bytes 01 00 80 FF 01 00 80 FF
+expect bits = 0xFF800001FF800001
+consumed 64
+writer canonical

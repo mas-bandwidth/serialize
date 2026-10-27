@@ -424,6 +424,19 @@ template <typename Stream> bool op_end( Stream & stream )
     return true;
 }
 
+// STANDARD.md, "Refusal reasons": the caller's own refusal, through the public macro. Only a
+// read can be refused; a reject step reaching a writer or a measure belongs to a vector that
+// expects acceptance, which the reader leg has already failed, so it refuses here rather than
+// tripping the macro's write side assertion
+template <typename Stream> bool op_reject( Stream & stream )
+{
+    if ( !Stream::IsReading )
+    {
+        return false;
+    }
+    serialize_reject( stream );
+}
+
 // ---------------------------------------------------------------------------------------
 // fixed point. Every parameter is a compile time constant of the call site, so the runner
 // carries a table of declarations and a vector naming one that is not in it FAILS rather than
@@ -628,7 +641,8 @@ enum StepKind
     STEP_STRING,
     STEP_END,
     STEP_FIXED,
-    STEP_OBJECT                             // opens a nested object over the steps that follow
+    STEP_OBJECT,                            // opens a nested object over the steps that follow
+    STEP_REJECT                             // the caller refuses here
 };
 
 struct Step
@@ -755,6 +769,11 @@ template <typename Stream> static bool run_step( Stream & stream, Step & step )
             // nesting is driven by run_steps, which owns the step range an object wraps; a bare
             // object step reaching here is a runner bug rather than a vector one
             return false;
+
+        case STEP_REJECT:
+            // a reject at the top level refuses through serialize_reject; inside a nested object
+            // run_steps turns it into the callback returning false before it reaches here
+            return op_reject( stream );
     }
     return false;
 }
@@ -787,6 +806,13 @@ template <typename Stream> static bool run_steps( Stream & stream, Step * steps,
 
 static Step * g_failedStep = NULL;      // the step a run stopped on, for the destination check
 
+// how many nested objects the run is inside. STANDARD.md, "The vector format": a `reject` step
+// at the top level refuses through the implementation's reject entry point (serialize_reject),
+// and inside an object it is the object's own Serialize returning false with no refusal of its
+// own, which serialize_object must latch as rejected. The two spellings a caller writes, both
+// pinned
+static int g_objectDepth = 0;
+
 struct NestedObject
 {
     Step * steps;
@@ -798,7 +824,10 @@ struct NestedObject
     template <typename Stream> bool Serialize( Stream & stream )
     {
         called = true;
-        return run_steps( stream, steps, count );
+        g_objectDepth++;
+        const bool result = run_steps( stream, steps, count );
+        g_objectDepth--;
+        return result;
     }
 };
 
@@ -886,6 +915,12 @@ template <typename Stream> static bool run_steps( Stream & stream, Step * steps,
             }
             continue;
         }
+        if ( steps[i].kind == STEP_REJECT && g_objectDepth > 0 )
+        {
+            // the callback refuses on its own: it returns false and touches nothing
+            if ( stoppedAt ) *stoppedAt = i;
+            return false;
+        }
         if ( !run_step( stream, steps[i] ) )
         {
             g_failedStep = &steps[i];
@@ -947,6 +982,11 @@ static bool step_from_words( const Vector & vector, const char * text, Step & st
     if ( strcmp( words[0], "align" ) == 0 && numWords == 1 )
     {
         step.kind = STEP_ALIGN;
+        return true;
+    }
+    if ( strcmp( words[0], "reject" ) == 0 && numWords == 1 )
+    {
+        step.kind = STEP_REJECT;
         return true;
     }
     if ( strcmp( words[0], "float" ) == 0 && numWords == 1 )
@@ -1263,6 +1303,7 @@ static void render_step_value( const Step & step, char * out, int outSize )
     switch ( step.kind )
     {
         case STEP_OBJECT:
+        case STEP_REJECT:
         case STEP_ALIGN:
         case STEP_END:
             // none has a value of its own; for align and end the corpus states the padding they
@@ -1409,9 +1450,9 @@ static void fail_unless_stream_is_terminal( const Vector & vector,
             fail( vector, "serialize_object accepted a callback returning false" );
             return;
         }
-        if ( callbackRefused.GetRefusal() != serialize::REFUSAL_NONE )
+        if ( callbackRefused.GetRefusal() != serialize::REFUSAL_REJECTED )
         {
-            fail( vector, "serialize_object callback-only refusal set a wire refusal reason" );
+            fail( vector, "serialize_object callback-only refusal did not latch rejected" );
             return;
         }
         int32_t probe = 12345;
@@ -1432,9 +1473,9 @@ static void fail_unless_stream_is_terminal( const Vector & vector,
             fail( vector, "nonzero-bit read succeeded after serialize_object callback refusal" );
             return;
         }
-        if ( callbackRefused.GetRefusal() != serialize::REFUSAL_NONE )
+        if ( callbackRefused.GetRefusal() != serialize::REFUSAL_REJECTED )
         {
-            fail( vector, "echo reads after serialize_object callback-only refusal overwrote REFUSAL_NONE" );
+            fail( vector, "echo reads after serialize_object callback-only refusal overwrote rejected" );
             return;
         }
 
