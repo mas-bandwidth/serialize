@@ -11,7 +11,7 @@ if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
     set(CMAKE_TARGET_MESSAGES OFF)
 endif()
 
-project(serialize VERSION 2.0.0 LANGUAGES CXX)
+project(serialize VERSION 2.0.1 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
