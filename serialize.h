@@ -5315,6 +5315,168 @@ bool ReadFunction( serialize::ReadStream & readStream )
     return true;
 }
 
+// U15 (IMPLEMENTING.md): a split write form is an allowed extra only if it is wire-identical
+// to its unified twin, from every start offset. The pair below writes the same fields once
+// through the serialize_ macros and once through the write_ macros, after a prefix of 0 to 63
+// bits, so every form starts at every position within a 64 bit word, the alignment and the
+// word carry included.
+
+struct WireIdenticalObject
+{
+    uint32_t a;
+    int32_t b;
+
+    template <typename Stream> bool Serialize( Stream & stream )
+    {
+        serialize_bits( stream, a, 7 );
+        serialize_int( stream, b, -50, 50 );
+        return true;
+    }
+};
+
+struct WireIdenticalFields
+{
+    uint32_t bits_value;
+    uint64_t bits64_value;
+    bool bool_value;
+    uint8_t uint8_value;
+    uint16_t uint16_value;
+    uint32_t uint32_value;
+    uint64_t uint64_value;
+    int32_t int_value;
+    int32_t degenerate_value;
+    int64_t int64_value;
+    serialize::int128_t int128_value;
+    int64_t fixed_value;
+    serialize::uint128_t uint128_value;
+    float float_value;
+    double double_value;
+    uint8_t bytes_value[7];
+    char string_value[16];
+    WireIdenticalObject object_value;
+    int relative_value;
+
+    void Init()
+    {
+        bits_value = 21;
+        bits64_value = 0x1FFFFFFFFULL;
+        bool_value = true;
+        uint8_value = 0xA5;
+        uint16_value = 0xBEEF;
+        uint32_value = 0xDEADBEEF;
+        uint64_value = 0xFFFFFFFFFFFFFFFFULL;
+        int_value = -17;
+        degenerate_value = 9;
+        int64_value = -50000000001LL;
+        int128_value = serialize::int128_t( -123456789LL );
+        fixed_value = int64_t( 12345 ) * 65536 + 32768;
+        uint128_value = ( serialize::uint128_t( 0x0123456789ABCDEFULL ) << 64 ) | 0xFEDCBA9876543210ULL;
+        float_value = 3.1415926f;
+        double_value = -0.0;
+        for ( int i = 0; i < (int) sizeof( bytes_value ); i++ )
+            bytes_value[i] = (uint8_t) ( 0x30 + i * 37 );
+        memset( string_value, 0, sizeof( string_value ) );
+        serialize_copy_string( string_value, "golden", sizeof( string_value ) );
+        object_value.a = 99;
+        object_value.b = -42;
+        relative_value = 105;
+    }
+};
+
+static void wire_identical_prefix( serialize::WriteStream & stream, int offset )
+{
+    int remaining = offset;
+    while ( remaining > 0 )
+    {
+        const int bits = remaining > 32 ? 32 : remaining;
+        uint32_t pattern = bits == 32 ? 0x5A5A5A5Au : ( 0x5A5A5A5Au & ( ( 1u << bits ) - 1 ) );
+        stream.SerializeBits( pattern, bits );
+        remaining -= bits;
+    }
+}
+
+template <typename Stream> bool wire_identical_unified( Stream & stream, WireIdenticalFields & f )
+{
+    serialize_bits( stream, f.bits_value, 5 );
+    serialize_bits( stream, f.bits64_value, 33 );
+    serialize_bool( stream, f.bool_value );
+    serialize_uint8( stream, f.uint8_value );
+    serialize_uint16( stream, f.uint16_value );
+    serialize_uint32( stream, f.uint32_value );
+    serialize_uint64( stream, f.uint64_value );
+    serialize_int( stream, f.int_value, -100, 100 );
+    serialize_int( stream, f.degenerate_value, 9, 9 );
+    serialize_int64( stream, f.int64_value, -60000000000LL, 60000000000LL );
+    serialize_int128( stream, f.int128_value, serialize::int128_t( -9223372036854775807LL - 1 ), serialize::int128_t( 9223372036854775807LL ) );
+    serialize_fixed( stream, f.fixed_value, 48, 16, -100000, +100000 );
+    serialize_uint128( stream, f.uint128_value );
+    serialize_float( stream, f.float_value );
+    serialize_double( stream, f.double_value );
+    serialize_bytes( stream, f.bytes_value, (int) sizeof( f.bytes_value ) );
+    serialize_string( stream, f.string_value, (int) sizeof( f.string_value ) );
+    serialize_align( stream );
+    serialize_object( stream, f.object_value );
+    serialize_int_relative( stream, 100, f.relative_value );
+    serialize_end( stream );
+    return true;
+}
+
+static void wire_identical_split( serialize::WriteStream & stream, WireIdenticalFields & f )
+{
+    write_bits( stream, f.bits_value, 5 );
+    write_bits( stream, f.bits64_value, 33 );
+    write_bool( stream, f.bool_value );
+    write_uint8( stream, f.uint8_value );
+    write_uint16( stream, f.uint16_value );
+    write_uint32( stream, f.uint32_value );
+    write_uint64( stream, f.uint64_value );
+    write_int( stream, f.int_value, -100, 100 );
+    write_int( stream, f.degenerate_value, 9, 9 );
+    write_int64( stream, f.int64_value, -60000000000LL, 60000000000LL );
+    write_int128( stream, f.int128_value, serialize::int128_t( -9223372036854775807LL - 1 ), serialize::int128_t( 9223372036854775807LL ) );
+    write_fixed( stream, f.fixed_value, 48, 16, -100000, +100000 );
+    write_uint128( stream, f.uint128_value );
+    write_float( stream, f.float_value );
+    write_double( stream, f.double_value );
+    write_bytes( stream, f.bytes_value, (int) sizeof( f.bytes_value ) );
+    write_string( stream, f.string_value, (int) sizeof( f.string_value ) );
+    write_align( stream );
+    write_object( stream, f.object_value );
+    write_int_relative( stream, 100, f.relative_value );
+    write_end( stream );
+}
+
+inline void test_write_forms_wire_identical()
+{
+    const int BufferSize = 256;
+
+    for ( int offset = 0; offset < 64; offset++ )
+    {
+        uint8_t unified_buffer[BufferSize];
+        uint8_t split_buffer[BufferSize];
+        memset( unified_buffer, 0xCD, sizeof( unified_buffer ) );
+        memset( split_buffer, 0xCD, sizeof( split_buffer ) );
+
+        WireIdenticalFields unified_fields;
+        unified_fields.Init();
+        serialize::WriteStream unified( unified_buffer, BufferSize );
+        wire_identical_prefix( unified, offset );
+        serialize_check( wire_identical_unified( unified, unified_fields ) );
+        unified.Flush();
+
+        WireIdenticalFields split_fields;
+        split_fields.Init();
+        serialize::WriteStream split( split_buffer, BufferSize );
+        wire_identical_prefix( split, offset );
+        wire_identical_split( split, split_fields );
+        split.Flush();
+
+        serialize_check( unified.GetBitsProcessed() == split.GetBitsProcessed() );
+        serialize_check( unified.GetBytesProcessed() == split.GetBytesProcessed() );
+        serialize_check( memcmp( unified_buffer, split_buffer, (size_t) unified.GetBytesProcessed() ) == 0 );
+    }
+}
+
 inline void test_read_write()
 {
     const int BufferSize = 10 * 1024;
@@ -11257,6 +11419,7 @@ inline void serialize_test()
         SERIALIZE_RUN_TEST( test_zigzag );
         SERIALIZE_RUN_TEST( test_serialize );
         SERIALIZE_RUN_TEST( test_read_write );
+        SERIALIZE_RUN_TEST( test_write_forms_wire_identical );
         SERIALIZE_RUN_TEST( test_serialize_integer_validation );
         SERIALIZE_RUN_TEST( test_serialize_degenerate_range );
         SERIALIZE_RUN_TEST( test_serialize_degenerate_range_64 );
