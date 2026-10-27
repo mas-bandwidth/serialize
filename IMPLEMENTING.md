@@ -151,11 +151,17 @@ the format.
 ## The C++ read and write forms
 
 The C++ implementation also spells every operation as a `read_` and a `write_`
-macro, for code paths that only ever read or only ever write, and they produce
-the bytes of their `serialize_` counterpart. They are C++ API, not format, and
-other implementations do not carry them: one stream abstraction with a read, a
-write and a measure conformer carries every operation. They are one of the
-allowed extras (U15).
+macro, except `compressed_float`, which has no `write_` form (and no `read_`
+form), for code paths that only ever read or only ever write, and they produce
+the bytes of their `serialize_` counterpart (test_write_forms_wire_identical
+compares each `write_` macro with its twin from every start offset). They are API,
+not format: one stream abstraction with a read, a write and a measure conformer
+carries every operation, and an implementation need not carry split forms. Split
+`read_`/`write_` forms are an allowed extra for C and C++; any implementation may
+carry split `write_` forms and typed conveniences under the conditions U15 sets.
+The fixed-width aliases `uint8` to `uint64` are not extras: STANDARD.md defines
+them as `bits` at their width, and they are part of every implementation's
+surface.
 
 ## Uniform behaviour: U1 to U16
 
@@ -267,7 +273,45 @@ and never none, because a refused stream that reported none would be relabelled
 **U15. The allowed extras, and the language necessities.** An implementation may
 carry these beyond the reference surface, and nothing else without a ruling:
 `Bits64` forms, `Continue`/`Until` loop helpers, batch APIs, the C write error
-flag, and split `read_`/`write_` forms (C and C++). The language necessities: moo's
+flag, split `read_`/`write_` forms (C and C++), and the wire-identical write and
+typed forms below.
+
+*Split write forms and typed conveniences (ruling, 2026-10-27: serialize exists
+to serve schema).* Any implementation may offer split `write_` forms, and typed
+conveniences, that are each one reference operation at a fixed declaration. The
+fixed-width aliases `uint8` to `uint64` are reference operations already
+(STANDARD.md, `bits`), not conveniences. Each form is allowed only if all of the
+following hold:
+
+* **It is wire-identical to its unified form.** It writes the same bytes and the
+  same bit count for every value its unified form accepts and for every
+  declaration, from every start offset.
+* **It makes every write-misuse check its unified form makes**, through the
+  same mechanism: the check model, U3 to U5, U8 to U10 and U16. Release
+  behaviour after misuse stays unspecified, as U8 says.
+* **The implementation documents, next to each form, why the form exists.** A
+  typical reason is that the unified call takes the value by reference so that
+  the read side can store through it, which forces a writer to copy the value or
+  bind it mutably.
+
+A form that is not wire-identical is a different operation, which is a format
+change and never an extra.
+
+*Conformance note.* No corpus vector can see an API form, so each implementation
+proves the conditions with its own unit tests:
+
+* Every such form is written against its unified twin after a prefix of every
+  length from 0 to 63 bits, so it starts at every position in a 64-bit word,
+  alignment and word carry included. The bytes and the bit counts must match.
+* The values cover each operation's edges: the 64-bit split, a degenerate range,
+  the full range, and a float's exact bits.
+* Each write misuse is shown to be caught by the form as its unified twin catches
+  it.
+
+The corpus runner drives the unified forms, which remain the operations the
+corpus pins.
+
+The language necessities: moo's
 numbers are Q48.16, so its exact `*Bits` float forms are its primary API,
 documented as such, and moo's runner must drive the `*Bits` forms. A missing
 reference operation is a gap, never an extra: `serialize_copy_string` and
