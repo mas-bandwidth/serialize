@@ -5345,9 +5345,15 @@ struct WireIdenticalFields
     uint64_t uint64_value;
     int32_t int_value;
     int32_t degenerate_value;
+    int32_t int_full_value;
     int64_t int64_value;
+    int64_t int64_degenerate_value;
+    int64_t int64_full_value;
     serialize::int128_t int128_value;
+    serialize::int128_t int128_degenerate_value;
+    serialize::int128_t int128_full_value;
     int64_t fixed_value;
+    int64_t fixed_degenerate_value;
     serialize::uint128_t uint128_value;
     float float_value;
     double double_value;
@@ -5367,9 +5373,16 @@ struct WireIdenticalFields
         uint64_value = 0xFFFFFFFFFFFFFFFFULL;
         int_value = -17;
         degenerate_value = 9;
+        int_full_value = -2147483647 - 1;
         int64_value = -50000000001LL;
+        int64_degenerate_value = -77;
+        int64_full_value = 9223372036854775807LL;
         int128_value = serialize::int128_t( -123456789LL );
+        int128_degenerate_value = serialize::int128_t( 1234567890123LL );
+        // the low 64 bits of the full 128 bit range's top, above the int64 bounds: every group carries
+        int128_full_value = serialize::int128_t( ( serialize::uint128_t( 0x7EDCBA9876543210ULL ) << 64 ) | 0x0123456789ABCDEFULL );
         fixed_value = int64_t( 12345 ) * 65536 + 32768;
+        fixed_degenerate_value = int64_t( 7 ) * 65536;
         uint128_value = ( serialize::uint128_t( 0x0123456789ABCDEFULL ) << 64 ) | 0xFEDCBA9876543210ULL;
         float_value = 3.1415926f;
         double_value = -0.0;
@@ -5382,6 +5395,16 @@ struct WireIdenticalFields
         relative_value = 105;
     }
 };
+
+static serialize::int128_t wire_identical_int128_min()
+{
+    return serialize::int128_t( serialize::uint128_t( 1 ) << 127 );
+}
+
+static serialize::int128_t wire_identical_int128_max()
+{
+    return serialize::int128_t( ( serialize::uint128_t( 1 ) << 127 ) - serialize::uint128_t( 1 ) );
+}
 
 static void wire_identical_prefix( serialize::WriteStream & stream, int offset )
 {
@@ -5406,9 +5429,15 @@ template <typename Stream> bool wire_identical_unified( Stream & stream, WireIde
     serialize_uint64( stream, f.uint64_value );
     serialize_int( stream, f.int_value, -100, 100 );
     serialize_int( stream, f.degenerate_value, 9, 9 );
+    serialize_int( stream, f.int_full_value, ( -2147483647 - 1 ), 2147483647 );
     serialize_int64( stream, f.int64_value, -60000000000LL, 60000000000LL );
+    serialize_int64( stream, f.int64_degenerate_value, -77, -77 );
+    serialize_int64( stream, f.int64_full_value, ( -9223372036854775807LL - 1 ), 9223372036854775807LL );
     serialize_int128( stream, f.int128_value, serialize::int128_t( -9223372036854775807LL - 1 ), serialize::int128_t( 9223372036854775807LL ) );
+    serialize_int128( stream, f.int128_degenerate_value, serialize::int128_t( 1234567890123LL ), serialize::int128_t( 1234567890123LL ) );
+    serialize_int128( stream, f.int128_full_value, wire_identical_int128_min(), wire_identical_int128_max() );
     serialize_fixed( stream, f.fixed_value, 48, 16, -100000, +100000 );
+    serialize_fixed( stream, f.fixed_degenerate_value, 48, 16, 7, 7 );
     serialize_uint128( stream, f.uint128_value );
     serialize_float( stream, f.float_value );
     serialize_double( stream, f.double_value );
@@ -5432,9 +5461,15 @@ static void wire_identical_split( serialize::WriteStream & stream, WireIdentical
     write_uint64( stream, f.uint64_value );
     write_int( stream, f.int_value, -100, 100 );
     write_int( stream, f.degenerate_value, 9, 9 );
+    write_int( stream, f.int_full_value, ( -2147483647 - 1 ), 2147483647 );
     write_int64( stream, f.int64_value, -60000000000LL, 60000000000LL );
+    write_int64( stream, f.int64_degenerate_value, -77, -77 );
+    write_int64( stream, f.int64_full_value, ( -9223372036854775807LL - 1 ), 9223372036854775807LL );
     write_int128( stream, f.int128_value, serialize::int128_t( -9223372036854775807LL - 1 ), serialize::int128_t( 9223372036854775807LL ) );
+    write_int128( stream, f.int128_degenerate_value, serialize::int128_t( 1234567890123LL ), serialize::int128_t( 1234567890123LL ) );
+    write_int128( stream, f.int128_full_value, wire_identical_int128_min(), wire_identical_int128_max() );
     write_fixed( stream, f.fixed_value, 48, 16, -100000, +100000 );
+    write_fixed( stream, f.fixed_degenerate_value, 48, 16, 7, 7 );
     write_uint128( stream, f.uint128_value );
     write_float( stream, f.float_value );
     write_double( stream, f.double_value );

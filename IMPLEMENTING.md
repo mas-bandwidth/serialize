@@ -151,7 +151,8 @@ the format.
 ## The C++ read and write forms
 
 The C++ implementation also spells every operation as a `read_` and a `write_`
-macro, for code paths that only ever read or only ever write, and they produce
+macro, except `compressed_float`, which has no `write_` form (and no `read_`
+form), for code paths that only ever read or only ever write, and they produce
 the bytes of their `serialize_` counterpart (test_write_forms_wire_identical
 compares each `write_` macro with its twin from every start offset). They are API,
 not format: one stream abstraction with a read, a write and a measure conformer

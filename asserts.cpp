@@ -645,6 +645,10 @@ template <typename Stream> static bool unified_int128( Stream & stream, serializ
 template <typename Stream> static bool unified_double( Stream & stream, double value ) { serialize_double( stream, value ); return true; }
 template <typename Stream> static bool unified_string( Stream & stream, char * value, int buffer_size ) { serialize_string( stream, value, buffer_size ); return true; }
 template <typename Stream> static bool unified_int_relative( Stream & stream, int previous, int current ) { serialize_int_relative( stream, previous, current ); return true; }
+template <typename Stream> static bool unified_int_wide_bounds( Stream & stream, int32_t value, int64_t min, int64_t max ) { serialize_int( stream, value, min, max ); return true; }
+template <typename Stream> static bool unified_float( Stream & stream, float value ) { serialize_float( stream, value ); return true; }
+template <typename Stream> static bool unified_fixed( Stream & stream, int64_t value ) { serialize_fixed( stream, value, 48, 16, -10, 10 ); return true; }
+template <typename Stream> static bool unified_bytes( Stream & stream, uint8_t * data, int bytes ) { serialize_bytes( stream, data, bytes ); return true; }
 
 static void split_bits( serialize::WriteStream & stream, uint64_t value, int bits ) { write_bits( stream, value, bits ); }
 static void split_uint8( serialize::WriteStream & stream, uint32_t value ) { write_uint8( stream, value ); }
@@ -654,6 +658,10 @@ static void split_int128( serialize::WriteStream & stream, serialize::int128_t v
 static void split_double( serialize::WriteStream & stream, double value ) { write_double( stream, value ); }
 static void split_string( serialize::WriteStream & stream, char * value, int buffer_size ) { write_string( stream, value, buffer_size ); }
 static void split_int_relative( serialize::WriteStream & stream, int previous, int current ) { write_int_relative( stream, previous, current ); }
+static void split_int_wide_bounds( serialize::WriteStream & stream, int32_t value, int64_t min, int64_t max ) { write_int( stream, value, min, max ); }
+static void split_float( serialize::WriteStream & stream, float value ) { write_float( stream, value ); }
+static void split_fixed( serialize::WriteStream & stream, int64_t value ) { write_fixed( stream, value, 48, 16, -10, 10 ); }
+static void split_bytes( serialize::WriteStream & stream, uint8_t * data, int bytes ) { write_bytes( stream, data, bytes ); }
 
 static uint8_t g_twin_buffer[256];
 
@@ -661,6 +669,16 @@ static serialize::WriteStream & fresh_twin_stream( serialize::WriteStream & stre
 {
     memset( g_twin_buffer, 0, sizeof( g_twin_buffer ) );
     stream.Initialize( g_twin_buffer, (int64_t) sizeof( g_twin_buffer ) );
+    reset();
+    return stream;
+}
+
+// a stream over 8 bytes of the 256 byte twin buffer: a write that the room assertion catches
+// still lands inside the real allocation, because the recording assert does not stop it
+static serialize::WriteStream & short_twin_stream( serialize::WriteStream & stream )
+{
+    memset( g_twin_buffer, 0, sizeof( g_twin_buffer ) );
+    stream.Initialize( g_twin_buffer, 8 );
     reset();
     return stream;
 }
@@ -723,6 +741,77 @@ static void test_write_forms_catch_misuse_as_their_twins()
     fresh_twin_stream( stream ); (void) unified_int_relative( stream, 100, 100 ); unified_fires = assert_fires;
     fresh_twin_stream( stream ); split_int_relative( stream, 100, 100 );
     check_twins( "int_relative: current not above previous", unified_fires, assert_fires );
+
+    // U4: a string that is not well formed UTF-8
+    char bad_utf8[16];
+    memset( bad_utf8, 0, sizeof( bad_utf8 ) );
+    memcpy( bad_utf8, "a\xC3\x28z", 4 );
+    fresh_twin_stream( stream ); (void) unified_string( stream, bad_utf8, 16 ); unified_fires = assert_fires;
+    fresh_twin_stream( stream ); split_string( stream, bad_utf8, 16 );
+    check_twins( "string: not well formed UTF-8 (U4)", unified_fires, assert_fires );
+
+    // U4, the NUL half: a C++ string's length is strlen, so an interior NUL cannot reach the
+    // wire from either form (IMPLEMENTING.md U4, C++ note). Both forms write the prefix before
+    // it, the same bytes, and neither has anything to assert
+    {
+        char with_nul[16];
+        memset( with_nul, 0, sizeof( with_nul ) );
+        memcpy( with_nul, "ab\0cd", 5 );
+        fresh_twin_stream( stream ); (void) unified_string( stream, with_nul, 16 ); stream.Flush();
+        unified_fires = assert_fires;
+        uint8_t unified_bytes_out[8];
+        memcpy( unified_bytes_out, g_twin_buffer, sizeof( unified_bytes_out ) );
+        fresh_twin_stream( stream ); split_string( stream, with_nul, 16 ); stream.Flush();
+        check( unified_fires == 0 && assert_fires == 0 && memcmp( unified_bytes_out, g_twin_buffer, sizeof( unified_bytes_out ) ) == 0,
+               "string: an interior NUL stops both forms alike (U4, by construction)" );
+    }
+
+    // U5: int bounds outside int32, caught on the caller's original bounds
+    fresh_twin_stream( stream ); (void) unified_int_wide_bounds( stream, 0, -( int64_t( 1 ) << 40 ), 10 ); unified_fires = assert_fires;
+    fresh_twin_stream( stream ); split_int_wide_bounds( stream, 0, -( int64_t( 1 ) << 40 ), 10 );
+    check_twins( "int: a bound outside int32 (U5)", unified_fires, assert_fires );
+
+    // U10: no room for the whole operation
+    {
+        uint8_t payload[8] = { 0 };
+        uint32_t lead = 0;
+        short_twin_stream( stream ); stream.SerializeBits( lead, 1 );
+        (void) unified_bytes( stream, payload, 8 ); unified_fires = assert_fires;
+        short_twin_stream( stream ); stream.SerializeBits( lead, 1 );
+        split_bytes( stream, payload, 8 );
+        check_twins( "bytes: no room for the align and payload (U10)", unified_fires, assert_fires );
+    }
+    {
+        char text[16];
+        memset( text, 0, sizeof( text ) );
+        memcpy( text, "abcdefgh", 8 );
+        short_twin_stream( stream ); (void) unified_string( stream, text, 16 ); unified_fires = assert_fires;
+        short_twin_stream( stream ); split_string( stream, text, 16 );
+        check_twins( "string: no room for the length, align and payload (U10)", unified_fires, assert_fires );
+    }
+
+    // U16: a bad bit count
+    fresh_twin_stream( stream ); (void) unified_bits( stream, 0, 0 ); unified_fires = assert_fires;
+    fresh_twin_stream( stream ); split_bits( stream, 0, 0 );
+    check_twins( "bits: a bit count of 0 (U16)", unified_fires, assert_fires );
+
+    // a non-finite float
+    float float_infinity = 1.0f;
+    for ( int i = 0; i < 200; i++ )
+        float_infinity *= 10.0f;
+    fresh_twin_stream( stream ); (void) unified_float( stream, float_infinity ); unified_fires = assert_fires;
+    fresh_twin_stream( stream ); split_float( stream, float_infinity );
+    check_twins( "float: an infinity", unified_fires, assert_fires );
+
+    // fixed point out of its range: 11.0 in Q48.16 over [-10,10]
+    fresh_twin_stream( stream ); (void) unified_fixed( stream, int64_t( 11 ) * 65536 ); unified_fires = assert_fires;
+    fresh_twin_stream( stream ); split_fixed( stream, int64_t( 11 ) * 65536 );
+    check_twins( "fixed: a value above max", unified_fires, assert_fires );
+
+    // bytes misuse: no data pointer
+    fresh_twin_stream( stream ); (void) unified_bytes( stream, NULL, 0 ); unified_fires = assert_fires;
+    fresh_twin_stream( stream ); split_bytes( stream, NULL, 0 );
+    check_twins( "bytes: a null data pointer", unified_fires, assert_fires );
 }
 
 int main()
