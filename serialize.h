@@ -2322,6 +2322,18 @@ namespace serialize
             return ( m_reader.GetBitsRead() + 7 ) / 8;
         }
 
+        /**
+            How many bits are still available to read?
+            This lets a caller check once that a fixed size run of reads fits, instead of relying on the past-end check in each read. A failed stream answers negative, because its position is poisoned past the end of the buffer, so a guard of the form GetBitsRemaining() < bits refuses a failed stream for every bit count, zero included.
+            @returns The number of bits still available to read. Negative once the stream has failed.
+            @see BitReader::GetBitsRemaining
+         */
+
+        int64_t GetBitsRemaining() const
+        {
+            return m_reader.GetBitsRemaining();
+        }
+
     private:
 
         template <typename Stream> friend struct StreamRefusal;
@@ -6147,6 +6159,67 @@ inline void test_read_stream_initialize_padded()
             serialize_check( undersized[sizeof( undersized ) - 8 + i] == 0 );
     }
 #endif
+}
+
+inline void test_read_stream_bits_remaining()
+{
+    const int BufferSize = 64;
+    uint8_t buffer[BufferSize + 8];
+    memset( buffer, 0, sizeof( buffer ) );
+
+    serialize::WriteStream writeStream( buffer, BufferSize );
+    uint32_t a = 5;
+    uint32_t b = 0xABCD;
+    writeStream.SerializeBits( a, 3 );
+    writeStream.SerializeBits( b, 16 );
+    writeStream.Flush();
+    const int64_t bytesWritten = writeStream.GetBytesProcessed();
+    serialize_check( bytesWritten == 3 );                              // 19 bits round up to 3 bytes
+
+    // the stream answers exactly what its reader knows, before, during and after a run of reads
+    {
+        serialize::ReadStream readStream( buffer, bytesWritten );
+        serialize_check( readStream.GetBitsRemaining() == bytesWritten * 8 );
+        serialize_check( readStream.GetBitsRemaining() + readStream.GetBitsProcessed() == bytesWritten * 8 );
+
+        uint32_t a_in = 0;
+        serialize_check( readStream.SerializeBits( a_in, 3 ) == true );
+        serialize_check( a_in == 5 );
+        serialize_check( readStream.GetBitsRemaining() == bytesWritten * 8 - 3 );
+
+        uint32_t b_in = 0;
+        serialize_check( readStream.SerializeBits( b_in, 16 ) == true );
+        serialize_check( b_in == 0xABCD );
+        serialize_check( readStream.GetBitsRemaining() == bytesWritten * 8 - 19 );
+        serialize_check( readStream.GetBitsRemaining() + readStream.GetBitsProcessed() == bytesWritten * 8 );
+
+        // the single fixed size guard: 5 bits fit, 6 do not
+        serialize_check( readStream.GetBitsRemaining() >= 5 );
+        serialize_check( !( readStream.GetBitsRemaining() >= 6 ) );
+
+        serialize_check( readStream.SerializeEnd() == true );
+        serialize_check( readStream.GetBitsRemaining() == 0 );
+    }
+
+    // an empty stream has nothing left to read
+    {
+        serialize::ReadStream readStream( buffer, 0 );
+        serialize_check( readStream.GetBitsRemaining() == 0 );
+    }
+
+    // a failed stream answers negative, so the guard refuses it for every bit count, zero included
+    {
+        serialize::ReadStream readStream( buffer, bytesWritten );
+        uint32_t value = 0;
+        serialize_check( readStream.SerializeBits( value, 32 ) == false );   // 32 bits past a 24 bit stream
+        serialize_check( readStream.GetRefusal() == serialize::REFUSAL_PAST_END );
+        serialize_check( readStream.GetBitsRemaining() < 0 );
+        serialize_check( !( readStream.GetBitsRemaining() >= 0 ) );
+
+        // re-initialization clears it
+        readStream.Initialize( buffer, bytesWritten );
+        serialize_check( readStream.GetBitsRemaining() == bytesWritten * 8 );
+    }
 }
 
 inline void test_compressed_float_validation()
@@ -10499,6 +10572,7 @@ inline void serialize_test()
     SERIALIZE_RUN_TEST( test_wide_integers_exact );
     SERIALIZE_RUN_TEST( test_read_stream_failure_is_terminal );
         SERIALIZE_RUN_TEST( test_read_stream_initialize_padded );
+        SERIALIZE_RUN_TEST( test_read_stream_bits_remaining );
         SERIALIZE_RUN_TEST( test_compressed_float_validation );
         SERIALIZE_RUN_TEST( test_compressed_float_top_of_range_clamp );
         SERIALIZE_RUN_TEST( test_compressed_float_non_finite_asserts );
