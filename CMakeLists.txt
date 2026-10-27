@@ -11,7 +11,7 @@ if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
     set(CMAKE_TARGET_MESSAGES OFF)
 endif()
 
-project(serialize VERSION 2.0.0 LANGUAGES CXX)
+project(serialize VERSION 2.0.1 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
@@ -178,7 +178,7 @@ if(SERIALIZE_BUILD_TESTS)
         end-trailing-data end-padding
         int-relative-canonical
         string-embedded-nul string-utf8 string-utf8-surrogate
-        int64-through-double
+        int64-through-double object-terminal
         wrong-reason)
 
     set(SERIALIZE_CONTROL_RULE_align-padding "readers must verify that the alignment padding bits are zero")
@@ -281,6 +281,15 @@ if(SERIALIZE_BUILD_TESTS)
     # The refusal reason. This reader refuses every stream the real one refuses, and names the
     # wrong rule for one of them: a vector states its reason, and a refusal under the wrong rule
     # is a disagreement about the format, however red the stream ends up
+    # The entry check is the only one that fires for an object that reads nothing: an empty
+    # nested object after a refusal reaches its callback without it, and the conformance runner
+    # reports a callback reached on a poisoned stream as accepted.
+    set(SERIALIZE_CONTROL_RULE_object-terminal "a nested object on a failed stream refuses before its callback runs")
+    set(SERIALIZE_CONTROL_NEEDLE_object-terminal
+        "            if ( serialize::serialize_stream_failed( stream ) )                             \\")
+    set(SERIALIZE_CONTROL_PATCH_object-terminal
+        "            if ( serialize::serialize_stream_failed( stream ) && !serialize::serialize_stream_failed( stream ) ) /* NEGATIVE CONTROL: this rule is deleted on purpose */ \\")
+
     set(SERIALIZE_CONTROL_RULE_wrong-reason "a refusal names the rule that refused it")
     set(SERIALIZE_CONTROL_NEEDLE_wrong-reason
         "                    return serialize_fail( stream, REFUSAL_EMBEDDED_NUL );")

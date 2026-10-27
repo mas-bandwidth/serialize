@@ -1,0 +1,9 @@
+# The vectors a reader fails when this rule is deleted, and no others:
+# a nested object on a failed stream refuses before its callback runs.
+#
+# CMakeLists.txt builds that reader, and ctest requires its failures to be
+# exactly this list. A vector added to the corpus that pins the rule belongs here.
+
+object-refusal-propagates-out-of-the-nesting
+object-refusal-past-the-end-propagates
+sequence-refusal-is-terminal-before-a-zero-bit-field
