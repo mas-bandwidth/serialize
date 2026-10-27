@@ -272,7 +272,10 @@ declaration is caller error by the implementation's write-misuse mechanism on
 write and measure, and must refuse as `value_out_of_range` on read (U7). Never
 wrong data, and never a trap the wire chooses. *(C++ 2.1: `SerializeBits` and
 `serialize_bits` refuse a bit count outside their range on read; the ranged
-reads refuse `min > max`; the precomputed `compressed_float` refuses on read
+reads refuse `min > max`; `serialize_int64`, `read_int64`, `serialize_int128` and
+`read_int128` refuse bounds that arrive as wider unsigned values and do not fit (an
+unsigned `2^64 - 1` is not `-1`); `int_relative` refuses a `previous` outside its
+domain, judged before narrowing; the precomputed `compressed_float` refuses on read
 constants whose bit count is not `bits_required( 0, max_integer_value )`, a
 `max_integer_value` below 1, or a `delta` that is not positive and finite; a
 fixed point declaration that does not fit its Q format is a compile error;

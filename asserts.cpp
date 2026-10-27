@@ -529,6 +529,18 @@ template <typename Stream> static bool run_int128( Stream & stream, const serial
     return true;
 }
 
+template <typename Stream> static bool run_write_int64_unsigned_bounds( Stream & stream, int64_t value, uint64_t min, uint64_t max )
+{
+    write_int64( stream, value, min, max );
+    return true;
+}
+
+template <typename Stream> static bool run_int64_unsigned_bounds( Stream & stream, int64_t & value, uint64_t min, uint64_t max )
+{
+    serialize_int64( stream, value, min, max );
+    return true;
+}
+
 #if defined( SERIALIZE_HAS_COMPILE_TIME_SURFACE )
 template <typename Stream> static bool run_int64_compile_time( Stream & stream, uint64_t & value )
 {
@@ -594,6 +606,30 @@ static void test_int64_asserts_before_narrowing()
         uint64_t value = 0;
         run_int64( stream, value );
         check( assert_fires == 0, "an unsigned 0 in [-1, 0] does not" );
+    }
+
+    // U16: a bound that arrives as an unsigned 64 bit value above INT64_MAX does not fit, though it
+    // converts to a legal negative int64
+    {
+        reset();
+        serialize::WriteStream stream( buffer, (int64_t) sizeof( buffer ) );
+        run_write_int64_unsigned_bounds( stream, 0, all_ones, 0 );
+        check( assert_fires > 0, "write_int64: an unsigned 2^64 - 1 min trips the assertion" );
+        printf( "      assertion: %s\n", assert_condition );
+    }
+    {
+        reset();
+        serialize::MeasureStream stream;
+        int64_t value = 0;
+        run_int64_unsigned_bounds( stream, value, all_ones, 0 );
+        check( assert_fires > 0, "serialize_int64 on a measure: the same" );
+    }
+    {
+        reset();
+        serialize::WriteStream stream( buffer, (int64_t) sizeof( buffer ) );
+        int64_t value = 0;
+        run_int64_unsigned_bounds( stream, value, 0, 1 );
+        check( assert_fires == 0, "unsigned bounds that fit do not" );
     }
 }
 

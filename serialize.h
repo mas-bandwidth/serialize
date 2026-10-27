@@ -1220,26 +1220,50 @@ namespace serialize
     }
 
     /**
-        Are a ranged int's bounds int32? IMPLEMENTING.md U5: serialize_int's bounds are int32, and a min or max outside int32 is caller error, debug asserted on the caller's original expression before anything narrows it. Narrowed first, a bound of 2^32 + 5 would arrive as a legal 5, and the field would silently become a different one.
-        @param min The caller's min, widened to 64 bits.
-        @param max The caller's max, widened to 64 bits.
-        @returns True if both bounds lie in [INT32_MIN, INT32_MAX].
-     */
-
-    inline bool int_bounds_are_int32( int64_t min, int64_t max )
-    {
-        const int64_t lo = int64_t( -2147483647 ) - 1;
-        const int64_t hi = int64_t( 2147483647 );
-        return min >= lo && min <= hi && max >= lo && max <= hi;
-    }
-
-    /**
-        Is the caller's value inside [min, max], judged on the value as the caller passed it? IMPLEMENTING.md, "The check model": a write side assertion inspects the caller's value before any narrowing. Converted to int64_t first, an unsigned 64 bit 2^64 - 1 becomes -1, which lies in [-1, 0], so a plain int64_t( value ) comparison passes a value the field cannot carry. An unsigned 64 bit value above INT64_MAX is outside every int64 range.
+        Is this caller type an unsigned 64 bit integer, whose values above INT64_MAX turn negative when converted to int64_t? unsigned long and unsigned long long are always distinct types, so both are named, whichever of them uint64_t is.
      */
 
     template <typename T> struct ValueIsUnsigned64 { enum { value = 0 }; };
     template <> struct ValueIsUnsigned64<unsigned long> { enum { value = 1 }; };
     template <> struct ValueIsUnsigned64<unsigned long long> { enum { value = 1 }; };
+
+    /**
+        Does a ranged bound, as the caller passed it, fit int64? IMPLEMENTING.md U16: an unsigned 64 bit bound above INT64_MAX converts to a negative int64, so a declaration like [2^64 - 1, 0] would silently become [-1, 0]. Judged before anything narrows it.
+        @param bound The caller's min or max.
+        @returns True unless the bound is an unsigned 64 bit value above INT64_MAX.
+     */
+
+    template <typename T> inline bool bound_fits_int64( T bound )
+    {
+        return !( ValueIsUnsigned64<T>::value && uint64_t( bound ) > uint64_t( 0x7FFFFFFFFFFFFFFFULL ) );
+    }
+
+    template <typename T, typename U> inline bool int64_bounds_fit( T min, U max )
+    {
+        return bound_fits_int64( min ) && bound_fits_int64( max );
+    }
+
+    /**
+        Are a ranged int's bounds int32? IMPLEMENTING.md U5: serialize_int's bounds are int32, and a min or max outside int32 is caller error, debug asserted on write and refused on read, judged on the caller's original expression before anything narrows it. Narrowed first, a bound of 2^32 + 5 would arrive as a legal 5, and an unsigned 2^64 - 1 as a legal -1, and the field would silently become a different one.
+        @param min The caller's min, as passed.
+        @param max The caller's max, as passed.
+        @returns True if both bounds lie in [INT32_MIN, INT32_MAX].
+     */
+
+    template <typename T, typename U> inline bool int_bounds_are_int32( T min, U max )
+    {
+        if ( !int64_bounds_fit( min, max ) )
+        {
+            return false;
+        }
+        const int64_t lo = int64_t( -2147483647 ) - 1;
+        const int64_t hi = int64_t( 2147483647 );
+        return int64_t( min ) >= lo && int64_t( min ) <= hi && int64_t( max ) >= lo && int64_t( max ) <= hi;
+    }
+
+    /**
+        Is the caller's value inside [min, max], judged on the value as the caller passed it? IMPLEMENTING.md, "The check model": a write side assertion inspects the caller's value before any narrowing. Converted to int64_t first, an unsigned 64 bit 2^64 - 1 becomes -1, which lies in [-1, 0], so a plain int64_t( value ) comparison passes a value the field cannot carry. An unsigned 64 bit value above INT64_MAX is outside every int64 range.
+     */
 
     template <typename T> inline bool value_in_int64_range( T value, int64_t min, int64_t max )
     {
@@ -1266,6 +1290,25 @@ namespace serialize
             return false;
         }
         return int128_t( value ) >= min && int128_t( value ) <= max;
+    }
+
+    /**
+        Does a 128 bit ranged bound, as the caller passed it, fit int128? An unsigned 128 bit bound with its top bit set converts to a negative int128 (U16). Every narrower type fits.
+     */
+
+    template <typename T> inline bool bound_fits_int128( T )
+    {
+        return true;
+    }
+
+    inline bool bound_fits_int128( uint128_t bound )
+    {
+        return ( bound >> 127 ) == uint128_t( 0 );
+    }
+
+    template <typename T, typename U> inline bool int128_bounds_fit( T min, U max )
+    {
+        return bound_fits_int128( min ) && bound_fits_int128( max );
     }
 
     /**
@@ -2676,10 +2719,10 @@ namespace serialize
         {                                                               \
             serialize_assert( Stream::IsReading || ( (min) <= (max) ) ); \
             serialize_assert( Stream::IsReading ||                      \
-                serialize::int_bounds_are_int32( int64_t(min), int64_t(max) ) ); \
+                serialize::int_bounds_are_int32( (min), (max) ) ); \
             /* U7 and U16: a bad declaration refuses on read, before any bits move */ \
             if ( Stream::IsReading &&                                   \
-                 !serialize::int_bounds_are_int32( int64_t(min), int64_t(max) ) ) \
+                 !serialize::int_bounds_are_int32( (min), (max) ) ) \
             {                                                           \
                 return serialize::serialize_fail( stream, serialize::REFUSAL_VALUE_OUT_OF_RANGE ); \
             }                                                           \
@@ -2715,7 +2758,13 @@ namespace serialize
     #define serialize_int64( stream, value, min, max )                  \
         do                                                              \
         {                                                               \
+            serialize_assert( Stream::IsReading || serialize::int64_bounds_fit( (min), (max) ) ); \
             serialize_assert( Stream::IsReading || int64_t(min) <= int64_t(max) ); \
+            /* U16: a bound that does not fit int64 refuses on read before any bits move */ \
+            if ( Stream::IsReading && !serialize::int64_bounds_fit( (min), (max) ) )  \
+            {                                                           \
+                return serialize::serialize_fail( stream, serialize::REFUSAL_VALUE_OUT_OF_RANGE ); \
+            }                                                           \
             int64_t int64_value = 0;                                    \
             if ( Stream::IsWriting )                                    \
             {                                                           \
@@ -2751,7 +2800,13 @@ namespace serialize
     #define serialize_int128( stream, value, min, max )                                             \
         do                                                                                          \
         {                                                                                           \
+            serialize_assert( Stream::IsReading || serialize::int128_bounds_fit( (min), (max) ) ); \
             serialize_assert( Stream::IsReading || serialize::int128_t(min) <= serialize::int128_t(max) ); \
+            /* U16: a bound that does not fit int128 refuses on read before any bits move */ \
+            if ( Stream::IsReading && !serialize::int128_bounds_fit( (min), (max) ) )        \
+            {                                                                                       \
+                return serialize::serialize_fail( stream, serialize::REFUSAL_VALUE_OUT_OF_RANGE ); \
+            }                                                                                       \
             serialize::int128_t int128_value = 0;                                                   \
             if ( Stream::IsWriting )                                                                \
             {                                                                                       \
@@ -3564,9 +3619,14 @@ namespace serialize
 
     template <typename Stream, typename T> bool serialize_int_relative_internal( Stream & stream, T previous, T & current )
     {
-        // previous is the caller's own state and never arrives off the wire, so one outside the domain is caller error. all checking is performed by debug asserts on it
-        serialize_assert( int64_t( previous ) >= 0 );
-        serialize_assert( int64_t( previous ) <= serialize_int_relative_max );
+        // previous is the caller's own state and never arrives off the wire, so one outside the domain is caller error:
+        // debug asserted on write and measure, and on read a bad declaration refused as value_out_of_range before any
+        // bits move (IMPLEMENTING.md U7, U16). Judged on the caller's value as passed, before anything narrows it
+        serialize_assert( Stream::IsReading || value_in_int_relative_domain( previous ) );
+        if ( Stream::IsReading && !value_in_int_relative_domain( previous ) )
+        {
+            return serialize_fail( stream, REFUSAL_VALUE_OUT_OF_RANGE );
+        }
 
         uint32_t difference = 0;
         if ( Stream::IsWriting )
@@ -4092,7 +4152,7 @@ namespace serialize
         do                                                                                  \
         {                                                                                   \
             /* U7 and U16: a bad declaration refuses on read, before any bits move */       \
-            if ( !serialize::int_bounds_are_int32( int64_t(min), int64_t(max) ) )           \
+            if ( !serialize::int_bounds_are_int32( (min), (max) ) )           \
             {                                                                               \
                 return serialize::serialize_fail( stream, serialize::REFUSAL_VALUE_OUT_OF_RANGE ); \
             }                                                                               \
@@ -4108,6 +4168,11 @@ namespace serialize
     #define read_int64( stream, value, min, max )                                           \
         do                                                                                  \
         {                                                                                   \
+            /* U16: a bound that does not fit int64 refuses before any bits move */      \
+            if ( !serialize::int64_bounds_fit( (min), (max) ) )                             \
+            {                                                                               \
+                return serialize::serialize_fail( stream, serialize::REFUSAL_VALUE_OUT_OF_RANGE ); \
+            }                                                                               \
             int64_t int64_value = 0;                                                        \
             if ( !stream.SerializeInteger64( int64_value, min, max ) )                      \
             {                                                                               \
@@ -4120,6 +4185,11 @@ namespace serialize
     #define read_int128( stream, value, min, max )                                          \
         do                                                                                  \
         {                                                                                   \
+            /* U16: a bound that does not fit int128 refuses before any bits move */     \
+            if ( !serialize::int128_bounds_fit( (min), (max) ) )                            \
+            {                                                                               \
+                return serialize::serialize_fail( stream, serialize::REFUSAL_VALUE_OUT_OF_RANGE ); \
+            }                                                                               \
             serialize::int128_t int128_value = 0;                                           \
             if ( !stream.SerializeInteger128( int128_value, min, max ) )                    \
             {                                                                               \
@@ -4217,7 +4287,7 @@ namespace serialize
         do                                                                                  \
         {                                                                                   \
             serialize_assert( int64_t( min ) <= int64_t( max ) );                           \
-            serialize_assert( serialize::int_bounds_are_int32( int64_t( min ), int64_t( max ) ) ); \
+            serialize_assert( serialize::int_bounds_are_int32( (min), (max) ) ); \
             serialize_assert( serialize::value_in_int64_range( value, int64_t( min ), int64_t( max ) ) ); \
             int32_t int32_value = (int32_t) ( value );                                      \
             stream.SerializeInteger( int32_value, min, max );                               \
@@ -4226,6 +4296,7 @@ namespace serialize
     #define write_int64( stream, value, min, max )                                          \
         do                                                                                  \
         {                                                                                   \
+            serialize_assert( serialize::int64_bounds_fit( (min), (max) ) );                \
             serialize_assert( int64_t( min ) <= int64_t( max ) );                            \
             serialize_assert( serialize::value_in_int64_range( value, int64_t( min ), int64_t( max ) ) ); \
             int64_t int64_value = (int64_t) ( value );                                      \
@@ -4235,6 +4306,7 @@ namespace serialize
     #define write_int128( stream, value, min, max )                                         \
         do                                                                                  \
         {                                                                                   \
+            serialize_assert( serialize::int128_bounds_fit( (min), (max) ) );               \
             serialize_assert( serialize::int128_t( min ) <= serialize::int128_t( max ) );   \
             serialize_assert( serialize::value_in_int128_range( value, serialize::int128_t( min ), serialize::int128_t( max ) ) ); \
             serialize::int128_t int128_value = serialize::int128_t( value );                \
@@ -6394,6 +6466,32 @@ template <typename Stream> inline bool test_run_int( Stream & stream, int32_t & 
     return true;
 }
 
+template <typename Stream> inline bool test_run_int64_unsigned_bounds( Stream & stream, int64_t & value, uint64_t min, uint64_t max )
+{
+    serialize_int64( stream, value, min, max );
+    return true;
+}
+
+template <typename Stream> inline bool test_run_read_int64_unsigned_bounds( Stream & stream, int64_t & value, uint64_t min, uint64_t max )
+{
+    read_int64( stream, value, min, max );
+    return true;
+}
+
+#if defined(__SIZEOF_INT128__)
+template <typename Stream> inline bool test_run_int128_unsigned_bounds( Stream & stream, serialize::int128_t & value, serialize::uint128_t min, serialize::uint128_t max )
+{
+    serialize_int128( stream, value, min, max );
+    return true;
+}
+
+template <typename Stream> inline bool test_run_read_int128_unsigned_bounds( Stream & stream, serialize::int128_t & value, serialize::uint128_t min, serialize::uint128_t max )
+{
+    read_int128( stream, value, min, max );
+    return true;
+}
+
+#endif // #if defined(__SIZEOF_INT128__)
 template <typename Stream> inline bool test_run_bits( Stream & stream, uint64_t & value, int bits )
 {
     serialize_bits( stream, value, bits );
@@ -6510,6 +6608,56 @@ inline void test_uniform_rules()
         serialize_check( failed.SerializeBits( wide, 16 ) == false );
         serialize_check( failed.SerializeInteger( value, 10, 5 ) == false );
         serialize_check( failed.GetRefusal() == serialize::REFUSAL_PAST_END );
+    }
+
+    // U7 and U16: an int_relative previous outside its domain is a bad declaration on read, judged on
+    // the caller's value as passed. Before 2.1 it was only debug asserted, and a release read went on
+    // to decode against it
+    {
+        uint8_t packet[16] = { 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };     // the one bit tier: current = previous + 1
+        int64_t current = -99;
+        serialize::ReadStream negative( packet, 1 );
+        serialize_check( serialize::serialize_int_relative_internal( negative, int64_t( -1 ), current ) == false );
+        serialize_check( current == -99 );
+        serialize_check( negative.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
+        serialize::ReadStream above( packet, 1 );
+        serialize_check( serialize::serialize_int_relative_internal( above, int64_t( 2147483648LL ), current ) == false );
+        serialize_check( above.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
+        serialize::ReadStream wide( packet, 1 );
+        serialize_check( serialize::serialize_int_relative_internal( wide, int64_t( 4294967301LL ), current ) == false );   // 2^32 + 5, never narrowed to 5
+        serialize_check( wide.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
+        serialize::ReadStream good( packet, 1 );
+        serialize_check( serialize::serialize_int_relative_internal( good, int64_t( 4 ), current ) == true );
+        serialize_check( current == 5 );
+    }
+
+    // U16: int64 and int128 bounds that arrive as wider unsigned values and do not fit. Before 2.1 an
+    // unsigned 2^64 - 1 min converted to -1, so [2^64 - 1, 0] read as [-1, 0] and accepted a value
+    {
+        uint8_t packet[16] = { 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+        const uint64_t all_ones = ~uint64_t( 0 );
+        serialize::ReadStream stream64( packet, 1 );
+        int64_t value64 = -99;
+        serialize_check( test_run_int64_unsigned_bounds( stream64, value64, all_ones, uint64_t( 0 ) ) == false );
+        serialize_check( value64 == -99 );
+        serialize_check( stream64.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
+        serialize::ReadStream read64( packet, 1 );
+        serialize_check( test_run_read_int64_unsigned_bounds( read64, value64, all_ones, uint64_t( 0 ) ) == false );
+        serialize_check( read64.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
+        serialize::ReadStream fits64( packet, 1 );
+        serialize_check( test_run_int64_unsigned_bounds( fits64, value64, uint64_t( 0 ), uint64_t( 1 ) ) == true );
+        serialize_check( value64 == 1 );
+
+#if defined(__SIZEOF_INT128__)       // the emulated int128 has no conversion from an unsigned bound, so the misuse cannot compile there
+        serialize::ReadStream stream128( packet, 1 );
+        serialize::int128_t value128 = -99;
+        serialize_check( test_run_int128_unsigned_bounds( stream128, value128, ~serialize::uint128_t( 0 ), serialize::uint128_t( 0 ) ) == false );
+        serialize_check( value128 == serialize::int128_t( -99 ) );
+        serialize_check( stream128.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
+        serialize::ReadStream read128( packet, 1 );
+        serialize_check( test_run_read_int128_unsigned_bounds( read128, value128, ~serialize::uint128_t( 0 ), serialize::uint128_t( 0 ) ) == false );
+        serialize_check( read128.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
+#endif // #if defined(__SIZEOF_INT128__)
     }
 
     // U16: a bad bit count refuses on read before any bits move, through the method and the macro

@@ -23,7 +23,8 @@ DECISIONS THAT READ AS BUGS (they are not — do not "fix" them)
   reader possible. Do not remove them or add tail handling to avoid them.
 - `serialize_int_relative` requires strictly increasing values over the domain 0 to 2^31 - 1,
   for `previous` as well as `current`, and there are no wrap semantics. A `previous` outside the
-  domain is caller error (debug asserted); a `current` off the wire outside it is refused, in
+  domain is caller error (debug asserted on write, refused on read as value_out_of_range since 2.1,
+  U16); a `current` off the wire outside it is refused, in
   every tier, reconstructed in a width that cannot wrap.
 - **A refused read leaves a scalar destination unwritten, and fails the stream for good.** The
   first refusal poisons `BitReader`'s position past the end, so the past-end check every read
