@@ -166,7 +166,7 @@ performance work here must not relearn:
   vector whose operation it cannot drive. Each sabotage control builds a scratch copy of the header
   with one line of a refusal rule deleted, runs the corpus with `--expect-failures`, and passes only
   when the failing vectors are EXACTLY the ones `conformance-controls/<control>.expected` names: the
-  align padding, the ranged int's reconstruction and range check, the degenerate fixed field's
+  align padding, the ranged int's reconstruction and range check, the nested object's entry check, the degenerate fixed field's
   failure-state consult, the float, double and compressed float finite rules, the end's trailing
   data and padding rules, int_relative's canonical tier, the string NUL, UTF-8 and encoded
   surrogate rules, a 64 bit reconstruction through a double, and a wrong refusal reason. A needle

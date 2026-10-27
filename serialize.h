@@ -3344,17 +3344,6 @@ namespace serialize
         @param object The object to serialize. Must have a serialize method on it.
      */
 
-#if defined( SERIALIZE_CONFORMANCE_CONTROL_OBJECT_TERMINAL )
-    #define serialize_object( stream, object )                                              \
-        do                                                                                  \
-        {                                                                                   \
-            if ( !( object ).Serialize( stream ) )                                          \
-            {                                                                               \
-                return false;                                                               \
-            }                                                                               \
-        }                                                                                   \
-        while(0)
-#else // #if defined( SERIALIZE_CONFORMANCE_CONTROL_OBJECT_TERMINAL )
     #define serialize_object( stream, object )                                              \
         do                                                                                  \
         {                                                                                   \
@@ -3368,7 +3357,6 @@ namespace serialize
             }                                                                               \
         }                                                                                   \
         while(0)
-#endif // #if defined( SERIALIZE_CONFORMANCE_CONTROL_OBJECT_TERMINAL )
 
     /**
         The int_relative domain: 0 to 2^31 - 1 inclusive.
