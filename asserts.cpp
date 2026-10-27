@@ -523,9 +523,9 @@ template <typename Stream> static bool run_int_wide( Stream & stream, uint64_t &
     return true;
 }
 
-template <typename Stream> static bool run_int128( Stream & stream, serialize::uint128_t & value )
+template <typename Stream> static bool run_int128( Stream & stream, const serialize::uint128_t & value )
 {
-    serialize_int128( stream, value, serialize::int128_t( -1 ), serialize::int128_t( 0 ) );
+    write_int128( stream, value, serialize::int128_t( -1 ), serialize::int128_t( 0 ) );     // write only: an unsigned 128 bit destination has no read form on the emulated type
     return true;
 }
 
@@ -577,7 +577,7 @@ static void test_int64_asserts_before_narrowing()
         serialize::WriteStream stream( buffer, (int64_t) sizeof( buffer ) );
         serialize::uint128_t value = ~serialize::uint128_t( 0 );
         run_int128( stream, value );
-        check( assert_fires > 0, "serialize_int128: an unsigned 2^128 - 1 in [-1, 0] trips the assertion" );
+        check( assert_fires > 0, "write_int128: an unsigned 2^128 - 1 in [-1, 0] trips the assertion" );
     }
 #if defined( SERIALIZE_HAS_COMPILE_TIME_SURFACE )
     {
