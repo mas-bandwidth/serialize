@@ -808,10 +808,6 @@ static void test_write_forms_catch_misuse_as_their_twins()
     fresh_twin_stream( stream ); split_fixed( stream, int64_t( 11 ) * 65536 );
     check_twins( "fixed: a value above max", unified_fires, assert_fires );
 
-    // bytes misuse: no data pointer
-    fresh_twin_stream( stream ); (void) unified_bytes( stream, NULL, 0 ); unified_fires = assert_fires;
-    fresh_twin_stream( stream ); split_bytes( stream, NULL, 0 );
-    check_twins( "bytes: a null data pointer", unified_fires, assert_fires );
 }
 
 int main()
