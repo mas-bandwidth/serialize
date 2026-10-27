@@ -2175,7 +2175,7 @@ namespace serialize
             Refuse the read in progress and latch the stream into the failed state.
             Failure is terminal: the first refused read poisons the reader's position, and every later read on this stream fails, consuming no bits and writing no destination. The failure persists until the stream is re-initialized onto a new buffer, or discarded. Every refusal on this stream goes through here, including refusals decided outside the stream — a malformed string payload, an int_relative reconstruction outside the domain — which reach it through serialize::serialize_fail.
             The stream keeps the FIRST reason: the later reads a latched stream refuses are echoes of it, and report nothing new.
-            @param refusal Why the read was refused, from the closed list in STANDARD.md.
+            @param refusal Why the read was refused, from the closed list in STANDARD.md. REFUSAL_NONE, or a value outside the list, records REFUSAL_REJECTED (U14): a refused stream never reports none.
             @returns Always false, so a refusing read reads `return Fail( reason );`.
             @see BitReader::PoisonPosition
             @see serialize::serialize_fail
@@ -2183,7 +2183,13 @@ namespace serialize
 
         SERIALIZE_ALWAYS_INLINE bool Fail( Refusal refusal )
         {
-            serialize_assert( refusal != REFUSAL_NONE );
+            // STANDARD.md, "Refusal reasons", and IMPLEMENTING.md U14: a refusal with no reason, or a reason outside
+            // the closed list, is the caller refusing without saying why, and records rejected. Never an assertion
+            // and never none: a refused stream that reported none would be relabelled past_end by the next read
+            if ( refusal == REFUSAL_NONE || unsigned( refusal ) >= unsigned( REFUSAL_NUM_REASONS ) )
+            {
+                refusal = REFUSAL_REJECTED;
+            }
             // the first reason wins, and it is recorded whatever the position: a stream initialized over a negative byte count is past its end before any read, and must still report why it refused
             if ( m_refusal == REFUSAL_NONE )
             {
@@ -2666,7 +2672,7 @@ namespace serialize
     /**
         Refuse the read in progress on this stream.
         @param stream The stream the refusal happened on.
-        @param refusal Why the read was refused, from the closed list in STANDARD.md.
+        @param refusal Why the read was refused, from the closed list in STANDARD.md. On a read stream, REFUSAL_NONE or a value outside the list records REFUSAL_REJECTED (U14).
         @returns Always false, so a refusing read reads `return serialize::serialize_fail( stream, reason );`.
         @see ReadStream::Fail
      */
@@ -3015,7 +3021,7 @@ namespace serialize
 
     template <typename Stream> bool serialize_compressed_float_precomputed_internal( Stream & stream, float & value, uint32_t max_integer_value, int bits, float delta, float min )
     {
-        serialize_assert( Stream::IsReading || max_integer_value >= 1 );
+        serialize_assert( Stream::IsReading || ( max_integer_value >= 1 && max_integer_value <= 4294967040u ) );
         serialize_assert( Stream::IsReading || bits == bits_required( 0, max_integer_value ) );
         serialize_assert( Stream::IsReading || delta > 0.0f );
         serialize_assert( Stream::IsReading || delta - delta == 0.0f );          // finite in float32 (Inf - Inf is NaN)
@@ -3023,7 +3029,7 @@ namespace serialize
         // IMPLEMENTING.md U7 and U16: on read the same declaration checks refuse as value_out_of_range,
         // before any bits move. A bit count the constants do not derive would read a field of the wrong
         // width and hand back wrong data; a delta that is not positive and finite decodes nothing real
-        if ( Stream::IsReading && ( max_integer_value < 1 || bits != bits_required( 0, max_integer_value ) || !( delta > 0.0f ) || !( delta - delta == 0.0f ) ) )
+        if ( Stream::IsReading && ( max_integer_value < 1 || max_integer_value > 4294967040u || bits != bits_required( 0, max_integer_value ) || !( delta > 0.0f ) || !( delta - delta == 0.0f ) ) )
         {
             return serialize_fail( stream, REFUSAL_VALUE_OUT_OF_RANGE );
         }
@@ -6690,8 +6696,39 @@ inline void test_uniform_rules()
         serialize::ReadStream badDelta( packet, 8 );
         serialize_check( serialize::serialize_compressed_float_precomputed_internal( badDelta, value, 1000, 10, -10.0f, 0.0f ) == false );
         serialize_check( badDelta.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
+        serialize::ReadStream tooMany( packet, 8 );                                  // above 4294967040, the params' clamp
+        serialize_check( serialize::serialize_compressed_float_precomputed_internal( tooMany, value, 4294967295u, 32, 10.0f, 0.0f ) == false );
+        serialize_check( tooMany.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
         serialize::ReadStream consistent( packet, 8 );
         serialize_check( serialize::serialize_compressed_float_precomputed_internal( consistent, value, 1000, 10, 10.0f, 0.0f ) == true );
+    }
+
+    // U14: a refusal with no reason, or one outside the closed list, records rejected on a read stream.
+    // Before this, a release build recorded none, and the next read relabelled the refusal past_end
+    {
+        uint8_t packet[16] = { 0xAB, 0xCD, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+        serialize::ReadStream none( packet, 2 );
+        serialize_check( serialize::serialize_fail( none, serialize::REFUSAL_NONE ) == false );
+        serialize_check( none.GetRefusal() == serialize::REFUSAL_REJECTED );
+        uint32_t after = 0xFFFFFFFF;
+        serialize_check( none.SerializeBits( after, 8 ) == false );
+        serialize_check( after == 0xFFFFFFFF );
+        serialize_check( none.GetRefusal() == serialize::REFUSAL_REJECTED );    // not relabelled past_end
+
+        serialize::ReadStream count( packet, 2 );
+        serialize_check( serialize::serialize_fail( count, serialize::REFUSAL_NUM_REASONS ) == false );
+        serialize_check( count.GetRefusal() == serialize::REFUSAL_REJECTED );
+
+        serialize::ReadStream outside( packet, 2 );
+        serialize_check( serialize::serialize_fail( outside, serialize::Refusal( 15 ) ) == false );
+        serialize_check( outside.GetRefusal() == serialize::REFUSAL_REJECTED );
+
+        // the first reason still wins over it
+        serialize::ReadStream first( packet, 1 );
+        uint32_t wide = 0;
+        serialize_check( first.SerializeBits( wide, 16 ) == false );
+        serialize_check( serialize::serialize_fail( first, serialize::REFUSAL_NONE ) == false );
+        serialize_check( first.GetRefusal() == serialize::REFUSAL_PAST_END );
     }
 
     // U12: end on a write or measure stream is a no-op returning true

@@ -749,8 +749,12 @@ validation, which refuses a value whose bytes broke no rule. Every
 implementation must give its caller a way to refuse a read, and a refusal made
 that way is `rejected`. A nested `object` whose serialize function fails without
 any refusal of its own must refuse as `rejected` too, so a refused stream
-always reports a reason and never none. It is terminal like every other
-refusal: the stream is poisoned, and every later read on it refuses. The first
+always reports a reason and never none. So must a refusal made with no reason,
+or with any reason outside this list: it is the caller refusing without saying
+why, never an assertion or a trap, and a refused stream that reported none
+would be relabelled `past_end` by the next read. A refusal is a value, never a
+thrown exception. It is terminal like every other refusal: the stream is
+poisoned, and every later read on it refuses. The first
 reason wins here as everywhere: a caller that refuses after a primitive already
 refused, inside an object or at the top level, leaves the primitive's reason in
 place, and nothing done to a failed stream changes the reason it reports. An

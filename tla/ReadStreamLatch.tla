@@ -13,50 +13,56 @@
 (* plus two pieces of bookkeeping the invariants need: how many nested     *)
 (* objects are open, and the result of the last operation.                 *)
 (*                                                                         *)
-(* Every refusal goes through Fail, which is ReadStream::Fail exactly: it  *)
-(* records the reason only when none is recorded, whatever the position   *)
-(* (2.1: a stream over a negative byte count is past its end before any   *)
-(* read and must still record why), and it always poisons. The actions    *)
-(* are the operations and                                                  *)
-(* the outside events: a primitive read the wire accepts, a primitive read *)
-(* the wire refuses for reason r, the caller's serialize_reject, entering  *)
-(* a nested object (serialize_object's entry check), and leaving one with  *)
-(* the callback's result true or false (serialize_object's exit check and  *)
-(* serialize_latch_failure).                                               *)
+(* Every refusal goes through Fail, which is ReadStream::Fail exactly. It  *)
+(* maps a refusal with no reason (NONE, or a value outside the closed      *)
+(* list, which the model folds into NONE) to REJECTED (IMPLEMENTING.md     *)
+(* U14), records the reason only when none is recorded, whatever the       *)
+(* position, and always poisons.                                           *)
 (*                                                                         *)
-(* OldLatch selects the 2.0 serialize_latch_failure, which poisoned the    *)
-(* position and recorded nothing. It is the reversed witness: with it,     *)
-(* TLC must find RefusedIffReason violated by a callback returning false   *)
-(* on a healthy stream (ReadStreamLatchOld.cfg).                           *)
+(* There are two initial states, because ReadStream has two: a stream over *)
+(* a non-negative byte count starts healthy, and a stream over a negative  *)
+(* byte count starts refused as value_out_of_range (U7). The second is why *)
+(* Fail records whatever the position: such a stream is past its end       *)
+(* before any read.                                                        *)
+(*                                                                         *)
+(* The actions are the operations and the outside events: a primitive read *)
+(* the wire accepts, a primitive read the wire refuses for reason r, the   *)
+(* caller's serialize_reject, the caller's serialize_fail with any reason  *)
+(* including none, entering a nested object (serialize_object's entry      *)
+(* check), and leaving one with the callback's result true or false        *)
+(* (serialize_object's exit check and serialize_latch_failure).            *)
+(*                                                                         *)
+(* Two reversed witnesses, each a 2.0 behaviour TLC must find:             *)
+(*   OldLatch: serialize_latch_failure poisoned and recorded nothing, so a *)
+(*     callback returning false on a healthy stream left reason none       *)
+(*     (ReadStreamLatchOld.cfg).                                           *)
+(*   OldFail: Fail recorded none when handed none (asserted in checked     *)
+(*     builds, silent in release), so the stream reported none and the    *)
+(*     next read relabelled it past_end (ReadStreamLatchOldFail.cfg).      *)
 (*                                                                         *)
 (* Re-initialization (ReadStream::Initialize) starts a new stream and a    *)
 (* new behaviour of this spec; it is not an action here.                   *)
 (*                                                                         *)
-(* Checked 2026-10-27 with TLC 2.19 on a bench machine, three wire reasons *)
-(* and MaxDepth 3:                                                         *)
-(*   ReadStreamLatch.cfg     152 states generated, 21 distinct, depth 6,   *)
-(*                           no error: every invariant and property holds. *)
-(*   ReadStreamLatchOld.cfg  RefusedIffReason violated within 4 states:    *)
-(*                           ObjectEnter then ObjectExit(FALSE) leaves     *)
-(*                           refused = TRUE with reason = "none", which is *)
-(*                           what the 2.0 header did (its unit test        *)
-(*                           asserted REFUSAL_NONE after a callback-only   *)
-(*                           refusal).                                     *)
+(* Checked with TLC 2.19 on an idle bench machine, three wire reasons and  *)
+(* MaxDepth 3; the results are in the PR and in the commit that last       *)
+(* changed this file.                                                      *)
 (***************************************************************************)
 EXTENDS Naturals
 
-CONSTANTS WireReasons,  \* a few of the wire's reasons, e.g. {"past_end", "nonzero_padding"}
+CONSTANTS WireReasons,  \* a few of the wire's reasons, including past_end and value_out_of_range
           MaxDepth,     \* the deepest nesting of objects explored
-          OldLatch      \* TRUE for the 2.0 latch that recorded no reason
+          OldLatch,     \* TRUE for the 2.0 latch that recorded no reason
+          OldFail       \* TRUE for the 2.0 Fail that recorded none when handed none
 
-NONE     == "none"
-REJECTED == "rejected"
-PAST_END == "past_end"
+NONE         == "none"
+REJECTED     == "rejected"
+PAST_END     == "past_end"
+OUT_OF_RANGE == "value_out_of_range"
 
-ASSUME PAST_END \in WireReasons
+ASSUME PAST_END \in WireReasons /\ OUT_OF_RANGE \in WireReasons
 ASSUME NONE \notin WireReasons /\ REJECTED \notin WireReasons
 ASSUME MaxDepth \in Nat
-ASSUME OldLatch \in BOOLEAN
+ASSUME OldLatch \in BOOLEAN /\ OldFail \in BOOLEAN
 
 Reasons == WireReasons \cup {REJECTED}
 
@@ -70,17 +76,23 @@ TypeOK ==
     /\ depth \in 0..MaxDepth
     /\ last \in {"start", "ok", "fail"}
 
+\* ReadStream( buffer, bytes ) and Initialize: healthy over bytes >= 0, refused
+\* as value_out_of_range over bytes < 0
 Init ==
-    /\ refused = FALSE
-    /\ reason = NONE
     /\ depth = 0
-    /\ last = "start"
+    /\ \/ /\ refused = FALSE
+          /\ reason = NONE
+          /\ last = "start"
+       \/ /\ refused = TRUE
+          /\ reason = OUT_OF_RANGE
+          /\ last = "fail"
 
 \* ReadStream::Fail
 Fail(r) ==
-    /\ reason' = IF reason = NONE THEN r ELSE reason
-    /\ refused' = TRUE
-    /\ last' = "fail"
+    LET recorded == IF r = NONE /\ ~OldFail THEN REJECTED ELSE r
+    IN  /\ reason' = IF reason = NONE THEN recorded ELSE reason
+        /\ refused' = TRUE
+        /\ last' = "fail"
 
 \* StreamRefusal<ReadStream>::Latch, which serialize_latch_failure calls
 Latch ==
@@ -109,6 +121,11 @@ Reject ==
     /\ Fail(REJECTED)
     /\ UNCHANGED depth
 
+\* serialize::serialize_fail from the caller, with any reason, none included
+CallerFail(r) ==
+    /\ Fail(r)
+    /\ UNCHANGED depth
+
 \* serialize_object's entry: a failed stream refuses before the callback runs.
 ObjectEnter ==
     /\ depth < MaxDepth
@@ -133,6 +150,7 @@ Next ==
     \/ ReadOk
     \/ \E r \in WireReasons : WireRefusal(r)
     \/ Reject
+    \/ \E r \in Reasons \cup {NONE} : CallerFail(r)
     \/ ObjectEnter
     \/ \E result \in BOOLEAN : ObjectExit(result)
 
@@ -150,14 +168,15 @@ NoSuccessAfterRefusal == refused => last = "fail"
 
 \* Action properties, checked as PROPERTY
 
-\* once refused, the reason never changes: the first reason wins
+\* once refused, the reason never changes: the first reason wins, and a later
+\* read never relabels it past_end
 ReasonNeverChanges == [][(refused => reason' = reason)]_vars
 
 \* once refused, the stream stays refused and every later operation fails
 RefusalIsTerminal == [][(refused => (refused' /\ last' = "fail"))]_vars
 
 \* a wire refusal is never relabelled: once a wire reason is recorded, a later
-\* reject or failing callback leaves it in place (the first reason wins)
+\* reject, failing callback or caller fail leaves it in place
 WireReasonKept == [][(reason \in WireReasons => reason' = reason)]_vars
 
 \* a callback returning false on a healthy stream refuses, as rejected

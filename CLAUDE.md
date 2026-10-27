@@ -31,7 +31,8 @@ DECISIONS THAT READ AS BUGS (they are not — do not "fix" them)
   already performs refuses every later read — the latch costs the read path nothing. `Initialize`
   clears it. Refusals decided outside the stream route through `serialize::serialize_fail`.
   2.1 (2026-10-27): the caller's own refusal is the ninth reason, `rejected` (`serialize_reject`, or a
-  nested object returning false); a refused read stream never reports NONE. The latch is modelled in
+  nested object returning false, or a fail with no reason or one outside the list); a refused read
+  stream never reports NONE, and a refusal is a value, never an exception. The latch is modelled in
   tla/ReadStreamLatch.tla, and IMPLEMENTING.md U1-U16 are the uniform rules every port keeps.
 - **Format 2.0 (2026-10-22): the wire carries only integers and bytes, and every value has exactly one
   encoding.** float/double are finite only (NaN/inf refused on read as non_finite_float, asserted on

@@ -85,8 +85,9 @@ is the packet's bytes, the count a writer reported, and the slack is behind it.
 The recommended latch is to poison the stream's position one bit past the end of
 the buffer, so the past-end check every read already performs refuses every
 later read, and to record the first refusal's reason only on the refusal path:
-the latch costs the read path nothing. A runtime whose idiom is to throw may
-throw; the reason travels with the exception.
+the latch costs the read path nothing. A refusal is a value in every
+implementation, never a thrown exception (U7): `false`, a result, or an error
+tuple, carrying its reason, whatever the runtime's idiom elsewhere.
 
 The latch has three properties, and every implementation keeps all three: the
 stream is refused exactly when a reason is recorded, the reason never changes
@@ -105,8 +106,8 @@ implementation's idiom for everything else it does on a stream:
   path every other refusal takes (`serialize_fail( stream, REFUSAL_REJECTED )`)
   and returns false from the caller's serialize function. A port with methods
   spells it `stream.reject()` or its language's equivalent; a port whose
-  failures are exceptions throws its refusal carrying `rejected`; a port whose
-  read returns no successor stream returns the refused result. It must route
+  read returns no successor stream returns the refused result. Either way the
+  refusal is a value, never a thrown exception (U7). It must route
   through the same latch as a wire refusal, so the first reason wins without a
   special case.
 * **A nested object that fails.** Most callers refuse by returning failure from
@@ -200,10 +201,13 @@ Misuse on a measure follows the implementation's write-misuse mechanism, and a
 measure must never latch a read refusal. *(C++: `serialize_fail` on a measure
 returns false and records nothing; test_uniform_rules.)*
 
-**U7. A reader never traps.** Caller misuse on read, such as a negative byte
-count or a string buffer size below 1, must refuse as `value_out_of_range`, and
-never raise, abort, assert or throw. The failure state is checked first, so a
-stream that already failed keeps its first reason. *(C++ 2.1, from the
+**U7. A reader never traps, and a refusal is a value.** Every refusal, from the
+wire, from the caller, or from caller misuse, must come back as a value: `false`,
+a result, or an error tuple carrying its reason. It is never a thrown exception,
+in any implementation, whatever the runtime's idiom. Caller misuse on read, such
+as a negative byte count or a string buffer size below 1, must refuse as
+`value_out_of_range`, and never raise, abort, assert or throw. The failure state
+is checked first, so a stream that already failed keeps its first reason. *(C++ 2.1, from the
 2026-10-27 reference audit: a string buffer below 1 on read reached the length
 field's `min <= max` assertion in a checked build and, in release, a length range
 of `[0, -1]` that let the wire choose a payload copied past the caller's buffer;
@@ -251,8 +255,14 @@ it says so in its documentation. *(C++: `ReadStream::Initialize` and
 **U14. Every implementation must expose the refusal-name function**, with the
 family spellings and `"none"` for no refusal, and a public `fail( reason )`. Native
 accessor names may differ (`GetRefusal`, `refusal()`, `err()`), but the names
-they return must match. *(C++: `serialize::refusal_name`,
-`serialize::serialize_fail`, `ReadStream::GetRefusal`.)*
+they return must match. On a read stream, `fail` with no reason, or with any
+value outside the closed list, must record `rejected`: no assertion, no trap,
+and never none, because a refused stream that reported none would be relabelled
+`past_end` by the next read. *(C++: `serialize::refusal_name`,
+`serialize::serialize_fail`, `ReadStream::GetRefusal`; `ReadStream::Fail` maps
+`REFUSAL_NONE` and any value at or past `REFUSAL_NUM_REASONS` to
+`REFUSAL_REJECTED`, in every build, since 2.1; test_uniform_rules, and the
+`OldFail` witnesses in tla/ReadStreamLatch.tla.)*
 
 **U15. The allowed extras, and the language necessities.** An implementation may
 carry these beyond the reference surface, and nothing else without a ruling:
@@ -265,19 +275,27 @@ reference operation is a gap, never an extra: `serialize_copy_string` and
 
 **U16. Caller declarations are validated on every stream before any bits move.**
 A `bits` count is an integer in its range; a fixed point `min` and `max` fit the
-Q format; `compressed_float` precomputed constants are exactly what the params
-function derives, with `max_integer_value` a uint32; a ranged `min` does not
-exceed its `max`; `buffer_size` and destination capacity fit the read. A bad
-declaration is caller error by the implementation's write-misuse mechanism on
-write and measure, and must refuse as `value_out_of_range` on read (U7). Never
-wrong data, and never a trap the wire chooses. *(C++ 2.1: `SerializeBits` and
+Q format; a ranged `min` does not exceed its `max`; a string `buffer_size` is at
+least 1. `compressed_float` precomputed constants are checked for what can be
+checked without the declaration they came from: `bits` is consistent with
+`max_integer_value` (`bits_required( 0, max_integer_value )`),
+`max_integer_value` lies in `[1, 4294967040]`, and `delta` is positive and
+finite. Destination capacity applies only where the API receives a destination
+with a capacity of its own, such as a fixed array or a limited builder: there a
+read must refuse as `value_out_of_range` when the declared size exceeds that
+capacity. A bad declaration is caller error by the implementation's
+write-misuse mechanism on write and measure, and must refuse as
+`value_out_of_range` on read (U7). Never wrong data, and never a trap the wire
+chooses. *(C++ 2.1: `SerializeBits` and
 `serialize_bits` refuse a bit count outside their range on read; the ranged
 reads refuse `min > max`; `serialize_int64`, `read_int64`, `serialize_int128` and
 `read_int128` refuse bounds that arrive as wider unsigned values and do not fit (an
 unsigned `2^64 - 1` is not `-1`); `int_relative` refuses a `previous` outside its
 domain, judged before narrowing; the precomputed `compressed_float` refuses on read
 constants whose bit count is not `bits_required( 0, max_integer_value )`, a
-`max_integer_value` below 1, or a `delta` that is not positive and finite; a
+`max_integer_value` outside `[1, 4294967040]`, or a `delta` that is not positive
+and finite; the C++ API hands `bytes` and `string` a bare pointer with no
+capacity of its own, so the capacity rule has nothing to check there; a
 fixed point declaration that does not fit its Q format is a compile error;
 string `buffer_size` is U7. On write and measure each of these stays a debug
 assertion. test_uniform_rules proves the read refusals.)*
