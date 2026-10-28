@@ -6,6 +6,8 @@
 
 **serialize** is a simple bitpacking serializer for C++.
 
+[ROADMAP.md](ROADMAP.md) is the family roadmap: what this reference and its fourteen ports still need.
+
 It has the following features:
 
 * Serialize a bool with only one bit

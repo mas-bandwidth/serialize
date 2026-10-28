@@ -135,6 +135,20 @@ jobs:
           clang++ -std=c++03 -DSERIALIZE_DEBUG -U__SIZEOF_INT128__ -Wall -Wextra -ffp-contract=off -fno-rtti conformance.cpp -o conformance_cxx03_no_int128
           ./conformance_cxx03_no_int128 conformance/*.txt
 
+  roadmap:
+    name: roadmap drift
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7
+
+      # ROADMAP.md is generated from docs/roadmap.sexp by tools/roadmap/render.lisp (SBCL).
+      # The check fails when the committed page is not what the data renders.
+      - name: Install SBCL
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends sbcl
+
+      - name: roadmap-check
+        run: make -f tools/roadmap/roadmap.mk roadmap-check
+
   conformance:
     name: STANDARD.md conformance
     runs-on: ubuntu-24.04
