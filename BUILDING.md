@@ -38,7 +38,7 @@ serialize is a single header. The simplest thing is to copy `serialize.h` into y
 If you use CMake, you can consume it as a target instead — via FetchContent:
 
     include(FetchContent)
-    FetchContent_Declare(serialize GIT_REPOSITORY https://github.com/mas-bandwidth/serialize.git GIT_TAG v2.1.0)
+    FetchContent_Declare(serialize GIT_REPOSITORY https://github.com/mas-bandwidth/serialize.git GIT_TAG v2.1.1)
     FetchContent_MakeAvailable(serialize)
     target_link_libraries(your_target PRIVATE serialize::serialize)
 

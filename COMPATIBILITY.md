@@ -8,7 +8,7 @@ These are the releases that carry format version 2.0:
 
 | runtime | language | release |
 |---|---|---|
-| [serialize](https://github.com/mas-bandwidth/serialize) | C++ | `v2.1.0` |
+| [serialize](https://github.com/mas-bandwidth/serialize) | C++ | `v2.1.1` |
 | [serialize.c](https://github.com/mas-bandwidth/serialize.c) | C | `v2.0.0` |
 | [serialize.cs](https://github.com/mas-bandwidth/serialize.cs) | C# | `v2.0.0` |
 | [serialize.go](https://github.com/mas-bandwidth/serialize.go) | Go | `v2.0.0` |

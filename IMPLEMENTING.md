@@ -39,7 +39,8 @@ language mechanism.
 The caller is responsible for well-formed writes. Where the language has checked
 builds (assertions enabled), write-side contract validation uses them and
 nothing else: release builds perform **zero** write-side validation in C and
-C++, and the minimum the language permits elsewhere. Readers perform exactly the
+C++, and the minimum the language permits elsewhere. An implementation with no
+unchecked build checks in every run, and traps on misuse (U9). Readers perform exactly the
 refusal rules of STANDARD.md, each reporting its reason, and nothing more. A
 check that neither the standard states nor the language forces is an invented
 contract, whatever its justification sounds like.
@@ -187,8 +188,15 @@ caller's refusal" above. *(C++: `serialize_reject`, `serialize_object`;
 **U3. A writer never sends bytes that differ from the caller's value.** String
 encoding must use the strict UTF-8 codec: a lone surrogate or any other
 unencodable text is write misuse, never silently replaced (no `?`, no `U+FFFD`).
-A measure stream follows the same rule. *(C++: text is already UTF-8 bytes and is
-written as given; the validity assertion below covers it.)*
+A measure stream follows the same rule. *(Ruling, 2026-10-27: it is write misuse
+like any other, so U9 decides what it does. A checked build traps on it, which is
+the guarantee: no checked build ever replaces it. An unchecked build may compile
+the check out, and its bytes after the misuse are unspecified, as they are for
+every other write misuse; a lenient codec's `?` or `U+FFFD` there is that
+unspecified output, never a documented behaviour, and no build may replace on
+purpose with the check on. The C++ reference in release writes invalid bytes as
+given, and is unspecified in the same way.)* *(C++: text is already UTF-8 bytes
+and is written as given; the validity assertion below covers it.)*
 
 **U4. Every implementation must check UTF-8 and NUL on string write**, wherever
 it checks any write misuse, and at least in checked builds. *(C++: the write path
@@ -203,12 +211,17 @@ a silent zero-bit or narrowed field. On read it is a bad declaration, refused as
 refuse on read; asserts.cpp and test_uniform_rules prove it.)*
 
 **U6. A measure stream refuses nothing** (STANDARD.md, "The Measure Stream").
-Misuse on a measure follows the implementation's write-misuse mechanism, and a
-measure must never latch a read refusal. *(C++: `serialize_fail` on a measure
-returns false and records nothing; test_uniform_rules.)*
+A measure makes every check a write makes, except the room left in a buffer it
+does not have, and catches misuse by the same trap (U9). It never latches
+anything: no misuse, `fail`, `reject` or failing nested object sets a reason or
+makes a later measure fail. *(C++: the operation macros assert on
+`Stream::IsWriting`, which a `MeasureStream` sets, so a measure asserts exactly
+what a write asserts, except room and buffer size, which a measure does not
+have; `serialize_fail` on a measure returns false and records
+nothing; test_uniform_rules.)*
 
-**U7. A reader never traps, and a refusal is a value.** Every refusal, from the
-wire, from the caller, or from caller misuse, must come back as a value: `false`,
+**U7. A reader never traps, and a refusal is a value.** Every refusal on a read
+stream, from the wire, from the caller, or from caller misuse, must come back as a value: `false`,
 a result, or an error tuple carrying its reason. It is never a thrown exception,
 in any implementation, whatever the runtime's idiom. Caller misuse on read, such
 as a negative byte count or a string buffer size below 1, must refuse as
@@ -231,15 +244,66 @@ macros assert `value_in_int64_range` / `value_in_int128_range` on the caller's
 value as passed, sign included, so an unsigned `2^64 - 1` is not mistaken for
 `-1`; asserts.cpp proves both.)*
 
-**U9. One write-misuse mechanism per implementation**, applied to every operation,
-`compressed_float` included: an assertion in checked builds, an error flag, or a
-returned failure, but one of them, everywhere. `fail` or `reject` on a write or
-measure stream must return false and must never panic in a release build.
-*(C++: the mechanism is `serialize_assert`, compiled out in release.
-`serialize_fail` on write or measure returns false without asserting, because it
-is the routing every refusal takes; `serialize_reject` there is caller misuse,
-asserted in checked builds like any other write misuse, and returns false.
-asserts.cpp proves both.)*
+**U9. One write-misuse mechanism: the trap.** *(Ruling, 2026-10-27, after a
+survey of every implementation found three mechanisms in use: an assertion, a
+latched reason, and a split that latched bad values but trapped on bad
+declarations. The C++ reference defines the one below, so it is the family's.)*
+Write misuse is everything the check model, U1, U3 to U5, U8, U10 and U16 name on
+a write or a measure stream: a value outside its range or its bit width; a
+`float`, `double` or `compressed_float` value that is not finite; a bad
+declaration; text that is not well-formed UTF-8, holds a NUL, or does not fit
+`buffer_size - 1`; a write buffer that is not a multiple of 8 bytes; and an
+operation that does not fit the room left in the buffer. Every implementation
+catches every one of them the same way, on every operation, `compressed_float`
+included. Write misuse is not a refusal: U7's rule that a refusal is a value
+governs refusals, and a trap is not one.
+
+* **A checked build traps at the call**, before the call returns, and before
+  any bit of the operation is written wherever U10 makes room a whole-operation
+  check. The trap is the language's assertion, or the nearest thing to it
+  that does not come back to the caller as a value: `assert` in C and C++, a
+  panic in Go and Rust, an `AssertionError` under `-ea` in Java,
+  `Debug.Assert` in C#, `assert` in Dart, a thrown error in JavaScript,
+  Squirrel and Luau, `error` in Lua and moo, `raise` in Elixir, an abort in
+  goose and lobster. Each implementation's documentation names its trap.
+* **An implementation with no unchecked build is a checked build, always**, and
+  traps in every run: Go, Lua, Luau, Squirrel, Elixir, goose, lobster and moo
+  today.
+* **Write misuse never latches.** A write or measure stream has no refusal state
+  for misuse to set: no misuse records a reason or makes a later operation
+  fail, and none returns false except `reject` in an unchecked build, below. `value_out_of_range`, `non_finite_float`, `invalid_utf8`,
+  `embedded_nul` and `past_end` are a reader's reasons; latching one on a write
+  is a second mechanism, and is not allowed.
+* **An unchecked build** (release, `NDEBUG`, no `-ea`, production) may compile
+  every check out, and its output after misuse is unspecified (U8). Nothing
+  about it is promised beyond `reject`'s result below, and a caller must never
+  depend on it.
+* **`fail` on a write or a measure returns false, records nothing, and never
+  traps, in every build:** it is the path every refusal takes, so a serialize
+  function shared by the read and write sides can call it. A nested object
+  whose serialize function returns false on a write or a measure makes the
+  object operation return false, and records nothing.
+* **`reject` on a write or a measure is caller misuse with one promised
+  unchecked result.** It traps in a checked build, as write misuse does, so an
+  always-checked implementation raises on it in every run, which is what the
+  C++ reference does in a debug build. In an unchecked build it returns false
+  and records nothing, the one unchecked result U9 promises, because it is
+  spelled on the path every refusal takes.
+* **`compressed_float`'s clamp is no exception.** A value that is NaN or an
+  infinity is write misuse and traps in a checked build, never clamped into
+  range there. The clamp that keeps C++'s release build defined is unchecked
+  build behaviour, unspecified to callers. Schema's packet floats are finite
+  only, so a conforming writer never has one to send.
+
+The C write error flag (U15) is the one allowed record on a write stream:
+`serialize_write_fail` sets it, in every build, for the caller to read. Misuse
+never sets it, it makes no operation return false or trap, and a later write
+emits exactly what it would have without it. *(C++: `serialize_assert` everywhere a write or
+a measure checks, compiled out in release, after which every WriteStream and
+MeasureStream operation returns true; `serialize_fail` there returns false
+without asserting; `serialize_reject` there asserts, and returns false;
+`serialize_compressed_float` asserts a non-finite value and only release
+clamps it. asserts.cpp and test_compressed_float_non_finite_asserts prove them.)*
 
 **U10. A write checks room for the whole operation before writing any of it.** No
 length bits or align bits may be written ahead of a payload that does not fit.
@@ -316,6 +380,60 @@ numbers are Q48.16, so its exact `*Bits` float forms are its primary API,
 documented as such, and moo's runner must drive the `*Bits` forms. A missing
 reference operation is a gap, never an extra: `serialize_copy_string` and
 `compressed_float_precomputed` must exist everywhere they are missing today.
+
+*`serialize_copy_string` (ruling, 2026-10-27).* It is a reference helper, not a
+wire operation, and every implementation carries it with one result, defined on
+the source's UTF-8 bytes: take the bytes before the first NUL; if there are more
+than `dest_size - 1`, keep the first `dest_size - 1` of them, then drop bytes
+from the end while the first byte left out is a continuation byte
+(`10xxxxxx`). For well-formed UTF-8 that is the longest prefix that fits and does
+not end inside a character, and `serialize_string` with
+`buffer_size = dest_size` accepts it. `dest_size` below 1 is write misuse (U9).
+In an implementation whose strings are UTF-16, `dest_size` counts the bytes of
+the strict UTF-8 encoding, and a source the strict codec refuses is write misuse
+(U3).
+
+* Where the destination is a caller-owned fixed-capacity buffer (C, C++,
+  goose), the helper writes that prefix and zeros the rest of the buffer, so it
+  is NUL terminated.
+* Where strings are values (every other implementation), the helper returns
+  the prefix, or assigns it through the destination reference the language
+  uses for a string read. Assigning a string value copies it but does not bound
+  it, and bounding is the helper's job, so a value-string implementation
+  carries it too.
+
+*(C++ 2.1.1: the copy backs off to a whole character; before, it cut at a byte
+and could hand `serialize_string` text its write assertion refuses.
+test_copy_string.)*
+
+*Exports beyond the reference operations (ruling, 2026-10-27).* An
+implementation's public surface is the reference operations, the three streams,
+the refusal list and its name function (U14), `serialize_copy_string`, and the
+extras above. Beyond those it may export only:
+
+* **The reference's own public helpers**, spelled in its idiom and behaving as
+  the reference's do: `popcount`, `log2`, `bits_required`, `bits_required64`,
+  `bits_required128`, `value_fits_in_bits`, `bswap`, `signed_to_unsigned`,
+  `unsigned_to_signed`, `float_bits_are_finite`, `double_bits_are_finite`,
+  `compressed_float_params`, `string_is_valid_utf8`, `BitWriter`,
+  `BitReader`, the 128-bit integer types, and the accessors the reference
+  streams carry (bits processed, available and remaining, the context, the
+  refusal). None of them is required.
+* **Language necessities**, each documented as one where it is exported: what
+  the language lacks that the reference's types give C++ for free. A float32
+  rounding function and float bit casts where the language has no float32
+  type; 64-bit and 128-bit integer carriers, with the constructors and the
+  arithmetic their operations need, where the language has no such integers;
+  by-reference holders where a scalar cannot be passed by reference; an
+  offset and a length on `bytes` (and on its split write form) where the
+  language cannot point into the middle of a buffer, standing for the
+  reference's pointer and count and wire-identical to the operation on that
+  span (serialize.js's span form, which schema's generated code relies on); the
+  language's error or result type for a refusal.
+
+Anything else is internal. Where the language can hide a name, it is hidden;
+where it cannot (lobster has no private names), the implementation documents
+which names are internal and promises nothing about them.
 
 **U16. Caller declarations are validated on every stream before any bits move.**
 A `bits` count is an integer in its range; a fixed point `min` and `max` fit the
