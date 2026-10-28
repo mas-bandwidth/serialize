@@ -188,8 +188,15 @@ caller's refusal" above. *(C++: `serialize_reject`, `serialize_object`;
 **U3. A writer never sends bytes that differ from the caller's value.** String
 encoding must use the strict UTF-8 codec: a lone surrogate or any other
 unencodable text is write misuse, never silently replaced (no `?`, no `U+FFFD`).
-A measure stream follows the same rule. *(C++: text is already UTF-8 bytes and is
-written as given; the validity assertion below covers it.)*
+A measure stream follows the same rule. *(Ruling, 2026-10-27: it is write misuse
+like any other, so U9 decides what it does. A checked build traps on it, which is
+the guarantee: no checked build ever replaces it. An unchecked build may compile
+the check out, and its bytes after the misuse are unspecified, as they are for
+every other write misuse; a lenient codec's `?` or `U+FFFD` there is that
+unspecified output, never a documented behaviour, and no build may replace on
+purpose with the check on. The C++ reference in release writes invalid bytes as
+given, and is unspecified in the same way.)* *(C++: text is already UTF-8 bytes
+and is written as given; the validity assertion below covers it.)*
 
 **U4. Every implementation must check UTF-8 and NUL on string write**, wherever
 it checks any write misuse, and at least in checked builds. *(C++: the write path
@@ -417,7 +424,11 @@ extras above. Beyond those it may export only:
   rounding function and float bit casts where the language has no float32
   type; 64-bit and 128-bit integer carriers, with the constructors and the
   arithmetic their operations need, where the language has no such integers;
-  by-reference holders where a scalar cannot be passed by reference; the
+  by-reference holders where a scalar cannot be passed by reference; an
+  offset and a length on `bytes` (and on its split write form) where the
+  language cannot point into the middle of a buffer, standing for the
+  reference's pointer and count and wire-identical to the operation on that
+  span (serialize.js's span form, which schema's generated code relies on); the
   language's error or result type for a refusal.
 
 Anything else is internal. Where the language can hide a name, it is hidden;
