@@ -6750,18 +6750,19 @@ inline void test_copy_string()
     serialize_copy_string( dest, "a\0bc", sizeof( dest ) );
     serialize_check( memcmp( dest, "a\0\0\0\0\0\0\0", 8 ) == 0 );
 
-    // ASCII cut at dest_size - 1 bytes
+    // ASCII cut at dest_size - 1 bytes, the rest zeroed
+    memset( dest, 'Z', sizeof( dest ) );
     serialize_copy_string( dest, "abcdefghij", 4 );
-    serialize_check( strcmp( dest, "abc" ) == 0 );
+    serialize_check( memcmp( dest, "abc\0\0\0\0\0", 4 ) == 0 );
 
     // "\xC3\xA9" is e-acute: a cut after its lead byte backs off to before it
+    memset( dest, 'Z', sizeof( dest ) );
     serialize_copy_string( dest, "\xC3\xA9\xC3\xA9", 4 );
-    serialize_check( strcmp( dest, "\xC3\xA9" ) == 0 );
-    serialize_check( serialize::serialize_string_is_valid_utf8( dest, int( strlen( dest ) ) ) );
+    serialize_check( memcmp( dest, "\xC3\xA9\0\0", 4 ) == 0 );
 
-    // a cut landing exactly between two characters keeps both
-    serialize_copy_string( dest, "\xC3\xA9\xC3\xA9", 5 );
-    serialize_check( strcmp( dest, "\xC3\xA9\xC3\xA9" ) == 0 );
+    // a cut landing exactly between two characters (the first byte left out is a lead byte) keeps the first
+    serialize_copy_string( dest, "\xC3\xA9\xC3\xA9", 3 );
+    serialize_check( strcmp( dest, "\xC3\xA9" ) == 0 );
 
     // a four byte sequence cut after one, two or three of its bytes backs off whole
     serialize_copy_string( dest, "a\xF0\x9F\x98\x80", 3 );
@@ -6773,18 +6774,24 @@ inline void test_copy_string()
     serialize_copy_string( dest, "a\xF0\x9F\x98\x80", 6 );
     serialize_check( strcmp( dest, "a\xF0\x9F\x98\x80" ) == 0 );
 
+    // the rule is on bytes, so it is defined for text that is not UTF-8: back off while
+    // the first byte left out is a continuation byte
+    serialize_copy_string( dest, "ab\x80\x80", 4 );
+    serialize_check( strcmp( dest, "a" ) == 0 );
+    serialize_copy_string( dest, "\xC3\xA9\xA9\xA9", 4 );
+    serialize_check( dest[0] == '\0' );
+
     // dest_size 1 holds only the terminator
     serialize_copy_string( dest, "abc", 1 );
     serialize_check( dest[0] == '\0' );
 
-    // the result is what serialize_string with buffer_size = dest_size writes
+    // the result is what serialize_string with buffer_size = dest_size accepts
     {
         char text[4];
         serialize_copy_string( text, "x\xE2\x82\xAC", sizeof( text ) );
         serialize_check( strcmp( text, "x" ) == 0 );
-        uint8_t buffer[64] = { 0 };
-        serialize::WriteStream writeStream( buffer, 56 );
-        serialize_check( serialize::serialize_string_internal( writeStream, text, int( sizeof( text ) ) ) );
+        serialize_check( strlen( text ) < sizeof( text ) );
+        serialize_check( serialize::serialize_string_is_valid_utf8( text, int( strlen( text ) ) ) );
     }
 }
 

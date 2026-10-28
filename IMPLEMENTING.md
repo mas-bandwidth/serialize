@@ -39,7 +39,8 @@ language mechanism.
 The caller is responsible for well-formed writes. Where the language has checked
 builds (assertions enabled), write-side contract validation uses them and
 nothing else: release builds perform **zero** write-side validation in C and
-C++, and the minimum the language permits elsewhere. Readers perform exactly the
+C++, and the minimum the language permits elsewhere. An implementation with no
+unchecked build checks in every run, and traps on misuse (U9). Readers perform exactly the
 refusal rules of STANDARD.md, each reporting its reason, and nothing more. A
 check that neither the standard states nor the language forces is an invented
 contract, whatever its justification sounds like.
@@ -208,11 +209,12 @@ does not have, and catches misuse by the same trap (U9). It never latches
 anything: no misuse, `fail`, `reject` or failing nested object sets a reason or
 makes a later measure fail. *(C++: the operation macros assert on
 `Stream::IsWriting`, which a `MeasureStream` sets, so a measure asserts exactly
-what a write asserts; `serialize_fail` on a measure returns false and records
+what a write asserts, except room and buffer size, which a measure does not
+have; `serialize_fail` on a measure returns false and records
 nothing; test_uniform_rules.)*
 
-**U7. A reader never traps, and a refusal is a value.** Every refusal, from the
-wire, from the caller, or from caller misuse, must come back as a value: `false`,
+**U7. A reader never traps, and a refusal is a value.** Every refusal on a read
+stream, from the wire, from the caller, or from caller misuse, must come back as a value: `false`,
 a result, or an error tuple carrying its reason. It is never a thrown exception,
 in any implementation, whatever the runtime's idiom. Caller misuse on read, such
 as a negative byte count or a string buffer size below 1, must refuse as
@@ -243,13 +245,15 @@ Write misuse is everything the check model, U1, U3 to U5, U8, U10 and U16 name o
 a write or a measure stream: a value outside its range or its bit width; a
 `float`, `double` or `compressed_float` value that is not finite; a bad
 declaration; text that is not well-formed UTF-8, holds a NUL, or does not fit
-`buffer_size - 1`; a write buffer that is not a multiple of 8 bytes; an
-operation that does not fit the room left in the buffer; and `reject` on a write
-or a measure. Every implementation catches every one of them the same way, on
-every operation, `compressed_float` included:
+`buffer_size - 1`; a write buffer that is not a multiple of 8 bytes; and an
+operation that does not fit the room left in the buffer. Every implementation
+catches every one of them the same way, on every operation, `compressed_float`
+included. Write misuse is not a refusal: U7's rule that a refusal is a value
+governs refusals, and a trap is not one.
 
-* **A checked build traps, at the call, before any bit of the operation is
-  written.** The trap is the language's assertion, or the nearest thing to it
+* **A checked build traps at the call**, before the call returns, and before
+  any bit of the operation is written wherever U10 makes room a whole-operation
+  check. The trap is the language's assertion, or the nearest thing to it
   that does not come back to the caller as a value: `assert` in C and C++, a
   panic in Go and Rust, an `AssertionError` under `-ea` in Java,
   `Debug.Assert` in C#, `assert` in Dart, a thrown error in JavaScript,
@@ -259,30 +263,35 @@ every operation, `compressed_float` included:
   traps in every run: Go, Lua, Luau, Squirrel, Elixir, goose, lobster and moo
   today.
 * **Write misuse never latches.** A write or measure stream has no refusal state
-  for misuse to set: no misuse returns false, records a reason, or makes a later
-  operation fail. `value_out_of_range`, `non_finite_float`, `invalid_utf8`,
+  for misuse to set: no misuse records a reason or makes a later operation
+  fail, and none returns false except `reject` in an unchecked build, below. `value_out_of_range`, `non_finite_float`, `invalid_utf8`,
   `embedded_nul` and `past_end` are a reader's reasons; latching one on a write
   is a second mechanism, and is not allowed.
 * **An unchecked build** (release, `NDEBUG`, no `-ea`, production) may compile
   every check out, and its output after misuse is unspecified (U8). Nothing
-  about it is promised, and a caller must never depend on it.
+  about it is promised beyond `reject`'s result below, and a caller must never
+  depend on it.
 * **`fail` on a write or a measure returns false, records nothing, and never
   traps, in every build:** it is the path every refusal takes, so a serialize
   function shared by the read and write sides can call it. A nested object
   whose serialize function returns false on a write or a measure makes the
   object operation return false, and records nothing.
-* **`reject` on a write or a measure traps in a checked build**, as any other
-  write misuse does, and returns false having recorded nothing in an unchecked
-  one. An always-checked implementation therefore raises on it in every run,
-  which is what the C++ reference does in a debug build.
+* **`reject` on a write or a measure is caller misuse with one promised
+  unchecked result.** It traps in a checked build, as write misuse does, so an
+  always-checked implementation raises on it in every run, which is what the
+  C++ reference does in a debug build. In an unchecked build it returns false
+  and records nothing, the one unchecked result U9 promises, because it is
+  spelled on the path every refusal takes.
 * **`compressed_float`'s clamp is no exception.** A value that is NaN or an
   infinity is write misuse and traps in a checked build, never clamped into
   range there. The clamp that keeps C++'s release build defined is unchecked
   build behaviour, unspecified to callers. Schema's packet floats are finite
   only, so a conforming writer never has one to send.
 
-The C write error flag (U15) is the one allowed addition: `serialize_write_fail`
-sets it for the caller to read. *(C++: `serialize_assert` everywhere a write or
+The C write error flag (U15) is the one allowed record on a write stream:
+`serialize_write_fail` sets it, in every build, for the caller to read. Misuse
+never sets it, it makes no operation return false or trap, and a later write
+emits exactly what it would have without it. *(C++: `serialize_assert` everywhere a write or
 a measure checks, compiled out in release, after which every WriteStream and
 MeasureStream operation returns true; `serialize_fail` there returns false
 without asserting; `serialize_reject` there asserts, and returns false;
@@ -366,14 +375,16 @@ reference operation is a gap, never an extra: `serialize_copy_string` and
 `compressed_float_precomputed` must exist everywhere they are missing today.
 
 *`serialize_copy_string` (ruling, 2026-10-27).* It is a reference helper, not a
-wire operation, and every implementation carries it with one result: the
-longest prefix of the source that stops before its first NUL, is at most
-`dest_size - 1` bytes of UTF-8, and does not end inside a UTF-8 sequence. A cut
-that would leave a lead byte without all of its continuation bytes backs off to
-the start of that sequence; judged on bytes (back off while the first byte left
-out is `10xxxxxx`), so a byte-string implementation computes it for any input.
-`dest_size` below 1 is write misuse (U9). Whenever the source is well-formed
-UTF-8, `serialize_string` with `buffer_size = dest_size` accepts the result.
+wire operation, and every implementation carries it with one result, defined on
+the source's UTF-8 bytes: take the bytes before the first NUL; if there are more
+than `dest_size - 1`, keep the first `dest_size - 1` of them, then drop bytes
+from the end while the first byte left out is a continuation byte
+(`10xxxxxx`). For well-formed UTF-8 that is the longest prefix that fits and does
+not end inside a character, and `serialize_string` with
+`buffer_size = dest_size` accepts it. `dest_size` below 1 is write misuse (U9).
+In an implementation whose strings are UTF-16, `dest_size` counts the bytes of
+the strict UTF-8 encoding, and a source the strict codec refuses is write misuse
+(U3).
 
 * Where the destination is a caller-owned fixed-capacity buffer (C, C++,
   goose), the helper writes that prefix and zeros the rest of the buffer, so it
