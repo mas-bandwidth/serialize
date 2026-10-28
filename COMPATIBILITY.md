@@ -9,20 +9,20 @@ These are the releases that carry format version 2.0:
 | runtime | language | release |
 |---|---|---|
 | [serialize](https://github.com/mas-bandwidth/serialize) | C++ | `v2.1.2` |
-| [serialize.c](https://github.com/mas-bandwidth/serialize.c) | C | `v2.0.0` |
-| [serialize.cs](https://github.com/mas-bandwidth/serialize.cs) | C# | `v2.0.0` |
-| [serialize.go](https://github.com/mas-bandwidth/serialize.go) | Go | `v2.0.0` |
-| [serialize.rs](https://github.com/mas-bandwidth/serialize.rs) | Rust | `v3.0.0` |
-| [serialize.js](https://github.com/mas-bandwidth/serialize.js) | JavaScript | `v2.0.0` |
-| [serialize.dart](https://github.com/mas-bandwidth/serialize.dart) | Dart | `v2.0.0` |
-| [serialize.java](https://github.com/mas-bandwidth/serialize.java) | Java | `v2.0.0` |
-| [serialize.elixir](https://github.com/mas-bandwidth/serialize.elixir) | Elixir | `v2.0.0` |
-| [serialize.lua](https://github.com/mas-bandwidth/serialize.lua) | Lua | `v2.0.0` |
-| [serialize.luau](https://github.com/mas-bandwidth/serialize.luau) | Luau | `v2.0.0` |
-| [serialize.moo](https://github.com/mas-bandwidth/serialize.moo) | moo | `v2.0.0` |
-| [serialize.nut](https://github.com/mas-bandwidth/serialize.nut) | Squirrel | `v2.0.0` |
-| [serialize.lobster](https://github.com/mas-bandwidth/serialize.lobster) | Lobster | `v2.0.0` |
-| [serialize.goose](https://github.com/mas-bandwidth/serialize.goose) | Goose | `v2.0.0` |
+| [serialize.c](https://github.com/mas-bandwidth/serialize.c) | C | `v2.1.1` |
+| [serialize.cs](https://github.com/mas-bandwidth/serialize.cs) | C# | `v2.1.1` |
+| [serialize.go](https://github.com/mas-bandwidth/serialize.go) | Go | `v2.1.1` |
+| [serialize.rs](https://github.com/mas-bandwidth/serialize.rs) | Rust | `v4.0.1` |
+| [serialize.js](https://github.com/mas-bandwidth/serialize.js) | JavaScript | `v2.1.2` |
+| [serialize.dart](https://github.com/mas-bandwidth/serialize.dart) | Dart | `v2.1.1` |
+| [serialize.java](https://github.com/mas-bandwidth/serialize.java) | Java | `v2.1.2` |
+| [serialize.elixir](https://github.com/mas-bandwidth/serialize.elixir) | Elixir | `v2.1.1` |
+| [serialize.lua](https://github.com/mas-bandwidth/serialize.lua) | Lua | `v2.1.1` |
+| [serialize.luau](https://github.com/mas-bandwidth/serialize.luau) | Luau | `v2.1.1` |
+| [serialize.moo](https://github.com/mas-bandwidth/serialize.moo) | moo | `v2.1.1` |
+| [serialize.nut](https://github.com/mas-bandwidth/serialize.nut) | Squirrel | `v2.1.1` |
+| [serialize.lobster](https://github.com/mas-bandwidth/serialize.lobster) | Lobster | `v2.1.1` |
+| [serialize.goose](https://github.com/mas-bandwidth/serialize.goose) | Goose | `v2.1.1` |
 
 The C++ implementation is the reference, and it carries 2.0 first. Every port
 in the family re-vendors this standard and corpus and joins this table with a
@@ -34,8 +34,8 @@ release of its own; until it does, it carries format version 1.1, below, and a
 Every release above vendors the standard and the corpus from one commit of this
 repository:
 
-    standard_commit  dedf58efa93832fd243dbf3a2a1ca0a91c46b14b
-    corpus_commit    dedf58efa93832fd243dbf3a2a1ca0a91c46b14b
+    standard_commit  bd3d67e23c8acc2c45eff69633dbe16c029a2cba
+    corpus_commit    bd3d67e23c8acc2c45eff69633dbe16c029a2cba
 
 The pin names a commit and never a branch. `main` moves, so a claim proved
 against `main` is a claim about whatever `main` happened to be that morning. The
