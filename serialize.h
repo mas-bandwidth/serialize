@@ -36,8 +36,8 @@
 
 #define SERIALIZE_VERSION_MAJOR 2
 #define SERIALIZE_VERSION_MINOR 1
-#define SERIALIZE_VERSION_PATCH 0
-#define SERIALIZE_VERSION "2.1.0"
+#define SERIALIZE_VERSION_PATCH 1
+#define SERIALIZE_VERSION "2.1.1"
 
 #if defined(_MSC_VER)
 #define serialize_restrict __restrict
@@ -4800,18 +4800,33 @@ namespace serialize
 #endif // #if defined( SERIALIZE_HAS_COMPILE_TIME_SURFACE )
 }
 
+/**
+    Copy a string into a fixed-size char buffer, bounded for serialize_string.
+    Copies the longest prefix of source that stops before its first NUL, is at most dest_size - 1 bytes, and does not end inside a UTF-8 sequence: a cut that would leave a lead byte without all of its continuation bytes backs off to the start of that sequence. The rest of dest is zeroed, so the result is NUL terminated. Whenever source is well-formed UTF-8, serialize_string with buffer_size = dest_size accepts the result (IMPLEMENTING.md U15; since 2.1.1, before which the copy cut at a byte and could split a character).
+    @param dest The destination buffer, at least dest_size bytes.
+    @param source The NUL terminated source string.
+    @param dest_size The size of dest in bytes, at least 1 (write misuse otherwise, debug asserted).
+ */
+
 inline void serialize_copy_string( char * dest, const char * source, size_t dest_size )
 {
     serialize_assert( dest );
     serialize_assert( source );
     serialize_assert( dest_size >= 1 );
     memset( dest, 0, dest_size );
-    for ( size_t i = 0; i < dest_size - 1; i++ )
+    size_t length = 0;
+    while ( length < dest_size - 1 && source[length] != '\0' )
     {
-        if ( source[i] == '\0' )
-            break;
-        dest[i] = source[i];
+        length++;
     }
+    // the cut fell inside a UTF-8 sequence exactly when the first byte left out is a
+    // continuation byte (10xxxxxx): back off to the start of that sequence. NUL ends
+    // the source and is never a continuation byte, so an uncut copy never backs off
+    while ( length > 0 && ( uint8_t( source[length] ) & 0xC0 ) == 0x80 )
+    {
+        length--;
+    }
+    memcpy( dest, source, length );
 }
 
 
@@ -6717,6 +6732,60 @@ template <typename Stream> inline bool test_run_end( Stream & stream )
 {
     serialize_end( stream );
     return true;
+}
+
+// U15 (2.1.1): serialize_copy_string keeps the longest prefix before the first NUL that fits
+// dest_size - 1 bytes and does not end inside a UTF-8 sequence, and zeroes the rest of dest.
+inline void test_copy_string()
+{
+    char dest[8];
+
+    // fits: copied whole, the rest zeroed
+    memset( dest, 'Z', sizeof( dest ) );
+    serialize_copy_string( dest, "abc", sizeof( dest ) );
+    serialize_check( memcmp( dest, "abc\0\0\0\0\0", 8 ) == 0 );
+
+    // stops at the first NUL
+    memset( dest, 'Z', sizeof( dest ) );
+    serialize_copy_string( dest, "a\0bc", sizeof( dest ) );
+    serialize_check( memcmp( dest, "a\0\0\0\0\0\0\0", 8 ) == 0 );
+
+    // ASCII cut at dest_size - 1 bytes
+    serialize_copy_string( dest, "abcdefghij", 4 );
+    serialize_check( strcmp( dest, "abc" ) == 0 );
+
+    // "\xC3\xA9" is e-acute: a cut after its lead byte backs off to before it
+    serialize_copy_string( dest, "\xC3\xA9\xC3\xA9", 4 );
+    serialize_check( strcmp( dest, "\xC3\xA9" ) == 0 );
+    serialize_check( serialize::serialize_string_is_valid_utf8( dest, int( strlen( dest ) ) ) );
+
+    // a cut landing exactly between two characters keeps both
+    serialize_copy_string( dest, "\xC3\xA9\xC3\xA9", 5 );
+    serialize_check( strcmp( dest, "\xC3\xA9\xC3\xA9" ) == 0 );
+
+    // a four byte sequence cut after one, two or three of its bytes backs off whole
+    serialize_copy_string( dest, "a\xF0\x9F\x98\x80", 3 );
+    serialize_check( strcmp( dest, "a" ) == 0 );
+    serialize_copy_string( dest, "a\xF0\x9F\x98\x80", 4 );
+    serialize_check( strcmp( dest, "a" ) == 0 );
+    serialize_copy_string( dest, "a\xF0\x9F\x98\x80", 5 );
+    serialize_check( strcmp( dest, "a" ) == 0 );
+    serialize_copy_string( dest, "a\xF0\x9F\x98\x80", 6 );
+    serialize_check( strcmp( dest, "a\xF0\x9F\x98\x80" ) == 0 );
+
+    // dest_size 1 holds only the terminator
+    serialize_copy_string( dest, "abc", 1 );
+    serialize_check( dest[0] == '\0' );
+
+    // the result is what serialize_string with buffer_size = dest_size writes
+    {
+        char text[4];
+        serialize_copy_string( text, "x\xE2\x82\xAC", sizeof( text ) );
+        serialize_check( strcmp( text, "x" ) == 0 );
+        uint8_t buffer[64] = { 0 };
+        serialize::WriteStream writeStream( buffer, 56 );
+        serialize_check( serialize::serialize_string_internal( writeStream, text, int( sizeof( text ) ) ) );
+    }
 }
 
 inline void test_uniform_rules()
@@ -11471,6 +11540,7 @@ inline void serialize_test()
     SERIALIZE_RUN_TEST( test_read_stream_failure_is_terminal );
     SERIALIZE_RUN_TEST( test_serialize_reject );
     SERIALIZE_RUN_TEST( test_uniform_rules );
+    SERIALIZE_RUN_TEST( test_copy_string );
         SERIALIZE_RUN_TEST( test_read_stream_initialize_padded );
         SERIALIZE_RUN_TEST( test_read_stream_bits_remaining );
         SERIALIZE_RUN_TEST( test_compressed_float_validation );

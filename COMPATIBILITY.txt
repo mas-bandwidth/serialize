@@ -32,9 +32,9 @@ corpus_commit dedf58efa93832fd243dbf3a2a1ca0a91c46b14b
 runtime serialize
 language C++
 repository mas-bandwidth/serialize
-release v2.1.0
+release v2.1.1
 version_file CMakeLists.txt
-version_pattern project(serialize VERSION 2.1.0 LANGUAGES CXX)
+version_pattern project(serialize VERSION 2.1.1 LANGUAGES CXX)
 
 runtime serialize.c
 language C
