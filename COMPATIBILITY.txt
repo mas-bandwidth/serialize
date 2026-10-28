@@ -60,9 +60,9 @@ version_pattern -
 runtime serialize.rs
 language Rust
 repository mas-bandwidth/serialize.rs
-release v4.0.1
+release v5.0.0
 version_file Cargo.toml
-version_pattern version = "4.0.1"
+version_pattern version = "5.0.0"
 
 runtime serialize.js
 language JavaScript
