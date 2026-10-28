@@ -36,8 +36,8 @@
 
 #define SERIALIZE_VERSION_MAJOR 2
 #define SERIALIZE_VERSION_MINOR 1
-#define SERIALIZE_VERSION_PATCH 1
-#define SERIALIZE_VERSION "2.1.1"
+#define SERIALIZE_VERSION_PATCH 2
+#define SERIALIZE_VERSION "2.1.2"
 
 #if defined(_MSC_VER)
 #define serialize_restrict __restrict
@@ -2127,8 +2127,9 @@ namespace serialize
             destination must hold at least bytes + 8. The library allocates nothing.
             The destination is yours: it must outlive the stream and must not change
             while the stream is reading it.
-            A destination that is too small is refused in every build: nothing is copied,
-            and the stream is left failed. The same check covers a negative bytes.
+            A destination that is too small is refused in every build, with no assertion (a reader
+            never traps, IMPLEMENTING.md U7 and U16): nothing is copied, and the stream is left
+            failed as value_out_of_range. The same check covers a negative bytes.
             The C twin is serialize_read_stream_init_padded.
             @returns True if the stream is ready to read, false if the destination was too small.
          */
@@ -2136,14 +2137,14 @@ namespace serialize
         bool InitializePadded( uint8_t * destination, int64_t destination_bytes, const uint8_t * data, int64_t bytes )
         {
             serialize_assert( destination );
-            serialize_assert( bytes >= 0 );
-            serialize_assert( destination_bytes >= 8 );
-            serialize_assert( destination_bytes - 8 >= bytes );
+            // IMPLEMENTING.md U7 and U16: a reader never traps. A negative byte count, or a
+            // declared size the destination cannot hold with its 8 bytes of slack, is caller
+            // misuse on read and refuses as value_out_of_range, with no assertion
             if ( bytes < 0 || destination_bytes < 8 || destination_bytes - 8 < bytes )
             {
                 m_reader.Initialize( destination, 0 );
                 m_refusal = REFUSAL_NONE;
-                Fail( REFUSAL_PAST_END );
+                Fail( REFUSAL_VALUE_OUT_OF_RANGE );
                 return false;
             }
             if ( bytes > 0 )
@@ -2978,7 +2979,7 @@ namespace serialize
         Derive the compressed float wire constants from a (min,max,res) declaration.
         This is the derivation serialize_compressed_float performs on every call, exposed so it can be paid once instead: the constants depend only on the declaration, never on the value, so a schema compiler runs the same derivation at code generation time and passes the results to serialize_compressed_float_precomputed at every call site.
         serialize_compressed_float itself derives with exactly this function and forwards to exactly that entry point, so the two entry points are wire identical by construction.
-        A declaration whose delta = max - min, or whose delta / res, is not finite in float32 is non-conforming (STANDARD.md, adopted 2026-08-15) and asserts in debug builds.
+        A declaration whose delta = max - min, or whose delta / res, is not finite in float32 is non-conforming (STANDARD.md, adopted 2026-08-15) and asserts in debug builds: this is the write and measure trap (U9). serialize_compressed_float on a read stream checks the same declaration first and refuses it as value_out_of_range before calling this function (U7, U16).
         @param min The minimum float value. Must be less than max.
         @param max The maximum float value.
         @param res The resolution the float value is quantized to.
@@ -3163,6 +3164,24 @@ namespace serialize
         // the wire lives in serialize_compressed_float_precomputed_internal, statement for
         // statement. test_compressed_float_precomputed_differential holds this composition
         // to byte and bit identity against a frozen copy of the original unsplit body.
+        //
+        // IMPLEMENTING.md U7 and U16: on read, a bad declaration refuses as value_out_of_range
+        // before any bits move, and never reaches serialize_compressed_float_params, whose
+        // assertions are the write and measure trap (U9). The checks are the params assertions,
+        // in the same order, so the divide only runs once min < max and res > 0 hold.
+        if ( Stream::IsReading )
+        {
+            if ( !( min < max && res > 0.0f ) )
+            {
+                return serialize_fail( stream, REFUSAL_VALUE_OUT_OF_RANGE );
+            }
+            const float declared_delta = max - min;
+            const float declared_values = declared_delta / res;
+            if ( !( declared_delta - declared_delta == 0.0f ) || !( declared_values - declared_values == 0.0f ) )
+            {
+                return serialize_fail( stream, REFUSAL_VALUE_OUT_OF_RANGE );
+            }
+        }
         uint32_t max_integer_value = 0;
         int bits = 0;
         float delta = 0.0f;
@@ -4139,8 +4158,12 @@ namespace serialize
     #define read_bits( stream, value, bits )                                                \
         do                                                                                  \
         {                                                                                   \
-            serialize_assert( (bits) > 0 );                                                 \
-            serialize_assert( (bits) <= 64 );                                               \
+            /* U7 and U16: a bad bit count refuses on read before any bits move, never */  \
+            /* an assertion: a reader never traps */                                        \
+            if ( (bits) <= 0 || (bits) > 64 )                                               \
+            {                                                                               \
+                return serialize::serialize_fail( stream, serialize::REFUSAL_VALUE_OUT_OF_RANGE ); \
+            }                                                                               \
             if ( (bits) <= 32 )                                                             \
             {                                                                               \
                 uint32_t uint32_value;                                                      \
@@ -6988,6 +7011,24 @@ inline void test_uniform_rules()
         serialize_check( serialize::serialize_compressed_float_precomputed_internal( consistent, value, 1000, 10, 10.0f, 0.0f ) == true );
     }
 
+    // U7 and U16: a per-call compressed_float declaration that is not conforming refuses on read before
+    // any bits move. Before 2.1.2 the read reached serialize_compressed_float_params' assertions: this
+    // test aborted in a checked build, and in release a res <= 0 read wrong data. Empty streams, so a
+    // read that moved a bit first would report past_end
+    {
+        uint8_t packet[16] = { 0 };
+        const float bad[][3] = { { 1.0f, 1.0f, 0.1f }, { 2.0f, 1.0f, 0.1f }, { 0.0f, 10.0f, 0.0f }, { 0.0f, 10.0f, -0.01f },
+                                 { -3.0e38f, 3.0e38f, 1.0f }, { 0.0f, 1.0e30f, 1.0e-30f } };
+        for ( int i = 0; i < int( sizeof( bad ) / sizeof( bad[0] ) ); i++ )
+        {
+            serialize::ReadStream stream( packet, 0 );
+            float value = 3.0f;
+            serialize_check( serialize::serialize_compressed_float_internal( stream, value, bad[i][0], bad[i][1], bad[i][2] ) == false );
+            serialize_check( value == 3.0f );
+            serialize_check( stream.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
+        }
+    }
+
     // U14: a refusal with no reason, or one outside the closed list, records rejected on a read stream.
     // Before this, a release build recorded none, and the next read relabelled the refusal past_end
     {
@@ -7101,14 +7142,14 @@ inline void test_read_stream_initialize_padded()
     }
     free( tight );
 
-#if defined( NDEBUG )
-    // a dest that cannot hold payload+8 is refused in every build; debug asserts first.
-    // asserts.cpp records the debug half so the sanitizer job sees the refusal too.
+    // a dest that cannot hold payload+8 is refused in every build as value_out_of_range, with no
+    // assertion: a reader never traps (IMPLEMENTING.md U7, U16), so this runs in debug too
     {
         serialize::ReadStream tooSmall;
         uint8_t tiny[16];
         memset( tiny, 0xFF, sizeof( tiny ) );
         serialize_check( tooSmall.InitializePadded( tiny, (int64_t) sizeof( tiny ), written, (int64_t) sizeof( tiny ) ) == false );
+        serialize_check( tooSmall.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
         for ( int i = 0; i < (int) sizeof( tiny ); i++ )
             serialize_check( tiny[i] == 0xFF );
         uint32_t after = 0xFFFFFFFF;
@@ -7131,7 +7172,6 @@ inline void test_read_stream_initialize_padded()
         for ( int i = 0; i < 8; i++ )
             serialize_check( undersized[sizeof( undersized ) - 8 + i] == 0 );
     }
-#endif
 }
 
 inline void test_read_stream_bits_remaining()

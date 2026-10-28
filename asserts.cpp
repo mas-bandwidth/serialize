@@ -38,10 +38,10 @@
     both build configurations, where an aborting assertion would need a death test whose
     shape differs on each of them, and it also names WHICH assertion fired.
 
-    InitializePadded's too-small destination is a memory claim, not a decoded-value one.
-    The unit test can only exercise the refusal under NDEBUG, because a live assert aborts
-    first. Recording here lets both halves run in every configuration, including the
-    sanitizer job.
+    InitializePadded and the other read side declaration checks assert nothing: a reader
+    never traps (IMPLEMENTING.md U7, U16). The read cases here prove the refusal happens
+    with no assertion firing, next to the write and measure cases that prove the trap
+    stays (U9).
 */
 
 #include <stdio.h>
@@ -201,13 +201,33 @@ static void test_initialize_padded_refuses_a_short_destination()
         memset( dest, 0xFF, sizeof( dest ) );
         serialize::ReadStream stream;
         bool ok = stream.InitializePadded( dest, (int64_t) sizeof( dest ), payload, (int64_t) sizeof( payload ) );
-        check( assert_fires > 0, "a destination that cannot hold payload+8 trips the assertion" );
-        check( ok == false, "and refuses in every build" );
+        // IMPLEMENTING.md U7 and U16: a reader never traps, and a declared size that exceeds the
+        // destination's capacity refuses as value_out_of_range
+        check( assert_fires == 0, "a destination that cannot hold payload+8 does not trip an assertion" );
+        check( ok == false, "it refuses in every build" );
+        check( stream.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE, "as value_out_of_range" );
         check( dest[0] == (uint8_t) 0xFF, "copying nothing" );
         uint32_t after = 0xFFFFFFFFu;
         check( stream.SerializeBits( after, 8 ) == false, "the stream is latched" );
         check( after == 0xFFFFFFFFu, "a refused read leaves the caller's value" );
-        printf( "      assertion: %s\n", assert_condition );
+    }
+
+    {
+        reset();
+        uint8_t dest[16];
+        memset( dest, 0xFF, sizeof( dest ) );
+        serialize::ReadStream stream;
+        bool ok = stream.InitializePadded( dest, (int64_t) sizeof( dest ), payload, -1 );
+        check( assert_fires == 0 && ok == false && stream.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE, "a negative byte count refuses as value_out_of_range without an assertion" );
+        check( dest[0] == (uint8_t) 0xFF, "copying nothing" );
+    }
+
+    {
+        reset();
+        uint8_t dest[7];
+        serialize::ReadStream stream;
+        bool ok = stream.InitializePadded( dest, (int64_t) sizeof( dest ), payload, 0 );
+        check( assert_fires == 0 && ok == false && stream.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE, "a destination below 8 bytes refuses as value_out_of_range without an assertion" );
     }
 
     {
@@ -356,6 +376,138 @@ static void test_compressed_float_declaration_top_must_decode_finite()
     }
 }
 
+// IMPLEMENTING.md U7 and U16: a reader never traps. A bad caller declaration on a read stream
+// refuses as value_out_of_range before any bits move, with no assertion; the same declaration
+// on a write or measure stream stays write misuse, caught by the trap (U9). Each read case below
+// checks all four halves: no assertion, false, the reason, and the value untouched. The read
+// streams hold 0 bytes, so a read that moved a bit before refusing would report past_end.
+
+static float float_from_bits( uint32_t bits )
+{
+    float value;
+    memcpy( &value, &bits, 4 );
+    return value;
+}
+
+static void check_read_refuses( serialize::ReadStream & stream, bool result, float value, const char * what )
+{
+    char line[256];
+    snprintf( line, sizeof( line ), "%s: refuses on read", what );
+    check( result == false && stream.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE, line );
+    snprintf( line, sizeof( line ), "%s: without an assertion", what );
+    check( assert_fires == 0, line );
+    if ( assert_fires > 0 )
+        printf( "      assertion: %s\n", assert_condition );
+    snprintf( line, sizeof( line ), "%s: the caller value untouched", what );
+    check( value == 7.0f, line );
+}
+
+static void test_compressed_float_read_refuses_a_bad_declaration()
+{
+    printf( "  serialize_compressed_float read with a bad declaration\n" );
+
+    const float nan = float_from_bits( 0x7FC00000u );
+
+    struct Declaration { float min, max, res; const char * what; };
+    const Declaration bad[] =
+    {
+        { 1.0f, 1.0f, 0.1f, "min == max" },
+        { 2.0f, 1.0f, 0.1f, "min > max" },
+        { 0.0f, 10.0f, 0.0f, "res == 0" },
+        { 0.0f, 10.0f, -0.01f, "res < 0" },
+        { 0.0f, 10.0f, nan, "res NaN" },
+        { nan, 10.0f, 0.01f, "min NaN" },
+        { 0.0f, nan, 0.01f, "max NaN" },
+        { -3.0e38f, 3.0e38f, 1.0f, "delta not finite in float32" },
+        { 0.0f, 1.0e30f, 1.0e-30f, "delta / res not finite in float32" },
+    };
+
+    uint8_t buffer[64];
+    memset( buffer, 0, sizeof( buffer ) );
+
+    for ( size_t i = 0; i < sizeof( bad ) / sizeof( bad[0] ); i++ )
+    {
+        {
+            reset();
+            serialize::ReadStream stream( buffer, 0 );
+            float value = 7.0f;
+            const bool result = serialize::serialize_compressed_float_internal( stream, value, bad[i].min, bad[i].max, bad[i].res );
+            check_read_refuses( stream, result, value, bad[i].what );
+        }
+        // the write half is unchanged: the same declaration is write misuse, trapped (U9)
+        {
+            reset();
+            serialize::WriteStream stream( buffer, (int64_t) sizeof( buffer ) );
+            float value = 1.0f;
+            serialize::serialize_compressed_float_internal( stream, value, bad[i].min, bad[i].max, bad[i].res );
+            char line[256];
+            snprintf( line, sizeof( line ), "%s: still trips the assertion on write", bad[i].what );
+            check( assert_fires > 0, line );
+        }
+        {
+            reset();
+            serialize::MeasureStream stream;
+            float value = 1.0f;
+            serialize::serialize_compressed_float_internal( stream, value, bad[i].min, bad[i].max, bad[i].res );
+            char line[256];
+            snprintf( line, sizeof( line ), "%s: and on measure", bad[i].what );
+            check( assert_fires > 0, line );
+        }
+    }
+
+    // a stream that already failed keeps its first reason (U7)
+    {
+        reset();
+        serialize::ReadStream stream( buffer, 8 );
+        (void) serialize::serialize_fail( stream, serialize::REFUSAL_REJECTED );
+        float value = 7.0f;
+        const bool result = serialize::serialize_compressed_float_internal( stream, value, 2.0f, 1.0f, 0.1f );
+        check( result == false && stream.GetRefusal() == serialize::REFUSAL_REJECTED && assert_fires == 0, "a failed stream keeps its first reason" );
+    }
+
+    // the control: a conforming declaration reads, asserts nothing, and moves bits
+    {
+        reset();
+        serialize::ReadStream stream( buffer, 8 );
+        float value = 7.0f;
+        const bool result = serialize::serialize_compressed_float_internal( stream, value, 0.0f, 10.0f, 0.01f );
+        check( result == true && assert_fires == 0 && stream.GetBitsProcessed() == 10 && value == 0.0f, "a conforming declaration reads" );
+    }
+}
+
+template <typename Stream> static bool run_read_bits( Stream & stream, uint64_t & value, int bits )
+{
+    read_bits( stream, value, bits );
+    return true;
+}
+
+static void test_read_bits_refuses_a_bad_bit_count()
+{
+    printf( "  read_bits with a bad bit count\n" );
+
+    uint8_t buffer[64];
+    memset( buffer, 0, sizeof( buffer ) );
+
+    const int bad[] = { 0, -1, 65, 96 };
+    for ( size_t i = 0; i < sizeof( bad ) / sizeof( bad[0] ); i++ )
+    {
+        reset();
+        serialize::ReadStream stream( buffer, 0 );
+        uint64_t value = 7;
+        const bool result = run_read_bits( stream, value, bad[i] );
+        char what[64];
+        snprintf( what, sizeof( what ), "read_bits %d", bad[i] );
+        check_read_refuses( stream, result, value == 7 ? 7.0f : 0.0f, what );
+    }
+
+    {
+        reset();
+        serialize::ReadStream stream( buffer, (int64_t) sizeof( buffer ) - 8 );
+        uint64_t value = 7;
+        const bool result = run_read_bits( stream, value, 64 );
+        check( result == true && assert_fires == 0 && value == 0 && stream.GetBitsProcessed() == 64, "read_bits 64 reads" );
+    }
+}
 // serialize_reject is a read side refusal. On a write or measure stream there is nothing to
 // refuse, so calling it is caller error, asserted like any other write side misuse; with the
 // recording assert the macro still returns false, which is what a release build does.
@@ -830,6 +982,8 @@ int main()
     test_initialize_padded_refuses_a_short_destination();
     test_float_and_double_writes_assert_finite();
     test_compressed_float_declaration_top_must_decode_finite();
+    test_compressed_float_read_refuses_a_bad_declaration();
+    test_read_bits_refuses_a_bad_bit_count();
 
     if ( failures > 0 )
     {

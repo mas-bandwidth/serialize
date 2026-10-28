@@ -84,7 +84,10 @@ declaration on read as value_out_of_range before any bits move (IMPLEMENTING.md 
 serialize_string_internal (:3362) checks buffer_size first; SerializeInteger/64/128 check
 min > max; SerializeBits and serialize_bits check the bit count; serialize_int refuses bounds
 outside int32 on read; the precomputed compressed_float checks its constants. Its write
-assert at :3380 is inside an IsWriting branch and never runs on read.
+assert at :3380 is inside an IsWriting branch and never runs on read. 2.1.2 closed three
+left over: the per-call compressed_float declaration (it reached the params' asserts), read_bits'
+bit count, and InitializePadded's sizes (now value_out_of_range); asserts.cpp proves each
+refuses on read with no assertion fired.
 <!-- HOT:END -->
 
 # CLAUDE.md
