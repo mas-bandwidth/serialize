@@ -25,7 +25,7 @@
 /*
     libFuzzer harness for serialize.
 
-    Every input runs three passes:
+    Every input runs four passes:
 
     1. Hostile read (FuzzRead). ReadStream is the trust boundary of this library: it must survive
        arbitrary hostile bytes, failing reads by returning false, never by corrupting memory or
@@ -35,7 +35,12 @@
     2. The same hostile bytes through InitializePadded, from a source allocation with no slack.
        The source is heap allocated at exactly the payload size so ASan fences the byte after it.
 
-    3. Differential round trip (FuzzRoundTrip). Values generated from the input are written with
+    3. Hostile read with sentinel destinations (FuzzReadSentinel). The same hostile bytes, with every
+       scalar read wrapped so its refusal comes back as a value: a refused read must leave its
+       destination exactly as the caller left it (STANDARD.md), and failure is terminal, so every
+       later read refuses, consumes no bits and writes nothing. Run with two different sentinels.
+
+    4. Differential round trip (FuzzRoundTrip). Values generated from the input are written with
        WriteStream, read back with ReadStream, and compared. Any write/read asymmetry traps.
        MeasureStream runs the same ops and must never measure fewer bits than were written.
 
@@ -46,10 +51,35 @@
 
 #include "serialize.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <vector>
 
-#define fuzz_check( condition ) do { if ( !(condition) ) { __builtin_trap(); } } while (0)
+// the pass running now, so a failed check names the pass that caught it (the replay controls match on it)
+static const char * fuzz_pass = "none";
+
+// the replay driver exits with a status so ctest can match the message; libFuzzer wants the trap
+#ifdef SERIALIZE_FUZZ_REPLAY
+#define fuzz_trap() exit( 86 )
+#else
+#define fuzz_trap() __builtin_trap()
+#endif
+
+#define fuzz_check( condition ) do { if ( !(condition) ) { fprintf( stderr, "fuzz_check failed: pass %s, line %d\n", fuzz_pass, __LINE__ ); fuzz_trap(); } } while (0)
+
+// NEGATIVE CONTROLS. Built with SERIALIZE_FUZZ_CONTROL=n, exactly one check of this harness is
+// sabotaged, and the replay driver below must then trap in the pass that owns that check (CMake
+// registers each as a test that passes only when the output names that pass). A harness that has
+// never been seen to fail is a claim, not a measurement. 0 is the real harness.
+//   1 sentinel   a refused read is made to write its destination
+//   2 hostile    a range check is tightened below the range the reader accepts
+//   3 padded     InitializePadded's success is expected to be false
+//   4 roundtrip  a round trip value is expected to differ from what was written
+//   5 canary     a byte past the tight write buffer is overwritten
+//   6 trailing   the trailing data refusal is expected to be an accept
+#ifndef SERIALIZE_FUZZ_CONTROL
+#define SERIALIZE_FUZZ_CONTROL 0
+#endif
 
 // hands out bytes from the fuzz input, wrapping around when exhausted. both round trip passes
 // regenerate the identical value sequence, so nothing needs to be stored between passes.
@@ -121,7 +151,11 @@ template <typename Stream> bool FuzzRead( Stream & stream, const uint8_t * ops, 
             {
                 int32_t value = 0;
                 serialize_int( stream, value, -100, +100 );
+#if SERIALIZE_FUZZ_CONTROL == 2
+                fuzz_check( value >= -100 && value <= +50 );                  // NEGATIVE CONTROL
+#else
                 fuzz_check( value >= -100 && value <= +100 );
+#endif
             }
             break;
 
@@ -274,7 +308,7 @@ template <typename Stream> bool FuzzRead( Stream & stream, const uint8_t * ops, 
     return true;
 }
 
-// pass 2: differential round trip. run once with WriteStream (and MeasureStream), then again with
+// pass 4: differential round trip. run once with WriteStream (and MeasureStream), then again with
 // ReadStream over the bytes just written. every case must consume the same pool bytes when writing
 // and reading, so the read pass regenerates the exact values the write pass produced.
 
@@ -309,7 +343,11 @@ template <typename Stream> bool FuzzRoundTrip( Stream & stream, const uint8_t * 
                 serialize_int( stream, value, -100, +100 );
                 if ( Stream::IsReading )
                 {
+#if SERIALIZE_FUZZ_CONTROL == 4
+                    fuzz_check( value == expected + 1 );                      // NEGATIVE CONTROL
+#else
                     fuzz_check( value == expected );
+#endif
                 }
             }
             break;
@@ -637,6 +675,247 @@ template <typename Stream> bool FuzzRoundTrip( Stream & stream, const uint8_t * 
     return true;
 }
 
+// pass 3: hostile read with sentinel destinations. STANDARD.md, "A refused read must leave its
+// destination unwritten": when a read of a scalar fails, the caller's value is exactly what it was
+// before the call, and failure is terminal: every later read refuses, consumes no bits and writes
+// nothing. Pass 1 stops at the first refusal, because the serialize_* macros return false, and it
+// cannot see a destination. This pass wraps every scalar read in a function of its own, so the
+// refusal comes back as a value and the destination can be compared against a sentinel; then it
+// keeps reading, to prove that terminality holds for every operation. bytes and string leave their
+// buffer unspecified after a refusal (the same rule), so they are driven for the terminality check
+// only. Run twice per input with different sentinels, so a write that happens to equal one
+// sentinel is caught by the other.
+
+template <typename Stream> bool SentinelBits32( Stream & stream, uint32_t & value, int bits ) { serialize_bits( stream, value, bits ); return true; }
+template <typename Stream> bool SentinelInt( Stream & stream, int32_t & value, int32_t min, int32_t max ) { serialize_int( stream, value, min, max ); return true; }
+template <typename Stream> bool SentinelInt32Full( Stream & stream, int32_t & value ) { serialize_int( stream, value, INT32_MIN, INT32_MAX ); return true; }
+template <typename Stream> bool SentinelInt64( Stream & stream, int64_t & value, int64_t min, int64_t max ) { serialize_int64( stream, value, min, max ); return true; }
+template <typename Stream> bool SentinelFixed32( Stream & stream, int32_t & value ) { serialize_fixed( stream, value, 16, 16, -1000, +1000 ); return true; }
+template <typename Stream> bool SentinelFixed64( Stream & stream, int64_t & value ) { serialize_fixed( stream, value, 48, 16, -100000000000LL, +100000000000LL ); return true; }
+template <typename Stream> bool SentinelFixed128( Stream & stream, serialize::int128_t & value ) { serialize_fixed( stream, value, 112, 16, -1152921504606846976LL, +1152921504606846976LL ); return true; }
+template <typename Stream> bool SentinelInt128( Stream & stream, serialize::int128_t & value, serialize::int128_t min, serialize::int128_t max ) { serialize_int128( stream, value, min, max ); return true; }
+template <typename Stream> bool SentinelBool( Stream & stream, bool & value ) { serialize_bool( stream, value ); return true; }
+template <typename Stream> bool SentinelFloat( Stream & stream, float & value ) { serialize_float( stream, value ); return true; }
+template <typename Stream> bool SentinelDouble( Stream & stream, double & value ) { serialize_double( stream, value ); return true; }
+template <typename Stream> bool SentinelCompressedFloat( Stream & stream, float & value ) { serialize_compressed_float( stream, value, -10.0f, +10.0f, 0.01f ); return true; }
+template <typename Stream> bool SentinelUint64( Stream & stream, uint64_t & value ) { serialize_uint64( stream, value ); return true; }
+template <typename Stream> bool SentinelUint128( Stream & stream, serialize::uint128_t & value ) { serialize_uint128( stream, value ); return true; }
+template <typename Stream> bool SentinelBits32Narrow( Stream & stream, uint8_t & value ) { serialize_uint8( stream, value ); return true; }
+template <typename Stream> bool SentinelBits16Narrow( Stream & stream, uint16_t & value ) { serialize_uint16( stream, value ); return true; }
+template <typename Stream> bool SentinelBytes( Stream & stream, uint8_t * data, int numBytes ) { serialize_bytes( stream, data, numBytes ); return true; }
+template <typename Stream> bool SentinelString( Stream & stream, char * string, int size ) { serialize_string( stream, string, size ); return true; }
+template <typename Stream> bool SentinelEnd( Stream & stream ) { serialize_end( stream ); return true; }
+template <typename Stream> bool SentinelAlign( Stream & stream ) { serialize_align( stream ); return true; }
+template <typename Stream> bool SentinelIntRelative( Stream & stream, int previous, int & current ) { serialize_int_relative( stream, previous, current ); return true; }
+
+struct SentinelRun
+{
+    serialize::ReadStream * stream;
+    serialize::Refusal refusal;         // the first reason, once the stream has refused
+    int64_t bits;                       // bits processed at the first refusal
+    int pattern;                        // the sentinel byte pattern
+    bool flag;                          // the sentinel for a bool
+
+    // the checks every read gets, whatever it reads. ok is what the read returned
+    void Check( bool ok, bool unchanged )
+    {
+        if ( refusal != serialize::REFUSAL_NONE )
+        {
+            fuzz_check( !ok );                                              // terminal: refused, whatever the operation
+            fuzz_check( stream->GetRefusal() == refusal );                  // the first reason wins
+            fuzz_check( stream->GetBitsProcessed() == bits );               // and consumed nothing
+            fuzz_check( unchanged );
+            return;
+        }
+        if ( ok )
+        {
+            fuzz_check( stream->GetRefusal() == serialize::REFUSAL_NONE );
+            return;
+        }
+        fuzz_check( stream->GetRefusal() != serialize::REFUSAL_NONE );     // a refused read stream never reports none
+        fuzz_check( unchanged );                                            // and the destination is exactly what it was
+        refusal = stream->GetRefusal();
+        bits = stream->GetBitsProcessed();
+    }
+
+    template <typename T> void Arm( T & value )
+    {
+        memset( &value, pattern, sizeof( T ) );
+    }
+
+    template <typename T> bool Untouched( const T & value ) const
+    {
+        const uint8_t * bytes = (const uint8_t *) &value;
+        for ( size_t i = 0; i < sizeof( T ); i++ )
+        {
+            if ( bytes[i] != (uint8_t) pattern )
+                return false;
+        }
+        return true;
+    }
+
+    // a refused read must not have written. The control makes one do exactly that
+    template <typename T> void Sabotage( bool ok, T & value )
+    {
+#if SERIALIZE_FUZZ_CONTROL == 1
+        if ( !ok )
+            memset( &value, pattern ^ 0xFF, sizeof( T ) );                  // NEGATIVE CONTROL
+#else
+        (void) ok; (void) value;
+#endif
+    }
+};
+
+#define sentinel_read( run, type, call )                                    \
+    do                                                                      \
+    {                                                                       \
+        type destination;                                                   \
+        run.Arm( destination );                                             \
+        const bool ok = call;                                               \
+        run.Sabotage( ok, destination );                                    \
+        run.Check( ok, run.Untouched( destination ) );                      \
+    } while (0)
+
+static void FuzzReadSentinel( serialize::ReadStream & stream, const uint8_t * ops, int numOps, int pattern )
+{
+    SentinelRun run;
+    run.stream = &stream;
+    run.refusal = serialize::REFUSAL_NONE;
+    run.bits = 0;
+    run.pattern = pattern;
+    run.flag = ( pattern & 1 ) != 0;
+
+    uint8_t bytes[256];
+    char string[256];
+
+    for ( int i = 0; i < numOps; i++ )
+    {
+        const int select = ops[i] & 15;
+        const int param = ops[i] >> 4;
+
+        switch ( select )
+        {
+            case 0:
+            {
+                sentinel_read( run, uint32_t, SentinelBits32( stream, destination, param + 1 ) );
+            }
+            break;
+
+            case 1:
+            {
+                sentinel_read( run, uint32_t, SentinelBits32( stream, destination, param + 17 ) );
+            }
+            break;
+
+            case 2:
+            {
+                sentinel_read( run, int32_t, SentinelInt( stream, destination, -100, +100 ) );
+            }
+            break;
+
+            case 3:
+            {
+                sentinel_read( run, int32_t, SentinelInt32Full( stream, destination ) );
+                const int64_t bound = int64_t( param + 1 ) << 35;
+                sentinel_read( run, int64_t, SentinelInt64( stream, destination, INT64_MIN, INT64_MAX ) );
+                sentinel_read( run, int64_t, SentinelInt64( stream, destination, -bound, +bound ) );
+                sentinel_read( run, int32_t, SentinelFixed32( stream, destination ) );
+                sentinel_read( run, int64_t, SentinelFixed64( stream, destination ) );
+                sentinel_read( run, serialize::int128_t, SentinelFixed128( stream, destination ) );
+                const serialize::int128_t bound128 = serialize::int128_t( 1 ) << ( 20 + ( param % 100 ) );
+                sentinel_read( run, serialize::int128_t, SentinelInt128( stream, destination, -bound128, +bound128 ) );
+                sentinel_read( run, serialize::int128_t, SentinelInt128( stream, destination, serialize::int128_t( serialize::uint128_t( 1 ) << 127 ), serialize::int128_t( ~( serialize::uint128_t( 1 ) << 127 ) ) ) );
+            }
+            break;
+
+            case 4:
+            {
+                bool destination = run.flag;
+                const bool ok = SentinelBool( stream, destination );
+#if SERIALIZE_FUZZ_CONTROL == 1
+                if ( !ok )
+                    destination = !run.flag;                                // NEGATIVE CONTROL
+#endif
+                run.Check( ok, destination == run.flag );
+            }
+            break;
+
+            case 5:
+            {
+                sentinel_read( run, float, SentinelFloat( stream, destination ) );
+            }
+            break;
+
+            case 6:
+            {
+                sentinel_read( run, double, SentinelDouble( stream, destination ) );
+            }
+            break;
+
+            case 7:
+            {
+                sentinel_read( run, float, SentinelCompressedFloat( stream, destination ) );
+            }
+            break;
+
+            case 8:
+            {
+                sentinel_read( run, uint64_t, SentinelUint64( stream, destination ) );
+                sentinel_read( run, serialize::uint128_t, SentinelUint128( stream, destination ) );
+            }
+            break;
+
+            case 9:
+            {
+                const bool ok = SentinelBytes( stream, bytes, param * 16 + 1 );
+                run.Check( ok, true );                                      // the buffer is unspecified after a refusal
+            }
+            break;
+
+            case 10:
+            {
+                const bool ok = SentinelString( stream, string, (int) sizeof( string ) );
+                run.Check( ok, true );
+            }
+            break;
+
+            case 11:
+            {
+                const bool ok = SentinelEnd( stream );
+                run.Check( ok, true );
+            }
+            break;
+
+            case 12:
+            {
+                const bool ok = SentinelAlign( stream );
+                run.Check( ok, true );
+            }
+            break;
+
+            case 13:
+            {
+                sentinel_read( run, int, SentinelIntRelative( stream, param * 1000, destination ) );
+            }
+            break;
+
+            case 14:
+            {
+                sentinel_read( run, int32_t, SentinelInt( stream, destination, 0, ( param + 1 ) * 1000 ) );
+            }
+            break;
+
+            case 15:
+            {
+                sentinel_read( run, uint8_t, SentinelBits32Narrow( stream, destination ) );
+                sentinel_read( run, uint16_t, SentinelBits16Narrow( stream, destination ) );
+                sentinel_read( run, uint32_t, SentinelBits32( stream, destination, 32 ) );
+            }
+            break;
+        }
+    }
+}
+
 extern "C" int LLVMFuzzerTestOneInput( const uint8_t * data, size_t size )
 {
     const int NumOps = 32;
@@ -651,6 +930,7 @@ extern "C" int LLVMFuzzerTestOneInput( const uint8_t * data, size_t size )
     const size_t payloadBytes = size - NumOps;
 
     // pass 1: hostile read of arbitrary bytes
+    fuzz_pass = "hostile";
     {
         // the buffer allocation must extend at least 8 bytes past the data, because the bit reader loads 64 bit windows.
         // The slack is all ones, not zeros: bytes past the end are loaded but must never be interpreted, and a
@@ -678,13 +958,29 @@ extern "C" int LLVMFuzzerTestOneInput( const uint8_t * data, size_t size )
         }
         memcpy( exact, payload, payloadBytes );
         serialize::ReadStream stream;
+        fuzz_pass = "padded";
+#if SERIALIZE_FUZZ_CONTROL == 3
+        fuzz_check( stream.InitializePadded( padded, (int64_t) ( payloadBytes + 8 ), exact, (int64_t) payloadBytes ) == false );      // NEGATIVE CONTROL
+#else
         fuzz_check( stream.InitializePadded( padded, (int64_t) ( payloadBytes + 8 ), exact, (int64_t) payloadBytes ) == true );
+#endif
         FuzzRead( stream, ops, NumOps );
         free( exact );
         free( padded );
     }
 
-    // pass 3: differential round trip of values generated from the same bytes
+    // pass 3: hostile read with sentinel destinations, twice with different sentinels
+    fuzz_pass = "sentinel";
+    for ( int pattern = 0x5A; pattern != 0; pattern = ( pattern == 0x5A ) ? 0xA5 : 0 )
+    {
+        std::vector<uint8_t> buffer( payloadBytes + 8, 0xFF );
+        memcpy( buffer.data(), payload, payloadBytes );
+        serialize::ReadStream stream( buffer.data(), (int) payloadBytes );
+        FuzzReadSentinel( stream, ops, NumOps, pattern );
+    }
+
+    // pass 4: differential round trip of values generated from the same bytes
+    fuzz_pass = "roundtrip";
     {
         // worst case is ~260 bytes per op (a 241 byte serialize_bytes plus alignment), so 32 ops fit comfortably
         const int WriteBufferSize = 16 * 1024;
@@ -715,12 +1011,17 @@ extern "C" int LLVMFuzzerTestOneInput( const uint8_t * data, size_t size )
             tightStream.Flush();
             fuzz_check( tightStream.GetBytesProcessed() == written );
             fuzz_check( written == 0 || memcmp( tight.data(), writeBuffer, (size_t) written ) == 0 );
+#if SERIALIZE_FUZZ_CONTROL == 5
+            tight[(size_t) tightBytes] = 0;                                 // NEGATIVE CONTROL
+#endif
+            fuzz_pass = "canary";
             for ( int i = 0; i < CanaryBytes; i++ )
             {
                 fuzz_check( tight[(size_t) ( tightBytes + i )] == 0xAA );
             }
         }
 
+        fuzz_pass = "roundtrip";
         serialize::MeasureStream measureStream;
         ValuePool measurePool( payload, payloadBytes );
         fuzz_check( FuzzRoundTrip( measureStream, ops, NumOps, measurePool ) == true );
@@ -736,9 +1037,70 @@ extern "C" int LLVMFuzzerTestOneInput( const uint8_t * data, size_t size )
         serialize::ReadStream longerStream( writeBuffer, writeStream.GetBytesProcessed() + 1 );
         ValuePool longerPool( payload, payloadBytes );
         fuzz_check( FuzzRoundTrip( longerStream, ops, NumOps, longerPool ) == true );
+        fuzz_pass = "trailing";
+#if SERIALIZE_FUZZ_CONTROL == 6
+        fuzz_check( longerStream.SerializeEnd() == true );                                      // NEGATIVE CONTROL
+#else
         fuzz_check( longerStream.SerializeEnd() == false );
+#endif
         fuzz_check( longerStream.GetRefusal() == serialize::REFUSAL_TRAILING_DATA );
     }
 
     return 0;
 }
+
+#ifdef SERIALIZE_FUZZ_REPLAY
+
+// The replay driver: the same target, run over a fixed set of generated inputs with no libFuzzer,
+// so ctest can run it anywhere clang or gcc builds and so the negative controls above have a
+// deterministic input to fail on. The generator is a fixed xorshift (no clock, no files). The first
+// inputs are the edge shapes (all zero, all ones), the rest are random bytes of varying length, and
+// every input is also run with each op byte cycled through the sixteen operations so that every
+// operation is reached whatever the generator drew.
+
+static uint64_t replay_state = 0x9E3779B97F4A7C15ULL;
+
+static uint32_t ReplayNext()
+{
+    replay_state ^= replay_state << 13;
+    replay_state ^= replay_state >> 7;
+    replay_state ^= replay_state << 17;
+    return (uint32_t) ( replay_state >> 16 );
+}
+
+int main( int argc, char ** argv )
+{
+    int count = 3000;
+    if ( argc > 1 )
+        count = atoi( argv[1] );
+
+    const int NumOps = 32;
+    std::vector<uint8_t> input;
+
+    for ( int n = 0; n < count; n++ )
+    {
+        const int payload = ( n % 7 == 0 ) ? 1 + int( ReplayNext() % 8 ) : 1 + int( ReplayNext() % 600 );
+        input.resize( (size_t) ( NumOps + payload ) );
+        for ( size_t i = 0; i < input.size(); i++ )
+        {
+            input[i] = (uint8_t) ReplayNext();
+        }
+        if ( n % 11 == 0 )
+        {
+            for ( int i = 0; i < payload; i++ )
+                input[(size_t) ( NumOps + i )] = ( n % 2 ) ? 0xFF : 0x00;
+        }
+        // cycle the op selectors so every operation appears, the parameters stay random
+        for ( int i = 0; i < NumOps; i++ )
+        {
+            if ( n % 3 == 0 )
+                input[(size_t) i] = (uint8_t) ( ( input[(size_t) i] & 0xF0 ) | ( ( i + n ) & 15 ) );
+        }
+        LLVMFuzzerTestOneInput( input.data(), input.size() );
+    }
+
+    printf( "replayed %d inputs\n", count );
+    return 0;
+}
+
+#endif // #ifdef SERIALIZE_FUZZ_REPLAY

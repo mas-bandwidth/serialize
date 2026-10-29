@@ -92,11 +92,11 @@ Tests that would go red if the code were wrong. A runner that skips an operation
 | feature | C++ | C | Go | Rust | JS | Java | C# | Dart | Elixir | Lua | Luau | Squirrel | Goose | Lobster | moo |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | Every runner drives object composition (no flattened object n) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| A hostile-read fuzzer with sentinel destinations (unchanged on refusal) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| A negative control on every fuzz target | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| A hostile-read fuzzer with sentinel destinations (unchanged on refusal) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| A negative control on every fuzz target | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
 | A sanitizer leg where the language allows it (UBSan for Squirrel's VM, -da for Java, dart2wasm for Dart) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | The Go oracle's round-trip fuzz covers every operation | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| complete | 60% | 20% | 0% | 20% | 20% | 20% | 20% | 20% | 20% | 20% | 20% | 20% | 20% | 20% | 40% |
+| complete | 100% | 20% | 0% | 20% | 20% | 20% | 20% | 20% | 20% | 20% | 20% | 20% | 20% | 20% | 40% |
 
 [Source data](docs/roadmap.sexp)
 
@@ -128,11 +128,11 @@ What makes the family's 2.1 visible to the people who use it.
 
 | feature | C++ | C | Go | Rust | JS | Java | C# | Dart | Elixir | Lua | Luau | Squirrel | Goose | Lobster | moo |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| The reference COMPATIBILITY matrix pins re-synced to v2.1.0 | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| The reference COMPATIBILITY matrix pins re-synced to v2.1.0 | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | A nightly cross-port differential against the reference | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | The crates.io publish of serialize.rs 3.x | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | The Homebrew formula at 2.1.0 | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| complete | 25% | 50% | 50% | 25% | 50% | 50% | 50% | 50% | 50% | 50% | 50% | 50% | 50% | 50% | 50% |
+| complete | 50% | 50% | 50% | 25% | 50% | 50% | 50% | 50% | 50% | 50% | 50% | 50% | 50% | 50% | 50% |
 
 [Source data](docs/roadmap.sexp)
 
