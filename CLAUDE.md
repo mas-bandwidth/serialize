@@ -10,7 +10,7 @@ DECISIONS THAT READ AS BUGS (they are not — do not "fix" them)
   attacker-controlled data. The library is low-level C-style and deliberately does not use
   exceptions. Serialize functions must be `template <typename Stream>` returning bool. Do
   not propose exceptions or error codes; the early-return macro IS the mechanism.
-- **~80 implicit-narrowing warnings are a deliberate style**, not neglect.
+- **serialize.h is clean under `-Wconversion -Wsign-conversion -Wcast-qual -Wundef`** (2.1.3, Glenn's zero warnings rule: framework builds with them as errors). Every conversion is spelled with a cast, and the macros assign the decoded temporary back through `serialize::decoded()`. The machine code is unchanged; do not drop the casts to "simplify". The CI job `strict warnings` (warnings.cpp, test.cpp, clang and gcc, with a negative control) holds it. A change on the packet-wire path still needs before/after packet-wire bench numbers.
 - **Asserts on the write path, runtime validation on the read path.** Write-side misuse is
   a programmer error (size buffers conservatively or pre-measure with `MeasureStream`); the
   READ path validates in release and drops invalid data, because asserts are not enough at
@@ -162,9 +162,9 @@ performance work here must not relearn:
 - All tests pass under ASan + UBSan including the alignment sanitizer.
 - Fuzzing (hostile read + differential write→read round trip): 60 seconds
   per push, 1 hour nightly with a cumulative corpus. No findings to date.
-- Compiles clean with `-Wall -Wextra -Wpedantic`. `-Wconversion -Wshadow`
-  produces ~80 warnings — implicit narrowing is a deliberate style here
-  (the header disables MSVC C4244 for the same reason).
+- Compiles clean with `-Wall -Wextra -Wpedantic`, and since 2.1.3 with `-Wconversion
+  -Wsign-conversion -Wcast-qual -Wundef` as errors on clang and gcc (CI: `strict warnings`).
+  `-Wshadow` is not held. The header still disables MSVC C4244 around itself.
 - The version lives in two files and a CI job compares them: `project(serialize VERSION ...)`
   in CMakeLists.txt and `SERIALIZE_VERSION` plus its MAJOR/MINOR/PATCH triple in serialize.h.
   Bump both together.
@@ -238,8 +238,7 @@ confirmed as intentional design:
 - Fixed: the MSVC `#pragma warning(disable: 4127, 4244)` is now push/pop'd
   so warning state no longer leaks into consumers (code using the
   serialize macros compiles at the including file's warning state;
-  consumers who share the implicit-narrowing style disable those warnings
-  themselves, as this repo's own executables do). `BitWriter` uses member
+  consumers no longer need to disable the conversion warnings since 2.1.3). `BitWriter` uses member
   initializers rather than `memset(this, ...)`. Using a stream before
   `Initialize()` fires an explicit debug assert. The header includes only
   the libc headers the library actually uses, and consumers can no longer
