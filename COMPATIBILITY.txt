@@ -95,7 +95,7 @@ version_pattern version: "2.1.1",
 runtime serialize.lua
 language Lua
 repository mas-bandwidth/serialize.lua
-release v2.1.1
+release v2.1.2
 version_file -
 version_pattern -
 
@@ -116,20 +116,20 @@ version_pattern -
 runtime serialize.nut
 language Squirrel
 repository mas-bandwidth/serialize.nut
-release v2.1.1
+release v2.1.2
 version_file -
 version_pattern -
 
 runtime serialize.lobster
 language Lobster
 repository mas-bandwidth/serialize.lobster
-release v2.1.1
+release v2.1.2
 version_file -
 version_pattern -
 
 runtime serialize.goose
 language Goose
 repository mas-bandwidth/serialize.goose
-release v2.1.1
+release v2.1.2
 version_file -
 version_pattern -
