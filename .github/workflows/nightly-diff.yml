@@ -147,6 +147,11 @@ jobs:
           echo "CONTROLS=$GITHUB_WORKSPACE/corpus/conformance-controls" >> "$GITHUB_ENV"
 
       # ------------------------------------------------------------------ toolchains
+      # the pinned Lobster binary links OpenGL even for a headless run
+      - name: lobster runtime libraries
+        if: ${{ matrix.port == 'lobster' }}
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libopengl0 libgl1
+
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e   # v7
         if: ${{ matrix.port == 'go' }}
         with:
