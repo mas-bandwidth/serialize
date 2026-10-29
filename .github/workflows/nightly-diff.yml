@@ -1,0 +1,311 @@
+name: Nightly Diff
+
+# THE NIGHTLY CROSS-PORT DIFFERENTIAL, against the reference's live output.
+#
+# Every port already has a nightly that holds it to this repository's committed corpus. That is the
+# instrument, and it never changes shape: STANDARD.md says the corpus is never generated from an
+# implementation. This job asks the question the corpus cannot: on inputs nobody wrote by hand, does
+# each port decide exactly as the C++ reference does today?
+#
+# Each night it builds tools/diff/diffgen.cpp, which writes random programs of operations with the
+# reference writer, damages about half the streams, and records the reference reader's verdict (the
+# decoded values and bits consumed, or the refusal reason) in the corpus's own sequence format. Every
+# port, checked out at the release COMPATIBILITY.txt names for it, then runs its own conformance runner
+# over that file. The generated file is never committed and never joins the corpus. A red leg names the
+# vector, and the seed is in the vector's name: reproduce it with
+#   diffgen <seed> <count> out.txt
+# and the hand written corpus decides whether the port or the reference is the bug.
+#
+# NEGATIVE CONTROL. Dispatch with negative_control=true and the job flips one byte of one generated
+# canonical record before any port sees it. Every leg MUST go red. An instrument nobody has seen go red
+# is a claim and not a measurement. Nothing is committed.
+#
+# A functional test (real toolchains, clones of other repositories): nightly and dispatch only, never on
+# push or pull_request, so the per-commit budget is untouched.
+
+on:
+  schedule:
+    - cron: '41 6 * * *'
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: 'Generator seed (default: the date, so every night differs)'
+        default: ''
+        required: false
+      count:
+        description: 'Records to generate'
+        default: '5000'
+        required: false
+      negative_control:
+        description: 'Flip one byte of one generated canonical record; every leg must go red'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    name: generate the vectors with the C++ reference
+    runs-on: ubuntu-24.04
+    outputs:
+      seed: ${{ steps.seed.outputs.seed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7
+
+      - name: Seed
+        id: seed
+        run: |
+          seed="${{ inputs.seed }}"
+          if [ -z "$seed" ]; then seed=$(date -u +%Y%m%d); fi
+          echo "seed=$seed" >> "$GITHUB_OUTPUT"
+          echo "seed: $seed"
+
+      - name: Build the reference and certify the committed corpus
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel
+          ctest --test-dir build --output-on-failure -j 4
+
+      - name: Generate
+        run: |
+          mkdir -p corpus/conformance
+          ./build/bin/diffgen "${{ steps.seed.outputs.seed }}" "${{ inputs.count || '5000' }}" corpus/conformance/diff.txt
+          cp -R conformance-controls corpus/
+
+      - name: Negative control, flip one byte of one canonical record
+        if: ${{ inputs.negative_control }}
+        run: |
+          awk 'BEGIN { RS = ""; ORS = "\n\n" }
+               done == 0 && /writer canonical/ && /\nbytes [0-9A-F][0-9A-F]/ {
+                 n = index($0, "\nbytes ")
+                 head = substr($0, 1, n + 6)
+                 rest = substr($0, n + 7)
+                 c = substr(rest, 1, 1)
+                 flipped = substr("1032547698BADCFE", index("0123456789ABCDEF", c), 1)
+                 $0 = head flipped substr(rest, 2)
+                 done = 1
+               }
+               { print }' corpus/conformance/diff.txt > corpus/conformance/diff.flipped
+          if cmp -s corpus/conformance/diff.txt corpus/conformance/diff.flipped; then
+            echo "::error::the negative control flipped nothing"
+            exit 1
+          fi
+          mv corpus/conformance/diff.flipped corpus/conformance/diff.txt
+          echo "::warning::NEGATIVE CONTROL: one byte flipped in a generated record. Every leg must go red."
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9   # v7
+        with:
+          name: diff-corpus
+          path: corpus
+
+  port:
+    name: ${{ matrix.port }} against the reference
+    needs: generate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        port: [c, go, rs, js, java, cs, dart, elixir, lua, luau, nut, goose, lobster, moo]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7
+
+      # the release COMPATIBILITY.txt names for this port, the same row the family matrix proves
+      - name: Resolve the port's release
+        id: row
+        run: |
+          release=$(awk -v key="serialize.${{ matrix.port }}" '
+            $1 == "runtime" { current = $2 }
+            current == key && $1 == "release" { print $2; exit }' COMPATIBILITY.txt)
+          if [ -z "$release" ]; then
+            echo "::error::COMPATIBILITY.txt has no release row for serialize.${{ matrix.port }}"
+            exit 1
+          fi
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+          echo "serialize.${{ matrix.port }} $release, seed ${{ needs.generate.outputs.seed }}"
+
+      - name: Check out the port at that release
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7
+        with:
+          repository: mas-bandwidth/serialize.${{ matrix.port }}
+          ref: ${{ steps.row.outputs.release }}
+          path: port
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333   # v8
+        with:
+          name: diff-corpus
+          path: corpus
+
+      - name: Corpus root
+        run: |
+          echo "ROOT=$GITHUB_WORKSPACE/corpus" >> "$GITHUB_ENV"
+          echo "DIR=$GITHUB_WORKSPACE/corpus/conformance" >> "$GITHUB_ENV"
+          echo "CONTROLS=$GITHUB_WORKSPACE/corpus/conformance-controls" >> "$GITHUB_ENV"
+
+      # ------------------------------------------------------------------ toolchains
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e   # v7
+        if: ${{ matrix.port == 'go' }}
+        with:
+          go-version: stable
+          cache: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e   # v7
+        if: ${{ matrix.port == 'luau' }}
+        with:
+          go-version-file: port/tools/luaurun/go.mod
+          cache: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e   # v7
+        if: ${{ matrix.port == 'moo' }}
+        with:
+          go-version-file: port/tools/moorun/go.mod
+          cache: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020   # v4
+        if: ${{ matrix.port == 'js' }}
+        with:
+          node-version: 22
+
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3   # v4
+        if: ${{ matrix.port == 'java' }}
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: actions/setup-dotnet@v6
+        if: ${{ matrix.port == 'cs' }}
+        with:
+          dotnet-version: 10.0.x
+
+      - uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d   # v1
+        if: ${{ matrix.port == 'dart' }}
+        with:
+          sdk: 3.13.2
+
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124   # v1
+        if: ${{ matrix.port == 'elixir' }}
+        env:
+          ImageOS: ubuntu24
+        with:
+          otp-version: "29.0"
+          elixir-version: "1.20.4"
+
+      # ------------------------------------------------------------------ the port's own runner, over the generated file
+      - name: c
+        if: ${{ matrix.port == 'c' }}
+        working-directory: port
+        env:
+          SERIALIZE_CONFORMANCE_ROOT: ${{ env.ROOT }}
+        run: make build/conformance && ./build/conformance
+
+      - name: go
+        if: ${{ matrix.port == 'go' }}
+        working-directory: port
+        env:
+          SERIALIZE_CONFORMANCE_ROOT: ${{ env.ROOT }}
+        run: go test -count=1 -run '^TestConformance(Corpus|Root)$' .
+
+      - name: rs
+        if: ${{ matrix.port == 'rs' }}
+        working-directory: port
+        env:
+          SERIALIZE_CONFORMANCE_ROOT: ${{ env.ROOT }}
+        run: cargo test --release --test conformance -- --nocapture
+
+      - name: js
+        if: ${{ matrix.port == 'js' }}
+        working-directory: port
+        env:
+          SERIALIZE_CONFORMANCE_DIR: ${{ env.DIR }}
+        run: |
+          node --test test/conformance.test.js
+          NODE_ENV=production node --test test/conformance.test.js
+
+      - name: java
+        if: ${{ matrix.port == 'java' }}
+        working-directory: port
+        env:
+          SERIALIZE_CONFORMANCE_DIR: ${{ env.DIR }}
+          SERIALIZE_CONFORMANCE_CONTROLS_DIR: ${{ env.CONTROLS }}
+        run: make conformance JDK_HOME="$JAVA_HOME"
+
+      - name: cs
+        if: ${{ matrix.port == 'cs' }}
+        working-directory: port
+        env:
+          SERIALIZE_CONFORMANCE_DIR: ${{ env.DIR }}
+          SERIALIZE_CONFORMANCE_CONTROLS_DIR: ${{ env.CONTROLS }}
+        run: dotnet run -c Release --project tests/Tests.csproj -f net10.0 -- conformance
+
+      - name: dart
+        if: ${{ matrix.port == 'dart' }}
+        working-directory: port
+        env:
+          SERIALIZE_CONFORMANCE_DIR: ${{ env.DIR }}
+        run: |
+          dart pub get
+          dart run test/conformance_test.dart
+          dart --enable-asserts run test/conformance_test.dart
+
+      - name: elixir
+        if: ${{ matrix.port == 'elixir' }}
+        working-directory: port
+        env:
+          SERIALIZE_CORPUS_DIR: ${{ env.ROOT }}
+        run: |
+          mix deps.get
+          mix test test/conformance_test.exs --warnings-as-errors
+
+      - name: lua
+        if: ${{ matrix.port == 'lua' }}
+        working-directory: port
+        env:
+          SERIALIZE_CORPUS_DIR: ${{ env.ROOT }}
+        run: |
+          make dist-lua
+          make test T=conformance
+
+      - name: luau
+        if: ${{ matrix.port == 'luau' }}
+        working-directory: port
+        env:
+          SERIALIZE_CORPUS_DIR: ${{ env.ROOT }}
+        run: |
+          make dist-luau
+          make test T=conformance
+
+      - name: nut
+        if: ${{ matrix.port == 'nut' }}
+        working-directory: port
+        env:
+          SERIALIZE_CORPUS_DIR: ${{ env.ROOT }}
+        run: |
+          make dist-squirrel
+          make test T=conformance
+
+      - name: goose
+        if: ${{ matrix.port == 'goose' }}
+        working-directory: port
+        env:
+          SERIALIZE_CONFORMANCE_DIR: ${{ env.DIR }}
+        run: |
+          make dist-goose
+          make test
+
+      - name: lobster
+        if: ${{ matrix.port == 'lobster' }}
+        working-directory: port
+        env:
+          SERIALIZE_CONFORMANCE_DIR: ${{ env.DIR }}
+          SERIALIZE_CONFORMANCE_CONTROLS_DIR: ${{ env.CONTROLS }}
+        run: |
+          make dist-lobster
+          make test
+
+      - name: moo
+        if: ${{ matrix.port == 'moo' }}
+        working-directory: port
+        run: |
+          make dist-moo JOBS=4
+          make test MOORUN_FLAGS="-corpus ${{ env.DIR }} -controls ${{ env.CONTROLS }}"

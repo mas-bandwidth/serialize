@@ -427,6 +427,68 @@ if(SERIALIZE_BUILD_TESTS)
             $<$<NOT:$<CONFIG:Debug>>:SERIALIZE_RELEASE>
         )
         add_test(NAME test-fp-contract-fast COMMAND serialize_test_fp_contract_fast)
+
+        # The fuzz harness, replayed. fuzz.cpp is the libFuzzer target (SERIALIZE_FUZZ below); built with
+        # SERIALIZE_FUZZ_REPLAY it carries a main that feeds the same target a fixed, generated set of
+        # inputs, so ctest runs its four passes (hostile read, InitializePadded, sentinel destinations,
+        # round trip) on every platform and every build type, without clang or libFuzzer. No clock, no
+        # files: the generator is a fixed xorshift.
+        add_executable(serialize_fuzz_replay fuzz.cpp serialize.h)
+        set_target_properties(serialize_fuzz_replay PROPERTIES OUTPUT_NAME fuzz-replay CXX_STANDARD 11 CXX_STANDARD_REQUIRED ON)
+        target_link_libraries(serialize_fuzz_replay PRIVATE serialize)
+        target_compile_options(serialize_fuzz_replay PRIVATE ${SERIALIZE_DEV_FLAGS})
+        target_compile_definitions(serialize_fuzz_replay PRIVATE
+            SERIALIZE_FUZZ_REPLAY=1
+            $<$<CONFIG:Debug>:SERIALIZE_DEBUG>
+            $<$<NOT:$<CONFIG:Debug>>:SERIALIZE_RELEASE>
+        )
+        add_test(NAME fuzz-replay COMMAND serialize_fuzz_replay)
+
+        # The differential generator (tools/diff/diffgen.cpp): live outputs of this reference, in the
+        # corpus's own format, for the nightly cross-port differential (.github/workflows/nightly-diff.yml).
+        # It is never part of the corpus. Here it proves itself: whatever it prints, this reference's own
+        # conformance runner must accept, writer checks and terminality checks included, so a record the
+        # reference would fail never reaches a port. The two tests share a fixture so ctest -j orders them.
+        # conformance.cpp is included by diffgen.cpp (the step machine), so it is a dependency and not a source
+        add_executable(serialize_diffgen tools/diff/diffgen.cpp serialize.h)
+        set_source_files_properties(tools/diff/diffgen.cpp PROPERTIES OBJECT_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/conformance.cpp)
+        set_target_properties(serialize_diffgen PROPERTIES OUTPUT_NAME diffgen CXX_STANDARD 11 CXX_STANDARD_REQUIRED ON)
+        target_link_libraries(serialize_diffgen PRIVATE serialize)
+        target_compile_options(serialize_diffgen PRIVATE ${SERIALIZE_DEV_FLAGS})
+        target_compile_definitions(serialize_diffgen PRIVATE
+            $<$<CONFIG:Debug>:SERIALIZE_DEBUG>
+            $<$<NOT:$<CONFIG:Debug>>:SERIALIZE_RELEASE>
+        )
+        add_test(NAME diff-generate COMMAND serialize_diffgen 1 1500 ${CMAKE_BINARY_DIR}/diff-selfcheck.txt)
+        add_test(NAME diff-selfcheck COMMAND serialize_conformance ${CMAKE_BINARY_DIR}/diff-selfcheck.txt)
+        set_tests_properties(diff-generate PROPERTIES FIXTURES_SETUP diff_vectors)
+        set_tests_properties(diff-selfcheck PROPERTIES FIXTURES_REQUIRED diff_vectors)
+
+        # NEGATIVE CONTROL for every check of the fuzz target. Each build sabotages exactly one check
+        # (SERIALIZE_FUZZ_CONTROL, documented at the top of fuzz.cpp) and the test passes only when the
+        # replay traps in the pass that owns that check, by name: a harness that has never been seen to
+        # fail is a claim, not a measurement, and a control that trapped somewhere else measures the
+        # wrong thing. If the replay stops failing, the check has stopped discriminating.
+        set(SERIALIZE_FUZZ_CONTROLS "1:sentinel" "2:hostile" "3:padded" "4:roundtrip" "5:canary" "6:trailing")
+        foreach(control ${SERIALIZE_FUZZ_CONTROLS})
+            string(REPLACE ":" ";" control_parts ${control})
+            list(GET control_parts 0 control_number)
+            list(GET control_parts 1 control_pass)
+            set(control_target serialize_fuzz_control_${control_pass})
+            add_executable(${control_target} fuzz.cpp serialize.h)
+            set_target_properties(${control_target} PROPERTIES OUTPUT_NAME fuzz-control-${control_pass} CXX_STANDARD 11 CXX_STANDARD_REQUIRED ON)
+            target_link_libraries(${control_target} PRIVATE serialize)
+            target_compile_options(${control_target} PRIVATE ${SERIALIZE_DEV_FLAGS})
+            target_compile_definitions(${control_target} PRIVATE
+                SERIALIZE_FUZZ_REPLAY=1
+                SERIALIZE_FUZZ_CONTROL=${control_number}
+                $<$<CONFIG:Debug>:SERIALIZE_DEBUG>
+                $<$<NOT:$<CONFIG:Debug>>:SERIALIZE_RELEASE>
+            )
+            add_test(NAME fuzz-control-${control_pass} COMMAND ${control_target})
+            set_tests_properties(fuzz-control-${control_pass} PROPERTIES
+                PASS_REGULAR_EXPRESSION "fuzz_check failed: pass ${control_pass},")
+        endforeach()
     endif()
 endif()
 
