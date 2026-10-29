@@ -102,14 +102,14 @@ version_pattern -
 runtime serialize.luau
 language Luau
 repository mas-bandwidth/serialize.luau
-release v2.1.1
+release v2.1.3
 version_file -
 version_pattern -
 
 runtime serialize.moo
 language moo
 repository mas-bandwidth/serialize.moo
-release v2.1.1
+release v2.1.2
 version_file -
 version_pattern -
 
