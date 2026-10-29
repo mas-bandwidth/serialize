@@ -110,11 +110,11 @@ Glenn's bar: each port is the fastest correct implementation its language allows
 
 | feature | C++ | C | Go | Rust | JS | Java | C# | Dart | Elixir | Lua | Luau | Squirrel | Goose | Lobster | moo |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| A profiling pass against the language's speed class, with schema-generated code (the packet-wire harness) on the fleet | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| A profiling pass against the language's speed class, with schema-generated code (the packet-wire harness) on the fleet | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | The Luau reader at writer speed (it reads bit by bit, 3.4x slower) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ |
 | The Java and JS zero-slack readers: no per-read branch, or a measurement that justifies one | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Squirrel's 64-bit math through 32-bit lanes, measured | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ |
-| complete | 75% | 75% | 75% | 75% | 50% | 50% | 75% | 75% | 75% | 75% | 50% | 50% | 75% | 75% | 75% |
+| complete | 100% | 75% | 75% | 75% | 50% | 50% | 75% | 75% | 75% | 75% | 50% | 50% | 75% | 75% | 75% |
 
 [Source data](docs/roadmap.sexp)
 
@@ -129,10 +129,10 @@ What makes the family's 2.1 visible to the people who use it.
 | feature | C++ | C | Go | Rust | JS | Java | C# | Dart | Elixir | Lua | Luau | Squirrel | Goose | Lobster | moo |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | The reference COMPATIBILITY matrix pins re-synced to v2.1.0 | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| A nightly cross-port differential against the reference | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| A nightly cross-port differential against the reference | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | The crates.io publish of serialize.rs 3.x | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | The Homebrew formula at 2.1.0 | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| complete | 50% | 50% | 50% | 25% | 50% | 50% | 50% | 50% | 50% | 50% | 50% | 50% | 50% | 50% | 50% |
+| complete | 75% | 50% | 50% | 25% | 50% | 50% | 50% | 50% | 50% | 50% | 50% | 50% | 50% | 50% | 50% |
 
 [Source data](docs/roadmap.sexp)
 
