@@ -301,7 +301,9 @@ static void generate_program( Program & program )
 static void random_text( uint8_t * out, int capacity )
 {
     int length = 0;
-    const int target = (int) rng_below( (uint64_t) capacity );        // [0,capacity-1] bytes
+    // [1,capacity-1] bytes: an empty string renders as an empty entry at the end of an expect list, which
+    // several ports' parsers drop, and a vector the parsers cannot count is the generator's bug and not the port's
+    const int target = 1 + (int) rng_below( (uint64_t) ( capacity - 1 ) );
     while ( length < target )
     {
         uint32_t code;
@@ -324,6 +326,10 @@ static void random_text( uint8_t * out, int capacity )
             break;
         memcpy( out + length, encoded, (size_t) width );
         length += width;
+    }
+    if ( length == 0 )
+    {
+        out[length++] = 'a';                // the first character was too wide for a small buffer
     }
     out[length] = '\0';
 }
