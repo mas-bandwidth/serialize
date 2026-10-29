@@ -18,8 +18,8 @@ These are the releases that carry format version 2.0:
 | [serialize.java](https://github.com/mas-bandwidth/serialize.java) | Java | `v2.1.2` |
 | [serialize.elixir](https://github.com/mas-bandwidth/serialize.elixir) | Elixir | `v2.1.1` |
 | [serialize.lua](https://github.com/mas-bandwidth/serialize.lua) | Lua | `v2.1.1` |
-| [serialize.luau](https://github.com/mas-bandwidth/serialize.luau) | Luau | `v2.1.1` |
-| [serialize.moo](https://github.com/mas-bandwidth/serialize.moo) | moo | `v2.1.1` |
+| [serialize.luau](https://github.com/mas-bandwidth/serialize.luau) | Luau | `v2.1.3` |
+| [serialize.moo](https://github.com/mas-bandwidth/serialize.moo) | moo | `v2.1.2` |
 | [serialize.nut](https://github.com/mas-bandwidth/serialize.nut) | Squirrel | `v2.1.1` |
 | [serialize.lobster](https://github.com/mas-bandwidth/serialize.lobster) | Lobster | `v2.1.1` |
 | [serialize.goose](https://github.com/mas-bandwidth/serialize.goose) | Goose | `v2.1.1` |

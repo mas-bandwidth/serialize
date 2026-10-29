@@ -107,14 +107,16 @@ jobs:
     needs: generate
     runs-on: ubuntu-24.04
     timeout-minutes: 45
-    # ADVISORY legs (continue-on-error): lua, nut and moo run the committed corpus and their sabotage
+    # ADVISORY legs (continue-on-error): lua and nut run the committed corpus and their sabotage
     # controls in the same test target, and a control names exactly the vectors its sabotaged reader must
     # fail, so any added file trips it ("red but not listed: diff-...") although the port's own corpus test
-    # passes; goose and lobster assert the corpus's record count at the end of the run. Their per-vector
+    # passes; goose and lobster assert the corpus's record count at the end of the run. moo and luau
+    # are gating: their runners take a second corpus directory (moorun -extra, luaurun
+    # SERIALIZE_CORPUS_EXTRA_DIR) that joins an ordinary run and never a control run. Their per-vector
     # verdict on the generated file is still in the log (lines naming diff-<seed>-<n>), and a failure of
     # their corpus test shows there. They go gating when each runner grows a way to take a second directory
     # (owed to the port workers).
-    continue-on-error: ${{ contains(fromJSON('["lua","nut","moo","goose","lobster"]'), matrix.port) }}
+    continue-on-error: ${{ contains(fromJSON('["lua","nut","goose","lobster"]'), matrix.port) }}
     strategy:
       fail-fast: false
       matrix:
@@ -323,5 +325,10 @@ jobs:
         if: ${{ matrix.port == 'moo' }}
         working-directory: port
         run: |
+          # the committed corpus and the controls as the reference ships them; the generated file
+          # alone goes in a second directory, which no control run reads
+          mkdir -p "$RUNNER_TEMP/moo-corpus" "$RUNNER_TEMP/moo-extra"
+          cp "${{ env.DIR }}"/*.txt "$RUNNER_TEMP/moo-corpus/"
+          mv "$RUNNER_TEMP/moo-corpus/diff.txt" "$RUNNER_TEMP/moo-extra/"
           make dist-moo JOBS=4
-          make test MOORUN_FLAGS="-corpus ${{ env.DIR }} -controls ${{ env.CONTROLS }}"
+          make test MOORUN_FLAGS="-corpus $RUNNER_TEMP/moo-corpus -controls ${{ env.CONTROLS }} -extra $RUNNER_TEMP/moo-extra"
