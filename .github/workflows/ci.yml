@@ -164,10 +164,10 @@ jobs:
       # reaching the header and every green above is worth nothing.
       - name: Control, a header with one cast removed must fail
         run: |
-          mkdir control && cp serialize.h control/
-          sed -i 's/return (uint32_t) __builtin_popcount( x );/return __builtin_popcount( x );/' control/serialize.h
+          mkdir control && cp serialize.h warnings.cpp control/
+          sed -i 's/normalizedValue \* (float) max_integer_value;/normalizedValue * max_integer_value;/' control/serialize.h
           cmp -s serialize.h control/serialize.h && { echo "::error::the control sabotaged nothing"; exit 1; }
-          if ${{ matrix.compiler }} -std=c++17 -Icontrol -Wall -Wextra -Wconversion -Wsign-conversion -Wcast-qual -Wundef -Werror -DSERIALIZE_DEBUG -c warnings.cpp -o /dev/null; then
+          if ${{ matrix.compiler }} -std=c++17 -Icontrol -Wall -Wextra -Wconversion -Wsign-conversion -Wcast-qual -Wundef -Werror -DSERIALIZE_DEBUG -c control/warnings.cpp -o /dev/null; then
             echo "::error::the strict warnings job did not notice a removed cast"
             exit 1
           fi

@@ -7330,7 +7330,8 @@ inline bool serialize_test_assert_fires( void (*fn)() )
     pid_t pid = fork();
     if ( pid == 0 )
     {
-        freopen( "/dev/null", "w", stderr );    // the child's assert message is the expected outcome, not test noise
+        FILE * reopened = freopen( "/dev/null", "w", stderr );    // the child's assert message is the expected outcome, not test noise
+        (void) reopened;
         fn();
         _exit( 0 );                             // the assert did not fire
     }
