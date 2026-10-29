@@ -109,13 +109,24 @@ static serialize::int128_t rng_in_range( serialize::int128_t min, serialize::int
     return serialize::int128_t( serialize::uint128_t( min ) + offset );
 }
 
+// the corpus spells a signed number as decimal or as a signed hexadecimal magnitude, `-0x0123`. A bare
+// 0x pattern is an unsigned number to a parser that reads it as the integer it spells, so a negative
+// bound or value is written with its sign: never as a two's complement pattern
+
 static void format_128( serialize::int128_t value, char * out )
 {
-    // signed decimal would need a 128 bit divide on emulated platforms; the corpus accepts 0x, and the
-    // text is parsed back as the same two's complement pattern
     char hex[40];
-    render_hex128( serialize::uint128_t( value ), hex );
-    strcpy( out, hex );
+    if ( value < serialize::int128_t( 0 ) )
+    {
+        render_hex128( serialize::uint128_t( 0 ) - serialize::uint128_t( value ), hex );
+        out[0] = '-';
+        strcpy( out + 1, hex );
+    }
+    else
+    {
+        render_hex128( serialize::uint128_t( value ), hex );
+        strcpy( out, hex );
+    }
 }
 
 struct Bound
@@ -461,6 +472,8 @@ static void print_record( FILE * out, const char * name, const Program & program
             char rendered[MaxLine];
             if ( steps[i].kind == STEP_ALIGN || steps[i].kind == STEP_END )
                 strcpy( rendered, "-" );
+            else if ( step_value_is_a_number( steps[i].kind ) )
+                format_128( steps[i].number, rendered );
             else
                 render_step_value( steps[i], rendered, MaxLine );
             fprintf( out, "%s%s", i == 0 ? "" : " | ", rendered );

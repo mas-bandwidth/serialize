@@ -70,6 +70,9 @@ jobs:
       - name: Generate
         run: |
           mkdir -p corpus/conformance
+          # the committed corpus rides along: several runners read the whole directory (their golden
+          # message test needs message.txt). Generated vectors are named diff-<seed>-<n>
+          cp conformance/*.txt corpus/conformance/
           ./build/bin/diffgen "${{ steps.seed.outputs.seed }}" "${{ inputs.count || '5000' }}" corpus/conformance/diff.txt
           cp -R conformance-controls corpus/
 
