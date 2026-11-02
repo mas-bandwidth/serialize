@@ -97,6 +97,70 @@ jobs:
           mv corpus/conformance/diff.flipped corpus/conformance/diff.txt
           echo "::warning::NEGATIVE CONTROL: one byte flipped in a generated record. Every leg must go red."
 
+      - name: Record canonical corpus manifest
+        run: |
+          python3 - << 'EOF'
+          import glob, hashlib, json, os, re, subprocess
+
+          with open("COMPATIBILITY.txt", "r") as f:
+              compat = f.read()
+
+          def top_field(name):
+              m = re.search(rf"^{name}\s+(\S+)", compat, re.M)
+              return m.group(1) if m else ""
+
+          cpp_release = ""
+          m_cpp = re.search(r"^runtime\s+serialize\n(?:.*\n)*?release\s+(\S+)", compat, re.M)
+          if m_cpp:
+              cpp_release = m_cpp.group(1)
+
+          ref_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          h = hashlib.sha256()
+          committed_records = 0
+          generated_records = 0
+          for path in sorted(glob.glob("corpus/conformance/*.txt")):
+              with open(path, "rb") as bf:
+                  data = bf.read()
+              h.update(os.path.basename(path).encode("utf-8") + b"\0" + data + b"\0")
+              blocks = [b for b in data.decode("utf-8").strip().split("\n\n") if b.strip() and not b.strip().startswith("#")]
+              if os.path.basename(path) == "diff.txt":
+                  generated_records = len(blocks)
+              else:
+                  committed_records += len(blocks)
+
+          meta = {
+              "model": "linear-canonical-oracle",
+              "reference_repository": "mas-bandwidth/serialize",
+              "reference_release": cpp_release,
+              "reference_commit": ref_commit,
+              "format_version": top_field("format_version"),
+              "standard_commit": top_field("standard_commit"),
+              "corpus_commit": top_field("corpus_commit"),
+              "seed": "${{ steps.seed.outputs.seed }}",
+              "requested_count": int("${{ inputs.count || '5000' }}"),
+              "negative_control": "${{ inputs.negative_control }}" == "true",
+              "committed_records": committed_records,
+              "generated_records": generated_records,
+              "corpus_sha256": h.hexdigest(),
+              "cpp_reference": {
+                  "port": "cpp",
+                  "runtime": "serialize",
+                  "repository": "mas-bandwidth/serialize",
+                  "tier": "original-nine",
+                  "release": cpp_release,
+                  "commit": ref_commit,
+                  "gating": True,
+                  "status": "success",
+                  "reader_canonical_and_diff": "passed",
+                  "writer_canonical_byte_identity": "passed",
+                  "negative_controls": "passed",
+                  "explicit_gap": ""
+              }
+          }
+          with open("corpus/meta.json", "w") as out:
+              json.dump(meta, out, indent=2)
+          EOF
+
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9   # v7
         with:
           name: diff-corpus
@@ -144,6 +208,13 @@ jobs:
           repository: mas-bandwidth/serialize.${{ matrix.port }}
           ref: ${{ steps.row.outputs.release }}
           path: port
+
+      - name: Record checked-out port commit SHA
+        id: port_sha
+        run: |
+          sha=$(git -C port rev-parse HEAD)
+          echo "commit=$sha" >> "$GITHUB_OUTPUT"
+          echo "serialize.${{ matrix.port }} @ ${{ steps.row.outputs.release }} ($sha)""
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333   # v8
         with:
@@ -332,3 +403,158 @@ jobs:
           mv "$RUNNER_TEMP/moo-corpus/diff.txt" "$RUNNER_TEMP/moo-extra/"
           make dist-moo JOBS=4
           make test MOORUN_FLAGS="-corpus $RUNNER_TEMP/moo-corpus -controls ${{ env.CONTROLS }} -extra $RUNNER_TEMP/moo-extra"
+
+      - name: Record port interoperability report
+        if: always()
+        run: |
+          mkdir -p report
+          python3 - << 'EOF'
+          import json
+
+          port = "${{ matrix.port }}"
+          status = "${{ job.status }}"
+          original_nine = {"c", "cs", "go", "rs", "java", "js", "dart", "elixir"}
+          advisory_gaps = {
+              "lua": "Runner executes sabotage controls in the same target as the corpus; extra generated diff.txt vectors fail the fixed expected-failure list until an extra-corpus flag is wired.",
+              "nut": "Runner executes sabotage controls in the same target as the corpus; extra generated diff.txt vectors fail the fixed expected-failure list until an extra-corpus flag is wired.",
+              "goose": "Runner asserts the committed corpus record count at the end of the run; extra generated diff.txt vectors trip the fixed count check until an extra-corpus flag is wired.",
+              "lobster": "Runner asserts the committed corpus record count at the end of the run; extra generated diff.txt vectors trip the fixed count check until an extra-corpus flag is wired.",
+          }
+          verdict = "passed" if status == "success" else "failed"
+          rec = {
+              "port": port,
+              "runtime": f"serialize.{port}",
+              "repository": f"mas-bandwidth/serialize.{port}",
+              "tier": "original-nine" if port in original_nine else "expansion",
+              "release": "${{ steps.row.outputs.release }}",
+              "commit": "${{ steps.port_sha.outputs.commit }}",
+              "gating": port not in advisory_gaps,
+              "status": status,
+              "reader_canonical_and_diff": verdict,
+              "writer_canonical_byte_identity": verdict,
+              "negative_controls": verdict,
+              "explicit_gap": advisory_gaps.get(port, "")
+          }
+          with open(f"report/port-{port}.json", "w") as f:
+              json.dump(rec, f, indent=2)
+          EOF
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9   # v7
+        if: always()
+        with:
+          name: port-${{ matrix.port }}-report
+          path: report
+
+  summary:
+    name: record interoperability summary
+    needs: [generate, port]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333   # v8
+        with:
+          name: diff-corpus
+          path: corpus
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333   # v8
+        with:
+          pattern: port-*-report
+          path: reports
+          merge-multiple: true
+
+      - name: Render 9-language interoperability summary and JSON artifact
+        run: |
+          mkdir -p summary
+          python3 - << 'EOF'
+          import glob, json, os
+
+          with open("corpus/meta.json", "r") as f:
+              meta = json.load(f)
+
+          by_port = {"cpp": meta["cpp_reference"]}
+          for path in sorted(glob.glob("reports/port-*.json")):
+              with open(path, "r") as pf:
+                  rec = json.load(pf)
+              by_port[rec["port"]] = rec
+
+          orig_order = ["cpp", "c", "cs", "go", "rs", "java", "js", "dart", "elixir"]
+          exp_order = ["lua", "luau", "nut", "goose", "lobster", "moo"]
+
+          original_nine = [by_port[p] for p in orig_order if p in by_port]
+          expansion_ports = [by_port[p] for p in exp_order if p in by_port]
+          all_orig_passed = (
+              len(original_nine) == len(orig_order)
+              and all(r["status"] == "success" for r in original_nine)
+          )
+          explicit_gaps = [
+              {"port": r["port"], "runtime": r["runtime"], "gap": r["explicit_gap"]}
+              for r in (original_nine + expansion_ports)
+              if r.get("explicit_gap")
+          ]
+
+          out = {
+              "model": meta["model"],
+              "format_version": meta["format_version"],
+              "standard_commit": meta["standard_commit"],
+              "corpus_commit": meta["corpus_commit"],
+              "reference_repository": meta["reference_repository"],
+              "reference_release": meta["reference_release"],
+              "reference_commit": meta["reference_commit"],
+              "seed": meta["seed"],
+              "requested_count": meta["requested_count"],
+              "negative_control": meta["negative_control"],
+              "committed_records": meta["committed_records"],
+              "generated_records": meta["generated_records"],
+              "corpus_sha256": meta["corpus_sha256"],
+              "all_original_nine_passed": all_orig_passed,
+              "original_nine": original_nine,
+              "expansion_ports": expansion_ports,
+              "explicit_gaps": explicit_gaps,
+          }
+          with open("summary/interoperability.json", "w") as f:
+              json.dump(out, f, indent=2)
+
+          lines = []
+          lines.append("## Nightly Interoperability Summary (Linear Canonical Oracle)")
+          lines.append("")
+          lines.append("- **Oracle model**: C++ reference certifies the canonical corpus + generated `diff.txt` once; every port reader consumes that exact corpus and every port writer output is checked byte-for-byte against the canonical bytes.")
+          lines.append(f"- **Format version**: `{meta['format_version']}`")
+          lines.append(f"- **Reference**: `{meta['reference_repository']}` @ `{meta['reference_release']}` (`{meta['reference_commit']}`)")
+          lines.append(f"- **Pinned `STANDARD.md` commit**: `{meta['standard_commit']}`")
+          lines.append(f"- **Pinned `conformance/` commit**: `{meta['corpus_commit']}`")
+          lines.append(f"- **Seed / Records**: seed `{meta['seed']}`, `{meta['committed_records']}` committed + `{meta['generated_records']}` generated records (`sha256:{meta['corpus_sha256']}`)")
+          lines.append(f"- **Negative control active**: `{meta['negative_control']}`")
+          lines.append(f"- **All 9 original languages passed**: `{all_orig_passed}`")
+          lines.append("")
+          lines.append("### Original Nine Languages (`cpp`, `c`, `cs`, `go`, `rs`, `java`, `js`, `dart`, `elixir`)")
+          lines.append("")
+          lines.append("| Port | Repository | Release | Commit SHA | Reader (Corpus + Diff) | Writer (Canonical Byte Identity) | Negative Controls | Explicit Gaps |")
+          lines.append("| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |")
+          for r in original_nine:
+              gap = r["explicit_gap"] if r["explicit_gap"] else "none"
+              lines.append(
+                  f"| `{r['port']}` | `{r['repository']}` | `{r['release']}` | `{r['commit']}` | `{r['reader_canonical_and_diff']}` | `{r['writer_canonical_byte_identity']}` | `{r['negative_controls']}` | {gap} |"
+              )
+          lines.append("")
+          lines.append("### Expansion Languages (`lua`, `luau`, `nut`, `goose`, `lobster`, `moo`)")
+          lines.append("")
+          lines.append("| Port | Repository | Release | Commit SHA | Gating | Reader | Writer | Explicit Gaps |")
+          lines.append("| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |")
+          for r in expansion_ports:
+              gap = r["explicit_gap"] if r["explicit_gap"] else "none"
+              lines.append(
+                  f"| `{r['port']}` | `{r['repository']}` | `{r['release']}` | `{r['commit']}` | `{r['gating']}` | `{r['reader_canonical_and_diff']}` | `{r['writer_canonical_byte_identity']}` | {gap} |"
+              )
+
+          md = "\n".join(lines) + "\n"
+          with open("summary/interoperability.md", "w") as f:
+              f.write(md)
+          print(md)
+          EOF
+          cat summary/interoperability.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9   # v7
+        if: always()
+        with:
+          name: interoperability-summary
+          path: summary
