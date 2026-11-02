@@ -164,6 +164,8 @@ jobs:
                 continue
               fi
             fi
+            row_commit=$(git -C "$checkout" rev-parse HEAD)
+            note "commit: \`$row_commit\`"
 
             if [ "$version_file" != "-" ]; then
               if [ ! -f "$checkout/$version_file" ]; then
@@ -201,13 +203,14 @@ jobs:
             exit 1
           fi
 
+          mkdir -p family-matrix-report
           {
             echo "## Family matrix"
             echo ""
-            echo "$rows row(s) checked against format version $format_version."
+            echo "$rows row(s) checked against format version $format_version (standard \`$standard_commit\`, corpus \`$corpus_commit\`)."
             echo ""
             cat /tmp/summary.md
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee family-matrix-report/summary.md >> "$GITHUB_STEP_SUMMARY"
 
           if [ "$fail" -ne 0 ]; then
             echo "::error::the compatibility matrix does not hold. Every failing row is annotated above."
@@ -215,3 +218,9 @@ jobs:
           fi
 
           echo "every row holds."
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9   # v7
+        if: always()
+        with:
+          name: family-matrix-summary
+          path: family-matrix-report
