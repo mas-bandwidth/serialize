@@ -76,26 +76,8 @@ jobs:
           ./build/bin/diffgen "${{ steps.seed.outputs.seed }}" "${{ inputs.count || '5000' }}" corpus/conformance/diff.txt
           cp -R conformance-controls corpus/
 
-      - name: Negative control, flip one byte of one canonical record
-        if: ${{ inputs.negative_control }}
-        run: |
-          awk 'BEGIN { RS = ""; ORS = "\n\n" }
-               done == 0 && /writer canonical/ && /\nbytes [0-9A-F][0-9A-F]/ {
-                 n = index($0, "\nbytes ")
-                 head = substr($0, 1, n + 6)
-                 rest = substr($0, n + 7)
-                 c = substr(rest, 1, 1)
-                 flipped = substr("1032547698BADCFE", index("0123456789ABCDEF", c), 1)
-                 $0 = head flipped substr(rest, 2)
-                 done = 1
-               }
-               { print }' corpus/conformance/diff.txt > corpus/conformance/diff.flipped
-          if cmp -s corpus/conformance/diff.txt corpus/conformance/diff.flipped; then
-            echo "::error::the negative control flipped nothing"
-            exit 1
-          fi
-          mv corpus/conformance/diff.flipped corpus/conformance/diff.txt
-          echo "::warning::NEGATIVE CONTROL: one byte flipped in a generated record. Every leg must go red."
+      - name: Certify this generated corpus once with the reference
+        run: ./build/bin/conformance corpus/conformance/diff.txt
 
       - name: Record canonical corpus manifest
         run: |
@@ -122,11 +104,11 @@ jobs:
               with open(path, "rb") as bf:
                   data = bf.read()
               h.update(os.path.basename(path).encode("utf-8") + b"\0" + data + b"\0")
-              blocks = [b for b in data.decode("utf-8").strip().split("\n\n") if b.strip() and not b.strip().startswith("#")]
+              records = sum(1 for line in data.decode("utf-8").splitlines() if line.startswith("operation "))
               if os.path.basename(path) == "diff.txt":
-                  generated_records = len(blocks)
+                  generated_records = records
               else:
-                  committed_records += len(blocks)
+                  committed_records += records
 
           meta = {
               "model": "linear-canonical-oracle",
@@ -161,6 +143,45 @@ jobs:
               json.dump(meta, out, indent=2)
           EOF
 
+      - name: Negative control, flip one byte of one canonical record
+        if: ${{ inputs.negative_control }}
+        run: |
+          awk 'BEGIN { RS = ""; ORS = "\n\n" }
+               done == 0 && /writer canonical/ && /\nbytes [0-9A-F][0-9A-F]/ {
+                 n = index($0, "\nbytes ")
+                 head = substr($0, 1, n + 6)
+                 rest = substr($0, n + 7)
+                 c = substr(rest, 1, 1)
+                 flipped = substr("1032547698BADCFE", index("0123456789ABCDEF", c), 1)
+                 $0 = head flipped substr(rest, 2)
+                 done = 1
+               }
+               { print }' corpus/conformance/diff.txt > corpus/conformance/diff.flipped
+          if cmp -s corpus/conformance/diff.txt corpus/conformance/diff.flipped; then
+            echo "::error::the negative control flipped nothing"
+            exit 1
+          fi
+          mv corpus/conformance/diff.flipped corpus/conformance/diff.txt
+          echo "::warning::NEGATIVE CONTROL: one byte flipped in a generated record. Every leg must go red."
+
+      - name: Record the delivered corpus digest
+        run: |
+          python3 - << 'EOF'
+          import glob, hashlib, json, os
+          with open("corpus/meta.json") as f:
+              meta = json.load(f)
+          h = hashlib.sha256()
+          for path in sorted(glob.glob("corpus/conformance/*.txt")):
+              with open(path, "rb") as f:
+                  h.update(os.path.basename(path).encode("utf-8") + b"\0" + f.read() + b"\0")
+          meta["delivered_corpus_sha256"] = h.hexdigest()
+          changed = meta["corpus_sha256"] != meta["delivered_corpus_sha256"]
+          if changed != meta["negative_control"]:
+              raise SystemExit("delivered corpus mutation does not match the requested control")
+          with open("corpus/meta.json", "w") as f:
+              json.dump(meta, f, indent=2)
+          EOF
+
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9   # v7
         with:
           name: diff-corpus
@@ -174,7 +195,8 @@ jobs:
     # ADVISORY legs (continue-on-error): lua and nut run the committed corpus and their sabotage
     # controls in the same test target, and a control names exactly the vectors its sabotaged reader must
     # fail, so any added file trips it ("red but not listed: diff-...") although the port's own corpus test
-    # passes; goose and lobster assert the corpus's record count at the end of the run. moo and luau
+    # passes. Goose and Lobster retain their existing advisory placement; this report does not
+    # attribute a failure to a fixed record count without a matching receipt. moo and luau
     # are gating: their runners take a second corpus directory (moorun -extra, luaurun
     # SERIALIZE_CORPUS_EXTRA_DIR) that joins an ordinary run and never a control run. Their per-vector
     # verdict on the generated file is still in the log (lines naming diff-<seed>-<n>), and a failure of
@@ -214,7 +236,7 @@ jobs:
         run: |
           sha=$(git -C port rev-parse HEAD)
           echo "commit=$sha" >> "$GITHUB_OUTPUT"
-          echo "serialize.${{ matrix.port }} @ ${{ steps.row.outputs.release }} ($sha)""
+          echo "serialize.${{ matrix.port }} @ ${{ steps.row.outputs.release }} ($sha)"
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333   # v8
         with:
@@ -282,6 +304,7 @@ jobs:
 
       # ------------------------------------------------------------------ the port's own runner, over the generated file
       - name: c
+        id: run_c
         if: ${{ matrix.port == 'c' }}
         working-directory: port
         env:
@@ -289,6 +312,7 @@ jobs:
         run: make build/conformance && ./build/conformance
 
       - name: go
+        id: run_go
         if: ${{ matrix.port == 'go' }}
         working-directory: port
         env:
@@ -296,6 +320,7 @@ jobs:
         run: go test -count=1 -run '^TestConformance(Corpus|Root)$' .
 
       - name: rs
+        id: run_rs
         if: ${{ matrix.port == 'rs' }}
         working-directory: port
         env:
@@ -303,6 +328,7 @@ jobs:
         run: cargo test --release --test conformance -- --nocapture
 
       - name: js
+        id: run_js
         if: ${{ matrix.port == 'js' }}
         working-directory: port
         env:
@@ -312,6 +338,7 @@ jobs:
           NODE_ENV=production node --test test/conformance.test.js
 
       - name: java
+        id: run_java
         if: ${{ matrix.port == 'java' }}
         working-directory: port
         env:
@@ -320,6 +347,7 @@ jobs:
         run: make conformance JDK_HOME="$JAVA_HOME"
 
       - name: cs
+        id: run_cs
         if: ${{ matrix.port == 'cs' }}
         working-directory: port
         env:
@@ -328,6 +356,7 @@ jobs:
         run: dotnet run -c Release --project tests/Tests.csproj -f net10.0 -- conformance
 
       - name: dart
+        id: run_dart
         if: ${{ matrix.port == 'dart' }}
         working-directory: port
         env:
@@ -338,6 +367,7 @@ jobs:
           dart --enable-asserts run test/conformance_test.dart
 
       - name: elixir
+        id: run_elixir
         if: ${{ matrix.port == 'elixir' }}
         working-directory: port
         env:
@@ -347,6 +377,7 @@ jobs:
           mix test test/conformance_test.exs --warnings-as-errors
 
       - name: lua
+        id: run_lua
         if: ${{ matrix.port == 'lua' }}
         working-directory: port
         env:
@@ -356,6 +387,7 @@ jobs:
           make test T=conformance
 
       - name: luau
+        id: run_luau
         if: ${{ matrix.port == 'luau' }}
         working-directory: port
         env:
@@ -365,6 +397,7 @@ jobs:
           make test T=conformance
 
       - name: nut
+        id: run_nut
         if: ${{ matrix.port == 'nut' }}
         working-directory: port
         env:
@@ -374,6 +407,7 @@ jobs:
           make test T=conformance
 
       - name: goose
+        id: run_goose
         if: ${{ matrix.port == 'goose' }}
         working-directory: port
         env:
@@ -383,6 +417,7 @@ jobs:
           make test
 
       - name: lobster
+        id: run_lobster
         if: ${{ matrix.port == 'lobster' }}
         working-directory: port
         env:
@@ -393,6 +428,7 @@ jobs:
           make test
 
       - name: moo
+        id: run_moo
         if: ${{ matrix.port == 'moo' }}
         working-directory: port
         run: |
@@ -406,21 +442,29 @@ jobs:
 
       - name: Record port interoperability report
         if: always()
+        env:
+          STEP_RESULTS: ${{ toJSON(steps) }}
         run: |
           mkdir -p report
           python3 - << 'EOF'
-          import json
+          import json, os
 
           port = "${{ matrix.port }}"
           status = "${{ job.status }}"
           original_nine = {"c", "cs", "go", "rs", "java", "js", "dart", "elixir"}
           advisory_gaps = {
-              "lua": "Runner executes sabotage controls in the same target as the corpus; extra generated diff.txt vectors fail the fixed expected-failure list until an extra-corpus flag is wired.",
-              "nut": "Runner executes sabotage controls in the same target as the corpus; extra generated diff.txt vectors fail the fixed expected-failure list until an extra-corpus flag is wired.",
-              "goose": "Runner asserts the committed corpus record count at the end of the run; extra generated diff.txt vectors trip the fixed count check until an extra-corpus flag is wired.",
-              "lobster": "Runner asserts the committed corpus record count at the end of the run; extra generated diff.txt vectors trip the fixed count check until an extra-corpus flag is wired.",
+              p: "Advisory expansion port; excluded from original-nine qualification."
+              for p in ("lua", "nut", "goose", "lobster")
           }
-          verdict = "passed" if status == "success" else "failed"
+          steps = json.loads(os.environ["STEP_RESULTS"])
+          runner_outcome = steps.get(f"run_{port}", {}).get("outcome", "skipped")
+          verdict = "passed" if runner_outcome == "success" else "not-established"
+          # The original-eight commands check corpus readers/writers, but omit
+          # their complete rule-sabotage suite. A green job cannot certify it.
+          controls = verdict if port in {"lua", "nut", "moo"} else "not-established"
+          gaps = [advisory_gaps[port]] if port in advisory_gaps else []
+          if controls != "passed":
+              gaps.append("This differential does not certify the complete rule-sabotage suite.")
           rec = {
               "port": port,
               "runtime": f"serialize.{port}",
@@ -430,10 +474,11 @@ jobs:
               "commit": "${{ steps.port_sha.outputs.commit }}",
               "gating": port not in advisory_gaps,
               "status": status,
+              "runner_outcome": runner_outcome,
               "reader_canonical_and_diff": verdict,
               "writer_canonical_byte_identity": verdict,
-              "negative_controls": verdict,
-              "explicit_gap": advisory_gaps.get(port, "")
+              "negative_controls": controls,
+              "explicit_gap": " ".join(gaps)
           }
           with open(f"report/port-{port}.json", "w") as f:
               json.dump(rec, f, indent=2)
@@ -480,11 +525,27 @@ jobs:
           orig_order = ["cpp", "c", "cs", "go", "rs", "java", "js", "dart", "elixir"]
           exp_order = ["lua", "luau", "nut", "goose", "lobster", "moo"]
 
-          original_nine = [by_port[p] for p in orig_order if p in by_port]
+          for port in orig_order:
+              if port not in by_port:
+                  runtime = "serialize" if port == "cpp" else f"serialize.{port}"
+                  by_port[port] = {
+                      "port": port, "runtime": runtime,
+                      "repository": f"mas-bandwidth/{runtime}",
+                      "tier": "original-nine", "release": "", "commit": "",
+                      "gating": True, "status": "missing", "runner_outcome": "missing",
+                      "reader_canonical_and_diff": "not-established",
+                      "writer_canonical_byte_identity": "not-established",
+                      "negative_controls": "not-established",
+                      "explicit_gap": "No port report was produced; execution is not established.",
+                  }
+          original_nine = [by_port[p] for p in orig_order]
           expansion_ports = [by_port[p] for p in exp_order if p in by_port]
           all_orig_passed = (
-              len(original_nine) == len(orig_order)
-              and all(r["status"] == "success" for r in original_nine)
+              not meta["negative_control"]
+              and all(r["status"] == "success"
+                      and r["reader_canonical_and_diff"] == "passed"
+                      and r["writer_canonical_byte_identity"] == "passed"
+                      for r in original_nine)
           )
           explicit_gaps = [
               {"port": r["port"], "runtime": r["runtime"], "gap": r["explicit_gap"]}
@@ -506,6 +567,7 @@ jobs:
               "committed_records": meta["committed_records"],
               "generated_records": meta["generated_records"],
               "corpus_sha256": meta["corpus_sha256"],
+              "delivered_corpus_sha256": meta["delivered_corpus_sha256"],
               "all_original_nine_passed": all_orig_passed,
               "original_nine": original_nine,
               "expansion_ports": expansion_ports,
@@ -517,14 +579,15 @@ jobs:
           lines = []
           lines.append("## Nightly Interoperability Summary (Linear Canonical Oracle)")
           lines.append("")
-          lines.append("- **Oracle model**: C++ reference certifies the canonical corpus + generated `diff.txt` once; every port reader consumes that exact corpus and every port writer output is checked byte-for-byte against the canonical bytes.")
+          lines.append("- **Oracle model**: C++ reference certifies the canonical corpus + generated `diff.txt` once. Normal runs send those exact bytes to every port reader and compare canonical writer output byte-for-byte; a control run deliberately mutates the delivered corpus after certification.")
           lines.append(f"- **Format version**: `{meta['format_version']}`")
           lines.append(f"- **Reference**: `{meta['reference_repository']}` @ `{meta['reference_release']}` (`{meta['reference_commit']}`)")
           lines.append(f"- **Pinned `STANDARD.md` commit**: `{meta['standard_commit']}`")
           lines.append(f"- **Pinned `conformance/` commit**: `{meta['corpus_commit']}`")
           lines.append(f"- **Seed / Records**: seed `{meta['seed']}`, `{meta['committed_records']}` committed + `{meta['generated_records']}` generated records (`sha256:{meta['corpus_sha256']}`)")
+          lines.append(f"- **Delivered corpus SHA-256**: `{meta['delivered_corpus_sha256']}` (differs from the certified corpus only for the mutation control)")
           lines.append(f"- **Negative control active**: `{meta['negative_control']}`")
-          lines.append(f"- **All 9 original languages passed**: `{all_orig_passed}`")
+          lines.append(f"- **All 9 original languages passed reader/writer interoperability**: `{all_orig_passed}`")
           lines.append("")
           lines.append("### Original Nine Languages (`cpp`, `c`, `cs`, `go`, `rs`, `java`, `js`, `dart`, `elixir`)")
           lines.append("")
