@@ -39,12 +39,6 @@
     A unit test: a fixed seed, no clock, no sockets.
 */
 
-// the emulated 128 bit pair is defined next to a native __int128 only when this is set, and the
-// wide declaration cases below run both carriers
-#ifndef SERIALIZE_ENABLE_TESTS
-#define SERIALIZE_ENABLE_TESTS 1
-#endif
-
 #include "serialize.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -96,7 +90,7 @@ struct Op
 
 // Wide declarations. A bound or a relative previous carried in a 128 bit type is judged in its own
 // width before anything narrows it: 2^64 + 5 narrows to 5, a legal declaration, so it must be refused
-// as value_out_of_range with the destination untouched. Native and emulated carriers, split and
+// as value_out_of_range with the destination untouched. Unsigned and signed carriers, split and
 // unified macros. A unit test: zero buffer, sentinel destination, no clock, no sockets.
 
 template <typename Stream, typename B> static bool edge_run_int64( Stream & stream, int64_t & value, B min, B max )
