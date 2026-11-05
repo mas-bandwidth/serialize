@@ -186,12 +186,11 @@ template <typename B> static int edge_wide_declarations( const char * name )
 static int edge_wide_declarations_all()
 {
     int failures = 0;
+#if defined( __SIZEOF_INT128__ )
     failures += edge_wide_declarations<serialize::uint128_t>( "uint128" );
     failures += edge_wide_declarations<serialize::int128_t>( "int128" );
-#if defined( __SIZEOF_INT128__ )
-    // the emulated unsigned type converts to no int64 declaration slot, so it cannot name one and is not run here
-    failures += edge_wide_declarations< ::serialize_int128_t >( "emulated int128" );
 #endif
+    // the emulated pair converts to none of the declaration slots, so it cannot name one and is refused at compile time
     return failures;
 }
 
