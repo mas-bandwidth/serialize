@@ -1657,7 +1657,8 @@ namespace serialize
 
         bool WouldReadPastEnd( int bits ) const
         {
-            return bits > m_numBits - m_bitsRead;
+            // the sum cannot wrap: MaxBytes() bounds m_numBits, and the position never passes m_numBits + 1
+            return m_bitsRead + bits > m_numBits;
         }
 
         /**
