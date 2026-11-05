@@ -1255,6 +1255,29 @@ namespace serialize
         return !( ValueIsUnsigned64<T>::value && uint64_t( bound ) > uint64_t( 0x7FFFFFFFFFFFFFFFULL ) );
     }
 
+    /**
+        The 128 bit carriers are judged in their own width: narrowed to 64 bits first, 2^64 + 5 would arrive as a legal 5. An unsigned bound fits when it is at most INT64_MAX, a signed one when it lies in the int64 range. Both overload the template above, so a correctly typed narrower declaration pays nothing for them.
+     */
+
+    template <typename T> inline bool wide_unsigned_fits_int64( T bound )
+    {
+        return ( bound >> 63 ) == T( 0 );
+    }
+
+    template <typename T> inline bool wide_signed_fits_int64( T bound )
+    {
+        return bound >= T( int64_t( -9223372036854775807LL ) - 1 ) && bound <= T( int64_t( 9223372036854775807LL ) );
+    }
+
+#if defined(__SIZEOF_INT128__)
+    inline bool bound_fits_int64( uint128_t bound ) { return wide_unsigned_fits_int64( bound ); }
+    inline bool bound_fits_int64( int128_t bound ) { return wide_signed_fits_int64( bound ); }
+#endif // #if defined(__SIZEOF_INT128__)
+#if defined(SERIALIZE_UINT128_DEFINED)
+    inline bool bound_fits_int64( ::serialize_uint128_t bound ) { return wide_unsigned_fits_int64( bound ); }
+    inline bool bound_fits_int64( ::serialize_int128_t bound ) { return wide_signed_fits_int64( bound ); }
+#endif // #if defined(SERIALIZE_UINT128_DEFINED)
+
     template <typename T, typename U> inline bool int64_bounds_fit( T min, U max )
     {
         return bound_fits_int64( min ) && bound_fits_int64( max );
@@ -3639,6 +3662,15 @@ namespace serialize
         const int64_t widened = int64_t( value );
         return widened >= 0 && widened <= serialize_int_relative_max;
     }
+
+#if defined(__SIZEOF_INT128__)
+    inline bool value_in_int_relative_domain( uint128_t value ) { return value <= uint128_t( serialize_int_relative_max ); }
+    inline bool value_in_int_relative_domain( int128_t value ) { return value >= int128_t( 0 ) && value <= int128_t( serialize_int_relative_max ); }
+#endif // #if defined(__SIZEOF_INT128__)
+#if defined(SERIALIZE_UINT128_DEFINED)
+    inline bool value_in_int_relative_domain( ::serialize_uint128_t value ) { return value <= ::serialize_uint128_t( serialize_int_relative_max ); }
+    inline bool value_in_int_relative_domain( ::serialize_int128_t value ) { return value >= ::serialize_int128_t( 0 ) && value <= ::serialize_int128_t( serialize_int_relative_max ); }
+#endif // #if defined(SERIALIZE_UINT128_DEFINED)
 
     /**
         Accept a reconstructed int_relative value, or refuse the read.
