@@ -117,6 +117,12 @@ template <typename Stream, typename B> static bool edge_run_read_int( Stream & s
     return true;
 }
 
+template <typename Stream, typename B> static bool edge_run_relative( Stream & stream, B previous, B & current )
+{
+    serialize_int_relative( stream, previous, current );
+    return true;
+}
+
 template <typename B> static int edge_wide_declarations( const char * name )
 {
     int failures = 0;
@@ -161,6 +167,19 @@ template <typename B> static int edge_wide_declarations( const char * name )
         serialize::ReadStream stream( packet, 16 );
         B current = B( -99 );
         EDGE_WIDE_CHECK( serialize::serialize_int_relative_internal( stream, lo, current ) == false );
+        EDGE_WIDE_CHECK( current == B( -99 ) );
+        EDGE_WIDE_CHECK( stream.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
+    }
+    {
+        // an absolute current of 6 (0x80 0x01): with previous narrowed to 5 this packet is refused as non canonical,
+        // so only a previous judged in its own width reaches value_out_of_range here
+        uint8_t absolute[32];
+        memset( absolute, 0, sizeof( absolute ) );
+        absolute[0] = 0x80;
+        absolute[1] = 0x01;
+        serialize::ReadStream stream( absolute, 16 );
+        B current = B( -99 );
+        EDGE_WIDE_CHECK( edge_run_relative( stream, lo, current ) == false );
         EDGE_WIDE_CHECK( current == B( -99 ) );
         EDGE_WIDE_CHECK( stream.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
     }
