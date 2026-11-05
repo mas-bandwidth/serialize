@@ -3510,11 +3510,15 @@ namespace serialize
             {
                 if ( string[i] == '\0' )
                 {
+                    // a refused string reads as empty, not as the bytes that were copied
+                    string[0] = '\0';
                     return serialize_fail( stream, REFUSAL_EMBEDDED_NUL );
                 }
             }
             if ( !serialize_string_is_valid_utf8( string, length ) )
             {
+                // a refused string reads as empty, not as the bytes that were copied
+                string[0] = '\0';
                 return serialize_fail( stream, REFUSAL_INVALID_UTF8 );
             }
             string[length] = '\0';
