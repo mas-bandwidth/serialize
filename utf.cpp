@@ -36,7 +36,9 @@
 #include "serialize_utf.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 
 static int failures = 0;
 
@@ -240,6 +242,100 @@ static void test_limits()
     check( serialize_utf8_to_utf16( "\xF0\x9F\x98\x80", 4, pair, 2 ) == -1, "a pair and a terminator need three units" );
 }
 
+// exact fit and one short, for one through four byte scalars, in each conversion helper and the string read
+
+static void test_capacity_boundaries()
+{
+    const uint32_t scalars[4] = { 0x41, 0xE9, 0x20AC, 0x1F600 };
+    const char * encoded[4] = { "A", "\xC3\xA9", "\xE2\x82\xAC", "\xF0\x9F\x98\x80" };
+
+    for ( int width = 1; width <= 4; width++ )
+    {
+        const uint32_t code = scalars[width-1];
+        const char * bytes = encoded[width-1];
+
+        // serialize_utf8_append: width bytes plus the terminator
+        {
+            char output[8];
+            memset( output, 0x7F, sizeof( output ) );
+            check( serialize_utf8_append( output, 0, width + 1, code ) == width, "append exact fit" );
+            check( serialize_utf8_append( output, 0, width, code ) == -1, "append one short" );
+            check( serialize_utf8_append( output, 2, width + 3, code ) == width + 2, "append exact fit after text" );
+            check( serialize_utf8_append( output, 2, width + 2, code ) == -1, "append one short after text" );
+        }
+
+        // utf32 to utf8 and utf16 to utf8 (the surrogate pair is the four byte scalar)
+        {
+            char output[8];
+            const uint32_t input32[1] = { code };
+            check( serialize_utf32_to_utf8( input32, 1, output, width + 1 ) == width && strcmp( output, bytes ) == 0, "utf32 to utf8 exact fit" );
+            check( serialize_utf32_to_utf8( input32, 1, output, width ) == -1 && output[0] == '\0', "utf32 to utf8 one short" );
+            const uint16_t input16[2] = { ( width == 4 ) ? (uint16_t) 0xD83D : (uint16_t) code, 0xDE00 };
+            check( serialize_utf16_to_utf8( input16, ( width == 4 ) ? 2 : 1, output, width + 1 ) == width && strcmp( output, bytes ) == 0, "utf16 to utf8 exact fit" );
+            check( serialize_utf16_to_utf8( input16, ( width == 4 ) ? 2 : 1, output, width ) == -1 && output[0] == '\0', "utf16 to utf8 one short" );
+        }
+
+        // utf8 to utf16 and utf32: units written plus the terminator
+        {
+            const int units16 = ( width == 4 ) ? 2 : 1;
+            uint16_t output16[4];
+            check( serialize_utf8_to_utf16( bytes, width, output16, units16 + 1 ) == units16, "utf8 to utf16 exact fit" );
+            check( serialize_utf8_to_utf16( bytes, width, output16, units16 ) == -1 && output16[0] == 0, "utf8 to utf16 one short" );
+            uint32_t output32[4];
+            check( serialize_utf8_to_utf32( bytes, width, output32, 2 ) == 1 && output32[0] == code, "utf8 to utf32 exact fit" );
+            check( serialize_utf8_to_utf32( bytes, width, output32, 1 ) == -1 && output32[0] == 0, "utf8 to utf32 one short" );
+        }
+
+        // utf8 to wchar_t
+        {
+            const int units = ( sizeof( wchar_t ) < 4 && width == 4 ) ? 2 : 1;
+            wchar_t output[4];
+            check( serialize_utf8_to_wide( bytes, output, units + 1 ) == units, "utf8 to wide exact fit" );
+            check( serialize_utf8_to_wide( bytes, output, units ) == -1 && output[0] == 0, "utf8 to wide one short" );
+        }
+
+        // the string read: a sequence that ends exactly at the length is valid, one byte short is not
+        {
+            check( serialize::serialize_string_is_valid_utf8( bytes, width ), "string read sequence ends at the length" );
+            if ( width > 1 )
+                check( !serialize::serialize_string_is_valid_utf8( bytes, width - 1 ), "string read sequence one byte short" );
+        }
+    }
+}
+
+// the same comparisons with the length and the capacity at the top of the int range. the
+// buffer is zero pages that are never written except at the tail, so it costs address space
+// and not memory
+
+static void test_int_range_limits()
+{
+    if ( sizeof( size_t ) < 8 )
+        return;
+
+    const size_t size = (size_t) INT_MAX + 2;
+    char * buffer = (char*) calloc( size, 1 );
+    if ( !buffer )
+        return;
+
+    // append: INT_MAX capacity with the length one and two below the end of it
+    check( serialize_utf8_append( buffer, INT_MAX - 3, INT_MAX, 0xE9 ) == INT_MAX - 1, "append fits exactly at the top of the range" );
+    check( serialize_utf8_append( buffer, INT_MAX - 2, INT_MAX, 0xE9 ) == -1, "append refuses one short at the top of the range" );
+    check( serialize_utf8_append( buffer, INT_MAX - 1, INT_MAX, 0xE9 ) == -1, "append refuses with one byte left" );
+    check( serialize_utf8_append( buffer, INT_MAX - 1, INT_MAX, 0x1F600 ) == -1, "append refuses a four byte scalar with one byte left" );
+    check( serialize_utf8_append( buffer, INT_MAX - 1, INT_MAX, 0x41 ) == -1, "append refuses with only the terminator's room left" );
+    check( serialize_utf8_append( buffer, INT_MAX - 2, INT_MAX, 0x41 ) == INT_MAX - 1, "append of one byte fits exactly at the top of the range" );
+
+    // the string read: a four byte lead with two bytes remaining, continuation bytes sitting
+    // just past the length where a wrapped sum would read them
+    buffer[INT_MAX-2] = (char) 0xF0;
+    buffer[INT_MAX-1] = (char) 0x90;
+    buffer[INT_MAX]   = (char) 0x80;
+    buffer[(size_t) INT_MAX + 1] = (char) 0x80;
+    check( !serialize::serialize_string_is_valid_utf8( buffer, INT_MAX ), "string read refuses a truncated four byte sequence at the top of the range" );
+
+    free( buffer );
+}
+
 int main()
 {
     printf( "\nserialize_utf.h\n\n" );
@@ -247,6 +343,8 @@ int main()
     test_round_trips();
     test_lone_surrogates_refused();
     test_limits();
+    test_capacity_boundaries();
+    test_int_range_limits();
 
     if ( failures > 0 )
     {
