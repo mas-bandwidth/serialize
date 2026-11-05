@@ -205,7 +205,7 @@ int main()
             printf( "\n*** %d WIDE DECLARATION CHECKS FAILED ***\n\n", wideFailures );
             return 1;
         }
-        printf( "    wide declarations: 128 bit bounds and previous, native and emulated     pass\n" );
+        printf( "    wide declarations: 128 bit bounds and previous, unsigned and signed     pass\n" );
     }
 
     const int64_t int64_min = int64_t( -9223372036854775807LL ) - 1;
