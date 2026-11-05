@@ -4661,7 +4661,11 @@ namespace serialize
         static_assert( Bits <= 64, "serialize: bits must be less than or equal to 64" );
         if ( Bits <= 32 )       // constant condition: the dead branch folds at compile time
         {
-            uint32_t value32 = uint32_t( value );
+            uint32_t value32 = 0;
+            if ( !Stream::IsReading )
+            {
+                value32 = uint32_t( value );
+            }
             if ( !stream.SerializeBits( value32, Bits ) )
             {
                 return false;
@@ -4674,8 +4678,13 @@ namespace serialize
         else
         {
             // low dword first, then the high remainder: same convention as serialize_bits and serialize_uint64
-            uint32_t lo = uint32_t( value & 0xFFFFFFFF );
-            uint32_t hi = uint32_t( value >> 32 );
+            uint32_t lo = 0;
+            uint32_t hi = 0;
+            if ( !Stream::IsReading )
+            {
+                lo = uint32_t( value & 0xFFFFFFFF );
+                hi = uint32_t( value >> 32 );
+            }
             if ( !stream.SerializeBits( lo, 32 ) )
             {
                 return false;
@@ -9362,6 +9371,71 @@ inline void test_compile_time_bits_validation()
         serialize::ReadStream readStream( buffer, 4 );
         uint64_t value = 0;
         serialize_check( serialize::SerializeBits64Const<48>( readStream, value ) == false );
+    }
+
+    // a direct read into an uninitialised destination, at 32 bits or fewer and above 32 bits
+    {
+        uint8_t buffer[16 + 8] = { 0 };         // + 8: read buffer allocations extend 8 bytes past the data
+        {
+            serialize::WriteStream writeStream( buffer, 16 );
+            uint64_t narrow_in = 0xABCDEULL;
+            uint64_t wide_in = 0x123456789ABCULL;
+            serialize_check( serialize::SerializeBits64Const<20>( writeStream, narrow_in ) );
+            serialize_check( serialize::SerializeBits64Const<48>( writeStream, wide_in ) );
+            writeStream.Flush();
+        }
+
+        serialize::ReadStream readStream( buffer, 16 );
+        uint64_t narrow;
+        uint64_t wide;
+        serialize_check( serialize::SerializeBits64Const<20>( readStream, narrow ) );
+        serialize_check( serialize::SerializeBits64Const<48>( readStream, wide ) );
+        serialize_check( narrow == 0xABCDEULL );
+        serialize_check( wide == 0x123456789ABCULL );
+    }
+
+    // a read hands the stream zeroed groups: nothing is derived from the destination's prior contents
+    {
+        struct GroupProbeStream
+        {
+            enum { IsWriting = 0 };
+            enum { IsReading = 1 };
+            bool SerializeBits( uint32_t & group, int bits )
+            {
+                serialize_check( numGroups < 2 );
+                seen[numGroups++] = group;
+                group = 1;
+                (void) bits;
+                return true;
+            }
+            uint32_t seen[2] = { 0xFFFFFFFFU, 0xFFFFFFFFU };
+            int numGroups = 0;
+        };
+
+        GroupProbeStream narrowStream;
+        uint64_t narrow = 0xFFFFFFFFFFFFFFFFULL;
+        serialize_check( serialize::SerializeBits64Const<20>( narrowStream, narrow ) );
+        serialize_check( narrowStream.numGroups == 1 );
+        serialize_check( narrowStream.seen[0] == 0 );
+        serialize_check( narrow == 1 );
+
+        GroupProbeStream wideStream;
+        uint64_t wide = 0xFFFFFFFFFFFFFFFFULL;
+        serialize_check( serialize::SerializeBits64Const<48>( wideStream, wide ) );
+        serialize_check( wideStream.numGroups == 2 );
+        serialize_check( wideStream.seen[0] == 0 );
+        serialize_check( wideStream.seen[1] == 0 );
+        serialize_check( wide == ( ( uint64_t(1) << 32 ) | 1 ) );
+    }
+
+    // a truncated multi-group read leaves an initialised destination unchanged
+    {
+        uint8_t buffer[4 + 8] = { 0 };
+
+        serialize::ReadStream readStream( buffer, 4 );
+        uint64_t value = 0xDEADBEEFCAFEF00DULL;
+        serialize_check( serialize::SerializeBits64Const<48>( readStream, value ) == false );
+        serialize_check( value == 0xDEADBEEFCAFEF00DULL );
     }
 }
 
