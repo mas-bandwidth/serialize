@@ -41,6 +41,19 @@
 (*     reported none and the next read relabelled it past_end              *)
 (*     (ReadStreamLatchOldFail.cfg). 2.0's Fail stayed at none for good.   *)
 (*                                                                         *)
+(* The size. A reader is built over a signed byte count, and numBits is    *)
+(* that count times 8 in the machine's signed integer. The model runs at   *)
+(* a small machine width (MachineMax, the largest signed value) so the     *)
+(* wrap is reachable. The count is validated before any arithmetic: a      *)
+(* negative count, or one above MachineMax \div 16, gives an empty reader  *)
+(* already refused as value_out_of_range. The headroom invariant says a    *)
+(* healthy or poisoned position (numBits + 1) plus the largest request     *)
+(* still fits the machine integer. OldSize (ReadStreamLatchSizeOld.cfg)    *)
+(* is the earlier order: multiply first and refuse only a negative count,  *)
+(* so a large count wraps to a negative bit count on a healthy stream.     *)
+(* The model carries the arithmetic (the wrap), not the memory layout:     *)
+(* the reader has no ring or compaction, only the product of the count.    *)
+(*                                                                         *)
 (* Re-initialization (ReadStream::Initialize) starts a new stream and a    *)
 (* new behaviour of this spec; it is not an action here.                   *)
 (*                                                                         *)
@@ -67,26 +80,48 @@ ASSUME OldLatch \in BOOLEAN /\ OldFail \in BOOLEAN
 
 Reasons == WireReasons \cup {REJECTED}
 
-VARIABLES refused, reason, depth, last
+VARIABLES refused, reason, depth, last, numBits
 
-vars == <<refused, reason, depth, last>>
+vars == <<refused, reason, depth, last, numBits>>
+
+\* Defaults, overridden by a cfg: the new order, a machine whose largest signed
+\* integer is 127, and bit requests of at most 32
+OldSize     == FALSE
+OldSizeOn   == TRUE
+MachineMax  == 127
+MaxRequest  == 32
+
+Sizes == -MachineMax - 1 .. MachineMax
+
+\* the product as the machine computes it: two's complement wrap into the signed range
+Wrap(x) == ((x + MachineMax + 1) % (2 * (MachineMax + 1))) - MachineMax - 1
+
+\* the largest count the reader accepts: its bit count leaves headroom
+MaxBytes == MachineMax \div 16
 
 TypeOK ==
     /\ refused \in BOOLEAN
     /\ reason \in Reasons \cup {NONE}
     /\ depth \in 0..MaxDepth
     /\ last \in {"start", "ok", "fail"}
+    /\ numBits \in Sizes
 
-\* ReadStream( buffer, bytes ) and Initialize: healthy over bytes >= 0, refused
-\* as value_out_of_range over bytes < 0
+\* ReadStream( buffer, bytes ) and Initialize, for a byte count b: healthy over a
+\* count in range, refused as value_out_of_range over any other, with an empty
+\* reader. OldSize multiplies first and refuses only a negative count.
 Init ==
     /\ depth = 0
-    /\ \/ /\ refused = FALSE
-          /\ reason = NONE
-          /\ last = "start"
-       \/ /\ refused = TRUE
-          /\ reason = OUT_OF_RANGE
-          /\ last = "fail"
+    /\ \E b \in Sizes :
+         IF OldSize
+         THEN /\ numBits = Wrap(b * 8)
+              /\ IF b < 0
+                 THEN /\ refused = TRUE /\ reason = OUT_OF_RANGE /\ last = "fail"
+                 ELSE /\ refused = FALSE /\ reason = NONE /\ last = "start"
+         ELSE IF b < 0 \/ b > MaxBytes
+              THEN /\ numBits = 0
+                   /\ refused = TRUE /\ reason = OUT_OF_RANGE /\ last = "fail"
+              ELSE /\ numBits = b * 8
+                   /\ refused = FALSE /\ reason = NONE /\ last = "start"
 
 \* ReadStream::Fail
 Fail(r) ==
@@ -148,12 +183,13 @@ ObjectExit(result) ==
             /\ UNCHANGED <<refused, reason>>
 
 Next ==
-    \/ ReadOk
-    \/ \E r \in WireReasons : WireRefusal(r)
-    \/ Reject
-    \/ \E r \in Reasons \cup {NONE} : CallerFail(r)
-    \/ ObjectEnter
-    \/ \E result \in BOOLEAN : ObjectExit(result)
+  /\ UNCHANGED numBits
+  /\ \/ ReadOk
+     \/ \E r \in WireReasons : WireRefusal(r)
+     \/ Reject
+     \/ \E r \in Reasons \cup {NONE} : CallerFail(r)
+     \/ ObjectEnter
+     \/ \E result \in BOOLEAN : ObjectExit(result)
 
 Spec == Init /\ [][Next]_vars
 
@@ -163,6 +199,12 @@ Spec == Init /\ [][Next]_vars
 \* refused if and only if a reason is recorded: no refused stream reports none,
 \* and no healthy stream reports a reason
 RefusedIffReason == refused <=> reason # NONE
+
+\* the bit count is never negative, and the poisoned position (one past it) plus
+\* the largest request fits the machine integer: no later comparison can wrap
+NumBitsSound ==
+    /\ numBits >= 0
+    /\ numBits + 1 + MaxRequest <= MachineMax
 
 \* no read succeeds after a refusal, objects included
 NoSuccessAfterRefusal == refused => last = "fail"

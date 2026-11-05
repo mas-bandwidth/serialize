@@ -1627,7 +1627,7 @@ namespace serialize
         {
             serialize_assert( data );
             m_data = (const uint8_t*) data;
-            m_numBytes = bytes;
+            m_numBytes = SizeOrEmpty( bytes );
             m_numBits = m_numBytes * 8;
             m_bitsRead = 0;
         }
@@ -1641,7 +1641,7 @@ namespace serialize
             @see BitWriter
          */
 
-        BitReader( const void * serialize_restrict data, int64_t bytes ) : m_data( (const uint8_t*) data ), m_numBytes( bytes )
+        BitReader( const void * serialize_restrict data, int64_t bytes ) : m_data( (const uint8_t*) data ), m_numBytes( SizeOrEmpty( bytes ) )
         {
             serialize_assert( data );
             m_numBits = m_numBytes * 8;
@@ -1657,7 +1657,7 @@ namespace serialize
 
         bool WouldReadPastEnd( int bits ) const
         {
-            return m_bitsRead + bits > m_numBits;
+            return bits > m_numBits - m_bitsRead;
         }
 
         /**
@@ -1773,6 +1773,15 @@ namespace serialize
         }
 
     private:
+
+        friend class ReadStream;
+
+        // The largest byte count a reader accepts. The bit count of that size is 2^62 at most, which leaves headroom
+        // above the end of the buffer for the poisoned position and for any int bit request
+        static int64_t MaxBytes() { return INT64_MAX / 16; }
+
+        // A byte count outside [0,MaxBytes()] gives an empty reader; the owning stream refuses it as value_out_of_range
+        static int64_t SizeOrEmpty( int64_t bytes ) { return ( bytes < 0 || bytes > MaxBytes() ) ? 0 : bytes; }
 
         const uint8_t * serialize_restrict m_data;          ///< The bitpacked data we're reading. The allocation extends at least 8 bytes past the end of the data.
         int64_t m_numBits;                                  ///< Number of bits to read in the buffer. Of course, we can't *really* know this so it's actually m_numBytes * 8.
@@ -2131,7 +2140,7 @@ namespace serialize
         {
             m_reader.Initialize( buffer, bytes );
             m_refusal = REFUSAL_NONE;
-            if ( bytes < 0 )                // U7, see the constructor
+            if ( bytes < 0 || bytes > BitReader::MaxBytes() )                // U7, see the constructor
                 Fail( REFUSAL_VALUE_OUT_OF_RANGE );
         }
 
@@ -2157,7 +2166,7 @@ namespace serialize
             // IMPLEMENTING.md U7 and U16: a reader never traps. A negative byte count, or a
             // declared size the destination cannot hold with its 8 bytes of slack, is caller
             // misuse on read and refuses as value_out_of_range, with no assertion
-            if ( bytes < 0 || destination_bytes < 8 || destination_bytes - 8 < bytes )
+            if ( bytes < 0 || bytes > BitReader::MaxBytes() || destination_bytes < 8 || destination_bytes - 8 < bytes )
             {
                 m_reader.Initialize( destination, 0 );
                 m_refusal = REFUSAL_NONE;
@@ -2184,8 +2193,8 @@ namespace serialize
 
         ReadStream( const uint8_t * buffer, int64_t bytes ) : m_reader( buffer, bytes ), m_refusal( REFUSAL_NONE )
         {
-            // U7: a negative byte count is caller misuse on read, refused as value_out_of_range rather than reported as nothing
-            if ( bytes < 0 )
+            // U7: a negative byte count, or one above the largest the reader accepts, is caller misuse on read, refused as value_out_of_range rather than reported as nothing
+            if ( bytes < 0 || bytes > BitReader::MaxBytes() )
                 Fail( REFUSAL_VALUE_OUT_OF_RANGE );
         }
 
