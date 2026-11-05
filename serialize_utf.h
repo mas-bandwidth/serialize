@@ -60,7 +60,7 @@
 inline int serialize_utf8_append( char * output, int length, int output_size, uint32_t code )
 {
     const int needed = ( code < 0x80 ) ? 1 : ( code < 0x800 ) ? 2 : ( code < 0x10000 ) ? 3 : 4;
-    if ( length + needed + 1 > output_size )
+    if ( length < 0 || output_size < 1 || length > output_size - 1 - needed )
         return -1;
     if ( needed == 1 )
     {
@@ -217,7 +217,7 @@ inline int serialize_utf8_to_utf16( const char * input, int input_bytes, uint16_
         if ( consumed == 0 || code == 0 )
             return serialize_utf_refuse( output, output_units );
         const int needed = ( code >= 0x10000 ) ? 2 : 1;
-        if ( length + needed + 1 > output_units )
+        if ( output_units - length < needed + 1 )
             return serialize_utf_refuse( output, output_units );
         if ( needed == 2 )
         {
@@ -251,7 +251,7 @@ inline int serialize_utf8_to_utf32( const char * input, int input_bytes, uint32_
         const int consumed = serialize_utf8_decode( input + i, input_bytes - i, code );
         if ( consumed == 0 || code == 0 )
             return serialize_utf_refuse( output, output_units );
-        if ( length + 2 > output_units )
+        if ( output_units - length < 2 )
             return serialize_utf_refuse( output, output_units );
         output[length++] = code;
         i += consumed;
@@ -344,7 +344,7 @@ inline int serialize_utf8_to_wide( const char * input, wchar_t * output, int out
         if ( consumed == 0 )
             return serialize_utf_refuse( output, output_size );
         const int needed = ( !wide_wchar && code >= 0x10000 ) ? 2 : 1;
-        if ( length + needed + 1 > output_size )
+        if ( output_size - length < needed + 1 )
             return serialize_utf_refuse( output, output_size );
         if ( needed == 2 )
         {

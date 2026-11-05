@@ -183,4 +183,90 @@ WireReasonKept == [][(reason \in WireReasons => reason' = reason)]_vars
 \* a callback returning false on a healthy stream refuses, as rejected
 CallbackFalseIsRejected ==
     [][((~refused /\ depth > 0 /\ depth' = depth - 1 /\ last' = "fail") => reason' = REJECTED)]_vars
+=========================================================================-----------------------------------------------------------------------------
+(***************************************************************************)
+(* UTF bounds: the length checks of the UTF-8 paths, in signed arithmetic  *)
+(* that wraps, at a small bit width.                                       *)
+(*                                                                         *)
+(* serialize_utf8_append and the UTF-8 conversion helpers (serialize_utf.h) *)
+(* compare the output length plus the width of the next sequence plus the  *)
+(* terminator against the capacity. serialize_string_is_valid_utf8         *)
+(* (serialize.h) compares the read index plus the sequence width against   *)
+(* the length. All of these are ints. The model keeps the same arithmetic: *)
+(* UtfWrap folds a sum back into the signed range of UtfBits bits, so the  *)
+(* addition that overflows at INT_MAX overflows at UtfMax here.            *)
+(*                                                                         *)
+(* UtfAppendAccepts and UtfScanAccepts are the checks. UtfBounds.cfg binds *)
+(* them to the subtraction forms (the remaining room compared with the     *)
+(* width, each operand checked before the subtraction) and passes.         *)
+(* UtfBoundsOld.cfg binds them to the addition forms and TLC must report   *)
+(* UtfInBounds violated: a wrapped sum is smaller than the capacity or the *)
+(* length, the check accepts, and the sequence is written or read past the *)
+(* end. Checked on a bench with UtfBits = 4, so UtfMax is 7.               *)
+(***************************************************************************)
+
+UtfBits == 4
+UtfMax  == 2^(UtfBits - 1) - 1
+UtfMin  == 0 - 2^(UtfBits - 1)
+UtfInts == UtfMin..UtfMax
+
+UtfWrap(n) == IF n > UtfMax THEN n - 2^UtfBits ELSE IF n < UtfMin THEN n + 2^UtfBits ELSE n
+
+\* a sequence is one through four bytes wide
+UtfWidths == 1..4
+
+\* the old append check: length + needed + 1 > output_size refuses
+UtfAppendAcceptsOld(len, need, cap) == ~( UtfWrap(UtfWrap(len + need) + 1) > cap )
+
+\* the new append check: the capacity is at least one (the terminator), the length is not
+\* negative, and the room left after the terminator is compared with the width
+UtfAppendAcceptsNew(len, need, cap) ==
+    ~( len < 0 \/ cap < 1 \/ len > UtfWrap(UtfWrap(cap - 1) - need) )
+
+\* the old string read check: i + 3 >= length refuses a four byte sequence
+UtfScanAcceptsOld(i, n) == ~( UtfWrap(i + 3) >= n )
+
+\* the new string read check: length - i < 4 refuses, with 0 <= i < length
+UtfScanAcceptsNew(i, n) == ~( UtfWrap(n - i) < 4 )
+
+\* replaced by the configuration with the Old or the New form
+UtfAppendAccepts(len, need, cap) == UtfAppendAcceptsNew(len, need, cap)
+UtfScanAccepts(i, n) == UtfScanAcceptsNew(i, n)
+
+VARIABLES ulen, ucap, ui, un, ubad
+
+uvars == <<ulen, ucap, ui, un, ubad>>
+
+\* any state a caller can hold: an output length inside the capacity, a read index
+\* inside the input
+UtfInit ==
+    /\ ucap \in 1..UtfMax
+    /\ ulen \in 0..(ucap - 1)
+    /\ un \in 1..UtfMax
+    /\ ui \in 0..(un - 1)
+    /\ ubad = FALSE
+
+\* an append of a sequence of width need that the check accepts must fit with its terminator
+UtfAppend ==
+    /\ \E need \in UtfWidths :
+          /\ UtfAppendAccepts(ulen, need, ucap)
+          /\ ubad' = ( ulen + need + 1 > ucap )
+    /\ UNCHANGED <<ulen, ucap, ui, un>>
+
+\* a four byte lead at ui that the check accepts must have three continuation bytes
+UtfScan ==
+    /\ UtfScanAccepts(ui, un)
+    /\ ubad' = ( ui + 4 > un )
+    /\ UNCHANGED <<ulen, ucap, ui, un>>
+
+UtfNext == UtfAppend \/ UtfScan
+
+UtfSpec == UtfInit /\ [][UtfNext]_uvars
+
+UtfTypeOK ==
+    /\ ulen \in UtfInts /\ ucap \in UtfInts /\ ui \in UtfInts /\ un \in UtfInts
+    /\ ubad \in BOOLEAN
+
+\* no accepted check lets a sequence run past the capacity or past the input
+UtfInBounds == ubad = FALSE
 =============================================================================
