@@ -183,7 +183,7 @@ WireReasonKept == [][(reason \in WireReasons => reason' = reason)]_vars
 \* a callback returning false on a healthy stream refuses, as rejected
 CallbackFalseIsRejected ==
     [][((~refused /\ depth > 0 /\ depth' = depth - 1 /\ last' = "fail") => reason' = REJECTED)]_vars
-=========================================================================-----------------------------------------------------------------------------
+-----------------------------------------------------------------------------
 (***************************************************************************)
 (* UTF bounds: the length checks of the UTF-8 paths, in signed arithmetic  *)
 (* that wraps, at a small bit width.                                       *)
