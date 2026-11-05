@@ -50,6 +50,7 @@
 */
 
 #include "serialize.h"
+#include "serialize_utf.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -1044,6 +1045,14 @@ extern "C" int LLVMFuzzerTestOneInput( const uint8_t * data, size_t size )
         fuzz_check( longerStream.SerializeEnd() == false );
 #endif
         fuzz_check( longerStream.GetRefusal() == serialize::REFUSAL_TRAILING_DATA );
+    }
+
+    // the UTF-8 scalar decoder with no bytes to read consumes nothing and leaves the scalar alone
+    fuzz_pass = "utf8";
+    {
+        uint32_t scalar = 0xDEADBEEF;
+        fuzz_check( serialize_utf8_decode( (const char*) payload, 0, scalar ) == 0 && scalar == 0xDEADBEEF );
+        fuzz_check( serialize_utf8_decode( (const char*) payload, -1, scalar ) == 0 && scalar == 0xDEADBEEF );
     }
 
     return 0;

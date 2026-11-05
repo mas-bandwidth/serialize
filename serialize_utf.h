@@ -105,6 +105,8 @@ template <typename T> inline int serialize_utf_refuse( T * output, int output_si
 
 inline int serialize_utf8_decode( const char * input, int input_bytes, uint32_t & code )
 {
+    if ( input_bytes <= 0 )
+        return 0;
     const uint8_t * bytes = (const uint8_t*) input;
     const uint32_t lead = bytes[0];
     if ( lead < 0x80 )

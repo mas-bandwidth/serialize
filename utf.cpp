@@ -238,6 +238,13 @@ static void test_limits()
     check( serialize_utf32_to_utf8( emoji, 1, exact, sizeof( exact ) ) == 4, "five is enough" );
     uint16_t pair[2];
     check( serialize_utf8_to_utf16( "\xF0\x9F\x98\x80", 4, pair, 2 ) == -1, "a pair and a terminator need three units" );
+
+    // the scalar decoder with no bytes to read consumes nothing and leaves the scalar alone
+    const char ascii[1] = { 'A' };
+    uint32_t scalar = 0xDEADBEEF;
+    check( serialize_utf8_decode( ascii, 0, scalar ) == 0 && scalar == 0xDEADBEEF, "decode with a count of zero" );
+    check( serialize_utf8_decode( ascii, -1, scalar ) == 0 && scalar == 0xDEADBEEF, "decode with a negative count" );
+    check( serialize_utf8_decode( ascii, 1, scalar ) == 1 && scalar == 0x41, "decode with a count of one" );
 }
 
 int main()
