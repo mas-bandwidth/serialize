@@ -9363,6 +9363,37 @@ inline void test_compile_time_bits_validation()
         uint64_t value = 0;
         serialize_check( serialize::SerializeBits64Const<48>( readStream, value ) == false );
     }
+
+    // a direct read into an uninitialised destination, at 32 bits or fewer and above 32 bits
+    {
+        uint8_t buffer[16 + 8] = { 0 };         // + 8: read buffer allocations extend 8 bytes past the data
+        {
+            serialize::WriteStream writeStream( buffer, 16 );
+            uint64_t narrow_in = 0xABCDEULL;
+            uint64_t wide_in = 0x123456789ABCULL;
+            serialize_check( serialize::SerializeBits64Const<20>( writeStream, narrow_in ) );
+            serialize_check( serialize::SerializeBits64Const<48>( writeStream, wide_in ) );
+            writeStream.Flush();
+        }
+
+        serialize::ReadStream readStream( buffer, 16 );
+        uint64_t narrow;
+        uint64_t wide;
+        serialize_check( serialize::SerializeBits64Const<20>( readStream, narrow ) );
+        serialize_check( serialize::SerializeBits64Const<48>( readStream, wide ) );
+        serialize_check( narrow == 0xABCDEULL );
+        serialize_check( wide == 0x123456789ABCULL );
+    }
+
+    // a truncated multi-group read leaves an initialised destination unchanged
+    {
+        uint8_t buffer[4 + 8] = { 0 };
+
+        serialize::ReadStream readStream( buffer, 4 );
+        uint64_t value = 0xDEADBEEFCAFEF00DULL;
+        serialize_check( serialize::SerializeBits64Const<48>( readStream, value ) == false );
+        serialize_check( value == 0xDEADBEEFCAFEF00DULL );
+    }
 }
 
 // a packet exercising every compile time form next to its runtime twin, field for field
