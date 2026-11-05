@@ -240,6 +240,44 @@ static void test_limits()
     check( serialize_utf8_to_utf16( "\xF0\x9F\x98\x80", 4, pair, 2 ) == -1, "a pair and a terminator need three units" );
 }
 
+static void test_refused_string_reads_empty()
+{
+    // a refused string read leaves an empty string in a destination that has room, not the copied bytes
+    const char * payloads[] = { "\xED\xA0\xBD", "ab\0cd" };
+    const int lengths[] = { 3, 5 };
+    const serialize::Refusal reasons[] = { serialize::REFUSAL_INVALID_UTF8, serialize::REFUSAL_EMBEDDED_NUL };
+    for ( int i = 0; i < 2; i++ )
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        serialize::WriteStream writeStream( buffer, 32 );
+        int32_t length = lengths[i];
+        writeStream.SerializeInteger( length, 0, 15 );
+        writeStream.SerializeBytes( (const uint8_t*) payloads[i], lengths[i] );
+        writeStream.Flush();
+        serialize::ReadStream readStream( buffer, writeStream.GetBytesProcessed() );
+        char received[16];
+        memset( received, 'Z', sizeof( received ) );
+        check( serialize::serialize_string_internal( readStream, received, 16 ) == false, "the refused string read fails" );
+        check( readStream.GetRefusal() == reasons[i], "with its reason" );
+        check( received[0] == '\0', "and leaves an empty string" );
+    }
+
+    // a stream that had already failed writes nothing
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        serialize::ReadStream readStream( buffer, 32 );
+        serialize::serialize_fail( readStream, serialize::REFUSAL_VALUE_OUT_OF_RANGE );
+        char received[16];
+        memset( received, 'Z', sizeof( received ) );
+        check( serialize::serialize_string_internal( readStream, received, 16 ) == false, "a failed stream refuses" );
+        bool untouched = true;
+        for ( int i = 0; i < 16; i++ ) untouched = untouched && received[i] == 'Z';
+        check( untouched, "and leaves the buffer unchanged" );
+    }
+}
+
 int main()
 {
     printf( "\nserialize_utf.h\n\n" );
@@ -247,6 +285,7 @@ int main()
     test_round_trips();
     test_lone_surrogates_refused();
     test_limits();
+    test_refused_string_reads_empty();
 
     if ( failures > 0 )
     {
