@@ -1860,7 +1860,8 @@ static bool run_file( const char * path )
 
         char * space = strchr( text, ' ' );
         const char * key = text;
-        char * value = (char*) "";
+        char emptyValue[1] = { 0 };
+        char * value = emptyValue;
         if ( space )
         {
             *space = '\0';
