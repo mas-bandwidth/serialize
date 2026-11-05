@@ -9385,6 +9385,40 @@ inline void test_compile_time_bits_validation()
         serialize_check( wide == 0x123456789ABCULL );
     }
 
+    // a read hands the stream zeroed groups: nothing is derived from the destination's prior contents
+    {
+        struct GroupProbeStream
+        {
+            enum { IsWriting = 0 };
+            enum { IsReading = 1 };
+            bool SerializeBits( uint32_t & group, int bits )
+            {
+                serialize_check( numGroups < 2 );
+                seen[numGroups++] = group;
+                group = 1;
+                (void) bits;
+                return true;
+            }
+            uint32_t seen[2] = { 0xFFFFFFFFU, 0xFFFFFFFFU };
+            int numGroups = 0;
+        };
+
+        GroupProbeStream narrowStream;
+        uint64_t narrow = 0xFFFFFFFFFFFFFFFFULL;
+        serialize_check( serialize::SerializeBits64Const<20>( narrowStream, narrow ) );
+        serialize_check( narrowStream.numGroups == 1 );
+        serialize_check( narrowStream.seen[0] == 0 );
+        serialize_check( narrow == 1 );
+
+        GroupProbeStream wideStream;
+        uint64_t wide = 0xFFFFFFFFFFFFFFFFULL;
+        serialize_check( serialize::SerializeBits64Const<48>( wideStream, wide ) );
+        serialize_check( wideStream.numGroups == 2 );
+        serialize_check( wideStream.seen[0] == 0 );
+        serialize_check( wideStream.seen[1] == 0 );
+        serialize_check( wide == ( ( uint64_t(1) << 32 ) | 1 ) );
+    }
+
     // a truncated multi-group read leaves an initialised destination unchanged
     {
         uint8_t buffer[4 + 8] = { 0 };
