@@ -69,7 +69,12 @@ Reasons == WireReasons \cup {REJECTED}
 
 VARIABLES refused, reason, depth, last
 
-vars == <<refused, reason, depth, last>>
+\* the bounds model below owns these; the latch never changes them
+VARIABLES ulen, ucap, ui, un, ubad
+
+latchvars == <<refused, reason, depth, last>>
+utilvars  == <<ulen, ucap, ui, un, ubad>>
+vars      == <<refused, reason, depth, last, ulen, ucap, ui, un, ubad>>
 
 TypeOK ==
     /\ refused \in BOOLEAN
@@ -79,7 +84,7 @@ TypeOK ==
 
 \* ReadStream( buffer, bytes ) and Initialize: healthy over bytes >= 0, refused
 \* as value_out_of_range over bytes < 0
-Init ==
+LatchInit ==
     /\ depth = 0
     /\ \/ /\ refused = FALSE
           /\ reason = NONE
@@ -87,6 +92,11 @@ Init ==
        \/ /\ refused = TRUE
           /\ reason = OUT_OF_RANGE
           /\ last = "fail"
+
+\* the bounds variables sit at a fixed legal point for the latch specification
+Init ==
+    /\ LatchInit
+    /\ ulen = 0 /\ ucap = 1 /\ ui = 0 /\ un = 1 /\ ubad = FALSE
 
 \* ReadStream::Fail
 Fail(r) ==
@@ -147,13 +157,15 @@ ObjectExit(result) ==
        ELSE /\ last' = "ok"
             /\ UNCHANGED <<refused, reason>>
 
-Next ==
+LatchNext ==
     \/ ReadOk
     \/ \E r \in WireReasons : WireRefusal(r)
     \/ Reject
     \/ \E r \in Reasons \cup {NONE} : CallerFail(r)
     \/ ObjectEnter
     \/ \E result \in BOOLEAN : ObjectExit(result)
+
+Next == LatchNext /\ UNCHANGED utilvars
 
 Spec == Init /\ [][Next]_vars
 
@@ -230,16 +242,12 @@ UtfScanAcceptsOld(i, n) == ~( UtfWrap(i + 3) >= n )
 \* the new string read check: length - i < 4 refuses, with 0 <= i < length
 UtfScanAcceptsNew(i, n) == ~( UtfWrap(n - i) < 4 )
 
-VARIABLES ulen, ucap, ui, un, ubad
-
-\* the latch variables ride along unchanged: the module declares them, so a specification
-\* over it must give them a value
-uvars == <<vars, ulen, ucap, ui, un, ubad>>
+uvars == vars
 
 \* any state a caller can hold: an output length inside the capacity, a read index
 \* inside the input
 UtfInit ==
-    /\ Init
+    /\ LatchInit
     /\ ucap \in 1..UtfMax
     /\ ulen \in 0..(ucap - 1)
     /\ un \in 1..UtfMax
@@ -251,12 +259,12 @@ UtfAppend(AppendAccepts(_,_,_)) ==
     /\ \E need \in UtfWidths :
           \* a refusal writes nothing and leaves the state as it was
           ubad' = IF AppendAccepts(ulen, need, ucap) THEN ( ulen + need + 1 > ucap ) ELSE ubad
-    /\ UNCHANGED <<vars, ulen, ucap, ui, un>>
+    /\ UNCHANGED <<latchvars, ulen, ucap, ui, un>>
 
 \* a four byte lead at ui that the check accepts must have three continuation bytes
 UtfScan(ScanAccepts(_,_)) ==
     /\ ubad' = IF ScanAccepts(ui, un) THEN ( ui + 4 > un ) ELSE ubad
-    /\ UNCHANGED <<vars, ulen, ucap, ui, un>>
+    /\ UNCHANGED <<latchvars, ulen, ucap, ui, un>>
 
 UtfNextNew == UtfAppend(UtfAppendAcceptsNew) \/ UtfScan(UtfScanAcceptsNew)
 UtfNextOld == UtfAppend(UtfAppendAcceptsOld) \/ UtfScan(UtfScanAcceptsOld)
