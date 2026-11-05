@@ -61,7 +61,7 @@
 (* MaxDepth 3; the results are in the PR and in the commit that last       *)
 (* changed this file.                                                      *)
 (***************************************************************************)
-EXTENDS Naturals
+EXTENDS Integers
 
 CONSTANTS WireReasons,  \* a few of the wire's reasons, including past_end and value_out_of_range
           MaxDepth,     \* the deepest nesting of objects explored
@@ -91,7 +91,7 @@ OldSizeOn   == TRUE
 MachineMax  == 127
 MaxRequest  == 32
 
-Sizes == -MachineMax - 1 .. MachineMax
+Sizes == (0 - MachineMax - 1) .. MachineMax
 
 \* the product as the machine computes it: two's complement wrap into the signed range
 Wrap(x) == ((x + MachineMax + 1) % (2 * (MachineMax + 1))) - MachineMax - 1
