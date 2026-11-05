@@ -249,14 +249,13 @@ UtfInit ==
 \* an append of a sequence of width need that the check accepts must fit with its terminator
 UtfAppend(AppendAccepts(_,_,_)) ==
     /\ \E need \in UtfWidths :
-          /\ AppendAccepts(ulen, need, ucap)
-          /\ ubad' = ( ulen + need + 1 > ucap )
+          \* a refusal writes nothing and leaves the state as it was
+          ubad' = IF AppendAccepts(ulen, need, ucap) THEN ( ulen + need + 1 > ucap ) ELSE ubad
     /\ UNCHANGED <<vars, ulen, ucap, ui, un>>
 
 \* a four byte lead at ui that the check accepts must have three continuation bytes
 UtfScan(ScanAccepts(_,_)) ==
-    /\ ScanAccepts(ui, un)
-    /\ ubad' = ( ui + 4 > un )
+    /\ ubad' = IF ScanAccepts(ui, un) THEN ( ui + 4 > un ) ELSE ubad
     /\ UNCHANGED <<vars, ulen, ucap, ui, un>>
 
 UtfNextNew == UtfAppend(UtfAppendAcceptsNew) \/ UtfScan(UtfScanAcceptsNew)
