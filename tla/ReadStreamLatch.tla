@@ -232,11 +232,14 @@ UtfScanAcceptsNew(i, n) == ~( UtfWrap(n - i) < 4 )
 
 VARIABLES ulen, ucap, ui, un, ubad
 
-uvars == <<ulen, ucap, ui, un, ubad>>
+\* the latch variables ride along unchanged: the module declares them, so a specification
+\* over it must give them a value
+uvars == <<vars, ulen, ucap, ui, un, ubad>>
 
 \* any state a caller can hold: an output length inside the capacity, a read index
 \* inside the input
 UtfInit ==
+    /\ Init
     /\ ucap \in 1..UtfMax
     /\ ulen \in 0..(ucap - 1)
     /\ un \in 1..UtfMax
@@ -248,13 +251,13 @@ UtfAppend(AppendAccepts(_,_,_)) ==
     /\ \E need \in UtfWidths :
           /\ AppendAccepts(ulen, need, ucap)
           /\ ubad' = ( ulen + need + 1 > ucap )
-    /\ UNCHANGED <<ulen, ucap, ui, un>>
+    /\ UNCHANGED <<vars, ulen, ucap, ui, un>>
 
 \* a four byte lead at ui that the check accepts must have three continuation bytes
 UtfScan(ScanAccepts(_,_)) ==
     /\ ScanAccepts(ui, un)
     /\ ubad' = ( ui + 4 > un )
-    /\ UNCHANGED <<ulen, ucap, ui, un>>
+    /\ UNCHANGED <<vars, ulen, ucap, ui, un>>
 
 UtfNextNew == UtfAppend(UtfAppendAcceptsNew) \/ UtfScan(UtfScanAcceptsNew)
 UtfNextOld == UtfAppend(UtfAppendAcceptsOld) \/ UtfScan(UtfScanAcceptsOld)
@@ -263,6 +266,7 @@ UtfSpec    == UtfInit /\ [][UtfNextNew]_uvars
 UtfSpecOld == UtfInit /\ [][UtfNextOld]_uvars
 
 UtfTypeOK ==
+    /\ TypeOK
     /\ ulen \in UtfInts /\ ucap \in UtfInts /\ ui \in UtfInts /\ un \in UtfInts
     /\ ubad \in BOOLEAN
 
