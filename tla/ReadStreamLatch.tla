@@ -196,10 +196,11 @@ CallbackFalseIsRejected ==
 (* UtfWrap folds a sum back into the signed range of UtfBits bits, so the  *)
 (* addition that overflows at INT_MAX overflows at UtfMax here.            *)
 (*                                                                         *)
-(* UtfAppendAccepts and UtfScanAccepts are the checks. UtfBounds.cfg binds *)
-(* them to the subtraction forms (the remaining room compared with the     *)
-(* width, each operand checked before the subtraction) and passes.         *)
-(* UtfBoundsOld.cfg binds them to the addition forms and TLC must report   *)
+(* UtfAppendAccepts* and UtfScanAccepts* are the checks. UtfSpec, checked *)
+(* by UtfBounds.cfg, uses the subtraction forms (the remaining room        *)
+(* compared with the width, each operand checked before the subtraction)   *)
+(* and passes. UtfSpecOld, checked by UtfBoundsOld.cfg, uses the addition  *)
+(* forms and TLC must report                                               *)
 (* UtfInBounds violated: a wrapped sum is smaller than the capacity or the *)
 (* length, the check accepts, and the sequence is written or read past the *)
 (* end. Checked on a bench with UtfBits = 4, so UtfMax is 7.               *)
@@ -229,10 +230,6 @@ UtfScanAcceptsOld(i, n) == ~( UtfWrap(i + 3) >= n )
 \* the new string read check: length - i < 4 refuses, with 0 <= i < length
 UtfScanAcceptsNew(i, n) == ~( UtfWrap(n - i) < 4 )
 
-\* replaced by the configuration with the Old or the New form
-UtfAppendAccepts(len, need, cap) == UtfAppendAcceptsNew(len, need, cap)
-UtfScanAccepts(i, n) == UtfScanAcceptsNew(i, n)
-
 VARIABLES ulen, ucap, ui, un, ubad
 
 uvars == <<ulen, ucap, ui, un, ubad>>
@@ -247,21 +244,23 @@ UtfInit ==
     /\ ubad = FALSE
 
 \* an append of a sequence of width need that the check accepts must fit with its terminator
-UtfAppend ==
+UtfAppend(AppendAccepts(_,_,_)) ==
     /\ \E need \in UtfWidths :
-          /\ UtfAppendAccepts(ulen, need, ucap)
+          /\ AppendAccepts(ulen, need, ucap)
           /\ ubad' = ( ulen + need + 1 > ucap )
     /\ UNCHANGED <<ulen, ucap, ui, un>>
 
 \* a four byte lead at ui that the check accepts must have three continuation bytes
-UtfScan ==
-    /\ UtfScanAccepts(ui, un)
+UtfScan(ScanAccepts(_,_)) ==
+    /\ ScanAccepts(ui, un)
     /\ ubad' = ( ui + 4 > un )
     /\ UNCHANGED <<ulen, ucap, ui, un>>
 
-UtfNext == UtfAppend \/ UtfScan
+UtfNextNew == UtfAppend(UtfAppendAcceptsNew) \/ UtfScan(UtfScanAcceptsNew)
+UtfNextOld == UtfAppend(UtfAppendAcceptsOld) \/ UtfScan(UtfScanAcceptsOld)
 
-UtfSpec == UtfInit /\ [][UtfNext]_uvars
+UtfSpec    == UtfInit /\ [][UtfNextNew]_uvars
+UtfSpecOld == UtfInit /\ [][UtfNextOld]_uvars
 
 UtfTypeOK ==
     /\ ulen \in UtfInts /\ ucap \in UtfInts /\ ui \in UtfInts /\ un \in UtfInts
