@@ -87,9 +87,66 @@ struct Op
     int64_t v64;
 };
 
+// A reader over a byte count outside [0, largest accepted] is empty and already refused as
+// value_out_of_range, whether it is constructed or re-initialised; the invalid sizes are declared
+// and never allocated. The refusal is terminal and writes no destination.
+static int check_reader_sizes()
+{
+    const int64_t int64_min = int64_t( -9223372036854775807LL ) - 1;
+    const int64_t largest = int64_t( 0x07FFFFFFFFFFFFFFLL );     // INT64_MAX / 16
+    uint8_t local[16];
+    memset( local, 0x5A, sizeof( local ) );
+
+    int failures = 0;
+    const int64_t invalid[] = { int64_min, int64_min + 1, int64_t( -1 ), largest + 1, int64_t( 9223372036854775807LL ) };
+    for ( size_t i = 0; i < sizeof( invalid ) / sizeof( invalid[0] ); i++ )
+    {
+        for ( int how = 0; how < 2; how++ )
+        {
+            serialize::ReadStream constructed( local, invalid[i] );
+            serialize::ReadStream reinitialised( local, 8 );
+            reinitialised.Initialize( local, invalid[i] );
+            serialize::ReadStream & r = how ? reinitialised : constructed;
+
+            uint32_t bits = 0xDEADBEEF;
+            uint8_t bytes[4] = { 1, 2, 3, 4 };
+            bool refused = r.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE;
+            refused = !r.SerializeBits( bits, 8 ) && refused;
+            refused = !r.SerializeBytes( bytes, 4 ) && refused;
+            refused = !r.SerializeBits( bits, 0 ) && refused;
+            if ( !refused || bits != 0xDEADBEEF || bytes[0] != 1 || bytes[3] != 4 || r.GetRefusal() != serialize::REFUSAL_VALUE_OUT_OF_RANGE || r.GetBitsRemaining() >= 0 )
+            {
+                printf( "  size %lld (%s) was not refused as value_out_of_range\n", (long long) invalid[i], how ? "Initialize" : "constructor" );
+                failures++;
+            }
+        }
+    }
+
+    // the largest accepted count is a healthy reader (nothing is read: the data is declared, not allocated)
+    {
+        serialize::ReadStream constructed( local, largest );
+        serialize::ReadStream reinitialised( local, -1 );
+        reinitialised.Initialize( local, largest );
+        if ( constructed.GetRefusal() != serialize::REFUSAL_NONE || constructed.GetBitsRemaining() != largest * 8 ||
+             reinitialised.GetRefusal() != serialize::REFUSAL_NONE || reinitialised.GetBitsRemaining() != largest * 8 )
+        {
+            printf( "  the largest accepted size was refused\n" );
+            failures++;
+        }
+    }
+    return failures;
+}
+
 int main()
 {
     printf( "\nbuffer edges\n\n" );
+
+    if ( check_reader_sizes() != 0 )
+    {
+        printf( "\n*** READER SIZE CHECKS FAILED ***\n\n" );
+        return 1;
+    }
+    printf( "    reader sizes: negative and oversized counts refused, the largest accepted     pass\n" );
 
     const int64_t int64_min = int64_t( -9223372036854775807LL ) - 1;
     const int64_t int64_max = int64_t( 9223372036854775807LL );
