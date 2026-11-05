@@ -1756,7 +1756,7 @@ static void run_vector( const Vector & vector )
         vectorFailures += failures - before;
         if ( numFailedNames < MaxNames )
         {
-            strncpy( failedNames[numFailedNames], vector.name, MaxLine - 1 );
+            memcpy( failedNames[numFailedNames], vector.name, MaxLine - 1 );
             failedNames[numFailedNames][MaxLine - 1] = '\0';
             numFailedNames++;
         }
