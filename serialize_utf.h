@@ -60,7 +60,7 @@
 inline int serialize_utf8_append( char * output, int length, int output_size, uint32_t code )
 {
     const int needed = ( code < 0x80 ) ? 1 : ( code < 0x800 ) ? 2 : ( code < 0x10000 ) ? 3 : 4;
-    if ( length < 0 || output_size < 1 || length > output_size - 1 - needed )
+    if ( length < 0 || length >= output_size || output_size - length < needed + 1 )
         return -1;
     if ( needed == 1 )
     {
