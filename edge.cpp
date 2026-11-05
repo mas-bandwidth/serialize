@@ -39,6 +39,12 @@
     A unit test: a fixed seed, no clock, no sockets.
 */
 
+// the emulated 128 bit pair is defined next to a native __int128 only when this is set, and the
+// wide declaration cases below run both carriers
+#ifndef SERIALIZE_ENABLE_TESTS
+#define SERIALIZE_ENABLE_TESTS 1
+#endif
+
 #include "serialize.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -87,9 +93,127 @@ struct Op
     int64_t v64;
 };
 
+
+// Wide declarations. A bound or a relative previous carried in a 128 bit type is judged in its own
+// width before anything narrows it: 2^64 + 5 narrows to 5, a legal declaration, so it must be refused
+// as value_out_of_range with the destination untouched. Native and emulated carriers, split and
+// unified macros. A unit test: zero buffer, sentinel destination, no clock, no sockets.
+
+template <typename Stream, typename B> static bool edge_run_int64( Stream & stream, int64_t & value, B min, B max )
+{
+    serialize_int64( stream, value, min, max );
+    return true;
+}
+
+template <typename Stream, typename B> static bool edge_run_read_int64( Stream & stream, int64_t & value, B min, B max )
+{
+    read_int64( stream, value, min, max );
+    return true;
+}
+
+template <typename Stream, typename B> static bool edge_run_int( Stream & stream, int32_t & value, B min, B max )
+{
+    serialize_int( stream, value, min, max );
+    return true;
+}
+
+template <typename Stream, typename B> static bool edge_run_read_int( Stream & stream, int32_t & value, B min, B max )
+{
+    read_int( stream, value, min, max );
+    return true;
+}
+
+template <typename B> static int edge_wide_declarations( const char * name )
+{
+    int failures = 0;
+    uint8_t packet[32];
+    memset( packet, 0, sizeof( packet ) );
+
+    const B two64 = B( 1 ) << 64;
+    const B lo = two64 + B( 5 );
+    const B hi = two64 + B( 10 );
+
+    #define EDGE_WIDE_CHECK( condition ) do { if ( !( condition ) ) { printf( "  %s: %s\n", name, #condition ); failures++; } } while (0)
+
+    {
+        serialize::ReadStream stream( packet, 16 );
+        int64_t value = -99;
+        EDGE_WIDE_CHECK( edge_run_int64( stream, value, lo, hi ) == false );
+        EDGE_WIDE_CHECK( value == -99 );
+        EDGE_WIDE_CHECK( stream.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
+    }
+    {
+        serialize::ReadStream stream( packet, 16 );
+        int64_t value = -99;
+        EDGE_WIDE_CHECK( edge_run_read_int64( stream, value, lo, hi ) == false );
+        EDGE_WIDE_CHECK( value == -99 );
+        EDGE_WIDE_CHECK( stream.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
+    }
+    {
+        serialize::ReadStream stream( packet, 16 );
+        int32_t value = -99;
+        EDGE_WIDE_CHECK( edge_run_int( stream, value, lo, hi ) == false );
+        EDGE_WIDE_CHECK( value == -99 );
+        EDGE_WIDE_CHECK( stream.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
+    }
+    {
+        serialize::ReadStream stream( packet, 16 );
+        int32_t value = -99;
+        EDGE_WIDE_CHECK( edge_run_read_int( stream, value, lo, hi ) == false );
+        EDGE_WIDE_CHECK( value == -99 );
+        EDGE_WIDE_CHECK( stream.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
+    }
+    {
+        serialize::ReadStream stream( packet, 16 );
+        B current = B( -99 );
+        EDGE_WIDE_CHECK( serialize::serialize_int_relative_internal( stream, lo, current ) == false );
+        EDGE_WIDE_CHECK( current == B( -99 ) );
+        EDGE_WIDE_CHECK( stream.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
+    }
+
+    // reversed witness: the same carriers holding declarations that do fit are read, from the minimum
+    {
+        serialize::ReadStream stream( packet, 16 );
+        int64_t value = -99;
+        EDGE_WIDE_CHECK( edge_run_int64( stream, value, B( 5 ), B( 10 ) ) == true );
+        EDGE_WIDE_CHECK( value == 5 );
+    }
+    {
+        serialize::ReadStream stream( packet, 16 );
+        int32_t value = -99;
+        EDGE_WIDE_CHECK( edge_run_int( stream, value, B( 5 ), B( 10 ) ) == true );
+        EDGE_WIDE_CHECK( value == 5 );
+    }
+
+    #undef EDGE_WIDE_CHECK
+    return failures;
+}
+
+static int edge_wide_declarations_all()
+{
+    int failures = 0;
+    failures += edge_wide_declarations<serialize::uint128_t>( "uint128" );
+    failures += edge_wide_declarations<serialize::int128_t>( "int128" );
+#if defined( __SIZEOF_INT128__ )
+    failures += edge_wide_declarations< ::serialize_uint128_t >( "emulated uint128" );
+    failures += edge_wide_declarations< ::serialize_int128_t >( "emulated int128" );
+#endif
+    return failures;
+}
+
 int main()
 {
     printf( "\nbuffer edges\n\n" );
+
+    {
+        const int wideFailures = edge_wide_declarations_all();
+        if ( wideFailures > 0 )
+        {
+            printf( "\n*** %d WIDE DECLARATION CHECKS FAILED ***\n\n", wideFailures );
+            return 1;
+        }
+        printf( "    wide declarations: 128 bit bounds and previous, native and emulated     pass\n" );
+    }
 
     const int64_t int64_min = int64_t( -9223372036854775807LL ) - 1;
     const int64_t int64_max = int64_t( 9223372036854775807LL );
