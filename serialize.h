@@ -4661,7 +4661,11 @@ namespace serialize
         static_assert( Bits <= 64, "serialize: bits must be less than or equal to 64" );
         if ( Bits <= 32 )       // constant condition: the dead branch folds at compile time
         {
-            uint32_t value32 = uint32_t( value );
+            uint32_t value32 = 0;
+            if ( !Stream::IsReading )
+            {
+                value32 = uint32_t( value );
+            }
             if ( !stream.SerializeBits( value32, Bits ) )
             {
                 return false;
@@ -4674,8 +4678,13 @@ namespace serialize
         else
         {
             // low dword first, then the high remainder: same convention as serialize_bits and serialize_uint64
-            uint32_t lo = uint32_t( value & 0xFFFFFFFF );
-            uint32_t hi = uint32_t( value >> 32 );
+            uint32_t lo = 0;
+            uint32_t hi = 0;
+            if ( !Stream::IsReading )
+            {
+                lo = uint32_t( value & 0xFFFFFFFF );
+                hi = uint32_t( value >> 32 );
+            }
             if ( !stream.SerializeBits( lo, 32 ) )
             {
                 return false;
