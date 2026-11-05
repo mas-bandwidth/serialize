@@ -240,6 +240,33 @@ static void test_limits()
     check( serialize_utf8_to_utf16( "\xF0\x9F\x98\x80", 4, pair, 2 ) == -1, "a pair and a terminator need three units" );
 }
 
+static void test_decode_leaves_output_on_refusal()
+{
+    // a refused sequence returns 0 and leaves the output exactly as the caller set it
+    struct Case { const char * name; const char * bytes; int count; };
+    const Case cases[] =
+    {
+        { "truncated two byte", "\xC3\xA9", 1 },
+        { "truncated three byte", "\xE5\x9B\xBD", 2 },
+        { "truncated four byte", "\xF0\x9F\x98\x80", 3 },
+        { "bad continuation in two byte", "\xC3\x41", 2 },
+        { "bad continuation in three byte", "\xE5\x9B\x41", 3 },
+        { "bad continuation in four byte", "\xF0\x9F\x98\x41", 4 },
+        { "overlong two byte", "\xC0\xAF", 2 },
+        { "overlong three byte", "\xE0\x80\xAF", 3 },
+        { "overlong four byte", "\xF0\x80\x80\xAF", 4 },
+        { "encoded surrogate", "\xED\xA0\x80", 3 },
+        { "above 10FFFF", "\xF4\x90\x80\x80", 4 },
+    };
+    for ( int i = 0; i < (int) ( sizeof( cases ) / sizeof( cases[0] ) ); i++ )
+    {
+        uint32_t code = 0xDEADBEEF;
+        const int consumed = serialize_utf8_decode( cases[i].bytes, cases[i].count, code );
+        check( consumed == 0, cases[i].name );
+        check( code == 0xDEADBEEF, cases[i].name );
+    }
+}
+
 int main()
 {
     printf( "\nserialize_utf.h\n\n" );
@@ -247,6 +274,7 @@ int main()
     test_round_trips();
     test_lone_surrogates_refused();
     test_limits();
+    test_decode_leaves_output_on_refusal();
 
     if ( failures > 0 )
     {

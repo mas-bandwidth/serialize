@@ -114,9 +114,10 @@ inline int serialize_utf8_decode( const char * input, int input_bytes, uint32_t 
     }
     int count = 0;
     uint32_t minimum = 0;
-    if ( lead >= 0xC2 && lead <= 0xDF )         { count = 2; minimum = 0x80;    code = lead & 0x1F; }
-    else if ( lead >= 0xE0 && lead <= 0xEF )    { count = 3; minimum = 0x800;   code = lead & 0x0F; }
-    else if ( lead >= 0xF0 && lead <= 0xF4 )    { count = 4; minimum = 0x10000; code = lead & 0x07; }
+    uint32_t value = 0;
+    if ( lead >= 0xC2 && lead <= 0xDF )         { count = 2; minimum = 0x80;    value = lead & 0x1F; }
+    else if ( lead >= 0xE0 && lead <= 0xEF )    { count = 3; minimum = 0x800;   value = lead & 0x0F; }
+    else if ( lead >= 0xF0 && lead <= 0xF4 )    { count = 4; minimum = 0x10000; value = lead & 0x07; }
     else
         return 0;                               // a continuation byte, C0, C1, or F5 and above
     if ( count > input_bytes )
@@ -125,14 +126,15 @@ inline int serialize_utf8_decode( const char * input, int input_bytes, uint32_t 
     {
         if ( ( bytes[i] & 0xC0 ) != 0x80 )
             return 0;
-        code = ( code << 6 ) | ( bytes[i] & 0x3F );
+        value = ( value << 6 ) | ( bytes[i] & 0x3F );
     }
-    if ( code < minimum )                       // overlong
+    if ( value < minimum )                      // overlong
         return 0;
-    if ( code >= 0xD800 && code <= 0xDFFF )     // an encoded surrogate is not a scalar value
+    if ( value >= 0xD800 && value <= 0xDFFF )   // an encoded surrogate is not a scalar value
         return 0;
-    if ( code > 0x10FFFF )
+    if ( value > 0x10FFFF )
         return 0;
+    code = value;
     return count;
 }
 
