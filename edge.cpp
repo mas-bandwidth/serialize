@@ -43,6 +43,9 @@
     count, the largest count the cursor accepts, and one above it.
 */
 
+// SERIALIZE_ENABLE_TESTS makes the emulated 128 bit pair available beside native
+// __int128, so the wide declaration cases below cover both carriers in one build.
+#define SERIALIZE_ENABLE_TESTS 1
 #include "serialize.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -116,6 +119,218 @@ static bool cursor_refused( serialize::ReadStream & stream )
     if ( stream.GetRefusal() != serialize::REFUSAL_VALUE_OUT_OF_RANGE )
         return false;
     return true;
+}
+
+template <typename Stream, typename Value, typename Min, typename Max>
+static bool run_serialize_int64_wide( Stream & stream, Value & value, Min min, Max max )
+{
+    serialize_int64( stream, value, min, max );
+    return true;
+}
+
+template <typename Stream, typename Value, typename Min, typename Max>
+static bool run_read_int64_wide( Stream & stream, Value & value, Min min, Max max )
+{
+    read_int64( stream, value, min, max );
+    return true;
+}
+
+template <typename Stream, typename Value, typename Min, typename Max>
+static bool run_serialize_int_wide( Stream & stream, Value & value, Min min, Max max )
+{
+    serialize_int( stream, value, min, max );
+    return true;
+}
+
+template <typename Stream, typename Value, typename Min, typename Max>
+static bool run_read_int_wide( Stream & stream, Value & value, Min min, Max max )
+{
+    read_int( stream, value, min, max );
+    return true;
+}
+
+template <typename Stream, typename Value>
+static bool run_serialize_int_relative_wide( Stream & stream, Value previous, Value & current )
+{
+    serialize_int_relative( stream, previous, current );
+    return true;
+}
+
+template <typename Stream, typename Value>
+static bool run_read_int_relative_wide( Stream & stream, Value previous, Value & current )
+{
+    read_int_relative( stream, previous, current );
+    return true;
+}
+
+// A 128 bit declaration judged in a narrower width: bounds of 2^64 + 5 to
+// 2^64 + 10 narrow to [5, 10] as int64 and to [5, 10] as int32, and a relative
+// previous of 2^64 + 5 narrows to 5. Every form must refuse the declaration on
+// read as value_out_of_range before any bits move, leaving the sentinel
+// destination unchanged, for native and emulated unsigned 128 bit carriers,
+// through the unified and the split macros. A wide bound that does fit the
+// declared width (0 to 8 here) is compared in its own width and accepted.
+static int wide_declaration_edges()
+{
+    uint8_t zero_packet[24];
+    memset( zero_packet, 0, sizeof( zero_packet ) );
+    uint8_t one_bit_packet[24];
+    memset( one_bit_packet, 0, sizeof( one_bit_packet ) );
+    one_bit_packet[0] = 0x01;   // the one bit tier: current = previous + 1
+
+    const int64_t sentinel64 = int64_t( -1122334455667788LL );
+    const int32_t sentinel32 = int32_t( -1122334455 );
+
+#if defined( __SIZEOF_INT128__ )
+    {
+        const serialize::uint128_t wide_min = ( serialize::uint128_t( 1 ) << 64 ) + serialize::uint128_t( 5 );
+        const serialize::uint128_t wide_max = ( serialize::uint128_t( 1 ) << 64 ) + serialize::uint128_t( 10 );
+
+        serialize::ReadStream s1( zero_packet, 0 );
+        int64_t v64 = sentinel64;
+        if ( run_serialize_int64_wide( s1, v64, wide_min, wide_max ) || v64 != sentinel64 ||
+             s1.GetRefusal() != serialize::REFUSAL_VALUE_OUT_OF_RANGE )
+        {
+            printf( "  native serialize_int64 accepted 128 bit bounds past int64\n" );
+            return 1;
+        }
+        serialize::ReadStream s2( zero_packet, 0 );
+        v64 = sentinel64;
+        if ( run_read_int64_wide( s2, v64, wide_min, wide_max ) || v64 != sentinel64 ||
+             s2.GetRefusal() != serialize::REFUSAL_VALUE_OUT_OF_RANGE )
+        {
+            printf( "  native read_int64 accepted 128 bit bounds past int64\n" );
+            return 1;
+        }
+        serialize::ReadStream s3( zero_packet, 0 );
+        int32_t v32 = sentinel32;
+        if ( run_serialize_int_wide( s3, v32, wide_min, wide_max ) || v32 != sentinel32 ||
+             s3.GetRefusal() != serialize::REFUSAL_VALUE_OUT_OF_RANGE )
+        {
+            printf( "  native serialize_int accepted 128 bit bounds past int32\n" );
+            return 1;
+        }
+        serialize::ReadStream s4( zero_packet, 0 );
+        v32 = sentinel32;
+        if ( run_read_int_wide( s4, v32, wide_min, wide_max ) || v32 != sentinel32 ||
+             s4.GetRefusal() != serialize::REFUSAL_VALUE_OUT_OF_RANGE )
+        {
+            printf( "  native read_int accepted 128 bit bounds past int32\n" );
+            return 1;
+        }
+        serialize::ReadStream s5( zero_packet, 0 );
+        serialize::uint128_t current = serialize::uint128_t( 777 );
+        if ( run_serialize_int_relative_wide( s5, wide_min, current ) || current != serialize::uint128_t( 777 ) ||
+             s5.GetRefusal() != serialize::REFUSAL_VALUE_OUT_OF_RANGE )
+        {
+            printf( "  native serialize_int_relative accepted a 128 bit previous past its domain\n" );
+            return 1;
+        }
+        serialize::ReadStream s6( one_bit_packet, 8 );
+        current = serialize::uint128_t( 777 );
+        if ( run_read_int_relative_wide( s6, wide_min, current ) || current != serialize::uint128_t( 777 ) ||
+             s6.GetRefusal() != serialize::REFUSAL_VALUE_OUT_OF_RANGE )
+        {
+            printf( "  native read_int_relative accepted a 128 bit previous past its domain\n" );
+            return 1;
+        }
+        // a wide bound that fits the declared width is accepted in its own width
+        serialize::ReadStream s7( zero_packet, 8 );
+        v64 = sentinel64;
+        if ( !run_serialize_int64_wide( s7, v64, serialize::uint128_t( 0 ), serialize::uint128_t( 8 ) ) || v64 != 0 ||
+             s7.GetRefusal() != serialize::REFUSAL_NONE )
+        {
+            printf( "  native serialize_int64 refused 128 bit bounds that fit int64\n" );
+            return 1;
+        }
+    }
+#endif // #if defined( __SIZEOF_INT128__ )
+
+// The emulated-carrier cases below cannot compile against a header without
+// the wide-declaration fix (the narrower macros cast the emulated carrier to
+// int64_t), so a base check of this file uses the native-only form:
+// compile with SERIALIZE_WIDE_NATIVE_ONLY defined to keep only the native
+// cases above, which compile at base and fail there with
+// "native serialize_int64 accepted 128 bit bounds past int64".
+#if defined( SERIALIZE_UINT128_DEFINED ) && !defined( SERIALIZE_WIDE_NATIVE_ONLY )
+    {
+        serialize_uint128_t wide_min( 0 );
+        wide_min.lo = 5;
+        wide_min.hi = 1;
+        serialize_uint128_t wide_max( 0 );
+        wide_max.lo = 10;
+        wide_max.hi = 1;
+
+        serialize::ReadStream s1( zero_packet, 0 );
+        int64_t v64 = sentinel64;
+        if ( run_serialize_int64_wide( s1, v64, wide_min, wide_max ) || v64 != sentinel64 ||
+             s1.GetRefusal() != serialize::REFUSAL_VALUE_OUT_OF_RANGE )
+        {
+            printf( "  emulated serialize_int64 accepted 128 bit bounds past int64\n" );
+            return 1;
+        }
+        serialize::ReadStream s2( zero_packet, 0 );
+        v64 = sentinel64;
+        if ( run_read_int64_wide( s2, v64, wide_min, wide_max ) || v64 != sentinel64 ||
+             s2.GetRefusal() != serialize::REFUSAL_VALUE_OUT_OF_RANGE )
+        {
+            printf( "  emulated read_int64 accepted 128 bit bounds past int64\n" );
+            return 1;
+        }
+        serialize::ReadStream s3( zero_packet, 0 );
+        int32_t v32 = sentinel32;
+        if ( run_serialize_int_wide( s3, v32, wide_min, wide_max ) || v32 != sentinel32 ||
+             s3.GetRefusal() != serialize::REFUSAL_VALUE_OUT_OF_RANGE )
+        {
+            printf( "  emulated serialize_int accepted 128 bit bounds past int32\n" );
+            return 1;
+        }
+        serialize::ReadStream s4( zero_packet, 0 );
+        v32 = sentinel32;
+        if ( run_read_int_wide( s4, v32, wide_min, wide_max ) || v32 != sentinel32 ||
+             s4.GetRefusal() != serialize::REFUSAL_VALUE_OUT_OF_RANGE )
+        {
+            printf( "  emulated read_int accepted 128 bit bounds past int32\n" );
+            return 1;
+        }
+        // the relative previous as the signed emulated carrier holding 2^64 + 5: the
+        // unsigned emulated type converts only to uint64_t, so it cannot name a
+        // relative previous through the macro and is judged at the helper instead
+        if ( serialize::value_in_int_relative_domain( wide_min ) )
+        {
+            printf( "  emulated unsigned 128 bit previous judged inside the relative domain\n" );
+            return 1;
+        }
+        serialize_int128_t wide_previous( wide_min );
+        serialize::ReadStream s5( zero_packet, 0 );
+        serialize_int128_t current( 777 );
+        if ( run_serialize_int_relative_wide( s5, wide_previous, current ) || current != serialize_int128_t( 777 ) ||
+             s5.GetRefusal() != serialize::REFUSAL_VALUE_OUT_OF_RANGE )
+        {
+            printf( "  emulated serialize_int_relative accepted a 128 bit previous past its domain\n" );
+            return 1;
+        }
+        serialize::ReadStream s6( one_bit_packet, 8 );
+        current = serialize_int128_t( 777 );
+        if ( run_read_int_relative_wide( s6, wide_previous, current ) || current != serialize_int128_t( 777 ) ||
+             s6.GetRefusal() != serialize::REFUSAL_VALUE_OUT_OF_RANGE )
+        {
+            printf( "  emulated read_int_relative accepted a 128 bit previous past its domain\n" );
+            return 1;
+        }
+        serialize::ReadStream s7( zero_packet, 8 );
+        v64 = sentinel64;
+        if ( !run_serialize_int64_wide( s7, v64, serialize_uint128_t( 0 ), serialize_uint128_t( 8 ) ) || v64 != 0 ||
+             s7.GetRefusal() != serialize::REFUSAL_NONE )
+        {
+            printf( "  emulated serialize_int64 refused 128 bit bounds that fit int64\n" );
+            return 1;
+        }
+    }
+#endif // #if defined( SERIALIZE_UINT128_DEFINED ) && !defined( SERIALIZE_WIDE_NATIVE_ONLY )
+
+    printf( "    wide declarations: 128 bit bounds and previous judged in their own width     pass\n" );
+    return 0;
 }
 
 static int declared_size_edges()
@@ -261,6 +476,9 @@ static int declared_size_edges()
 
 int main()
 {
+    if ( wide_declaration_edges() != 0 )
+        return 1;
+
     if ( declared_size_edges() != 0 )
         return 1;
 

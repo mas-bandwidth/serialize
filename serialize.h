@@ -1255,6 +1255,33 @@ namespace serialize
         return !( ValueIsUnsigned64<T>::value && uint64_t( bound ) > uint64_t( 0x7FFFFFFFFFFFFFFFULL ) );
     }
 
+    // the 128 bit carriers, judged in their own width before anything narrows them: a bound of
+    // 2^64 + 5 is past int64, never the narrowed 5 it would become as an int64. The unsigned
+    // overload covers native unsigned __int128, and the emulated pair where it is the
+    // serialize::uint128_t alias; the signed overload covers the signed carriers the same way.
+    inline bool bound_fits_int64( uint128_t bound )
+    {
+        return bound <= uint128_t( 0x7FFFFFFFFFFFFFFFULL );
+    }
+
+    inline bool bound_fits_int64( int128_t bound )
+    {
+        return bound >= int128_t( int64_t( -9223372036854775807LL ) - 1 ) && bound <= int128_t( 0x7FFFFFFFFFFFFFFFLL );
+    }
+
+#if defined( SERIALIZE_UINT128_DEFINED ) && defined( __SIZEOF_INT128__ )
+    // the emulated pair beside native __int128: distinct types, judged by their high lane
+    inline bool bound_fits_int64( ::serialize_uint128_t bound )
+    {
+        return bound.hi == 0 && bound.lo <= 0x7FFFFFFFFFFFFFFFULL;
+    }
+
+    inline bool bound_fits_int64( ::serialize_int128_t bound )
+    {
+        return bound >= ::serialize_int128_t( int64_t( -9223372036854775807LL ) - 1 ) && bound <= ::serialize_int128_t( 0x7FFFFFFFFFFFFFFFLL );
+    }
+#endif // #if defined( SERIALIZE_UINT128_DEFINED ) && defined( __SIZEOF_INT128__ )
+
     template <typename T, typename U> inline bool int64_bounds_fit( T min, U max )
     {
         return bound_fits_int64( min ) && bound_fits_int64( max );
@@ -1275,7 +1302,10 @@ namespace serialize
         }
         const int64_t lo = int64_t( -2147483647 ) - 1;
         const int64_t hi = int64_t( 2147483647 );
-        return int64_t( min ) >= lo && int64_t( min ) <= hi && int64_t( max ) >= lo && int64_t( max ) <= hi;
+        // reached only when both bounds fit int64, so the narrowing is exact; spelled through
+        // uint64_t so an emulated unsigned bound, which converts to uint64_t but not directly
+        // to int64_t, compiles and narrows by its low lane
+        return int64_t( uint64_t( min ) ) >= lo && int64_t( uint64_t( min ) ) <= hi && int64_t( uint64_t( max ) ) >= lo && int64_t( uint64_t( max ) ) <= hi;
     }
 
     /**
@@ -1290,6 +1320,38 @@ namespace serialize
         }
         return int64_t( value ) >= min && int64_t( value ) <= max;
     }
+
+    // the 128 bit carriers, compared in their own width: an unsigned value past INT64_MAX is
+    // outside every int64 range, and a signed one compares as the 128 bit value it is
+    inline bool value_in_int64_range( uint128_t value, int64_t min, int64_t max )
+    {
+        if ( value > uint128_t( 0x7FFFFFFFFFFFFFFFULL ) )
+        {
+            return false;
+        }
+        return int64_t( uint64_t( value ) ) >= min && int64_t( uint64_t( value ) ) <= max;
+    }
+
+    inline bool value_in_int64_range( int128_t value, int64_t min, int64_t max )
+    {
+        return value >= int128_t( min ) && value <= int128_t( max );
+    }
+
+#if defined( SERIALIZE_UINT128_DEFINED ) && defined( __SIZEOF_INT128__ )
+    inline bool value_in_int64_range( ::serialize_uint128_t value, int64_t min, int64_t max )
+    {
+        if ( value.hi != 0 || value.lo > 0x7FFFFFFFFFFFFFFFULL )
+        {
+            return false;
+        }
+        return int64_t( value.lo ) >= min && int64_t( value.lo ) <= max;
+    }
+
+    inline bool value_in_int64_range( ::serialize_int128_t value, int64_t min, int64_t max )
+    {
+        return value >= ::serialize_int128_t( min ) && value <= ::serialize_int128_t( max );
+    }
+#endif // #if defined( SERIALIZE_UINT128_DEFINED ) && defined( __SIZEOF_INT128__ )
 
     /**
         The 128 bit companion of value_in_int64_range: an unsigned 128 bit value with its top bit set is outside every int128 range, though it converts to a negative int128.
@@ -1309,6 +1371,25 @@ namespace serialize
         return int128_t( value ) >= min && int128_t( value ) <= max;
     }
 
+#if defined( SERIALIZE_UINT128_DEFINED ) && defined( __SIZEOF_INT128__ )
+    // the emulated pair beside native __int128, reassembled into the native width to compare
+    inline bool value_in_int128_range( ::serialize_uint128_t value, int128_t min, int128_t max )
+    {
+        if ( ( value >> 127 ) != ::serialize_uint128_t( 0 ) )
+        {
+            return false;
+        }
+        const int128_t converted = int128_t( uint128_t( value.lo ) | ( uint128_t( value.hi ) << 64 ) );
+        return converted >= min && converted <= max;
+    }
+
+    inline bool value_in_int128_range( ::serialize_int128_t value, int128_t min, int128_t max )
+    {
+        const int128_t converted = int128_t( uint128_t( value.lo ) | ( uint128_t( value.hi ) << 64 ) );
+        return converted >= min && converted <= max;
+    }
+#endif // #if defined( SERIALIZE_UINT128_DEFINED ) && defined( __SIZEOF_INT128__ )
+
     /**
         Does a 128 bit ranged bound, as the caller passed it, fit int128? An unsigned 128 bit bound with its top bit set converts to a negative int128 (U16). Every narrower type fits.
      */
@@ -1322,6 +1403,13 @@ namespace serialize
     {
         return ( bound >> 127 ) == uint128_t( 0 );
     }
+
+#if defined( SERIALIZE_UINT128_DEFINED ) && defined( __SIZEOF_INT128__ )
+    inline bool bound_fits_int128( ::serialize_uint128_t bound )
+    {
+        return ( bound >> 127 ) == ::serialize_uint128_t( 0 );
+    }
+#endif // #if defined( SERIALIZE_UINT128_DEFINED ) && defined( __SIZEOF_INT128__ )
 
     template <typename T, typename U> inline bool int128_bounds_fit( T min, U max )
     {
@@ -2805,10 +2893,10 @@ namespace serialize
             int32_t int32_value = 0;                                    \
             if ( Stream::IsWriting )                                    \
             {                                                           \
-                serialize_assert( serialize::value_in_int64_range( value, int64_t(min), int64_t(max) ) ); \
+                serialize_assert( serialize::value_in_int64_range( value, int64_t( uint64_t(min) ), int64_t( uint64_t(max) ) ) ); \
                 int32_value = (int32_t) ( value );                      \
             }                                                           \
-            if ( !stream.SerializeInteger( int32_value, (int32_t) ( min ), (int32_t) ( max ) ) ) \
+            if ( !stream.SerializeInteger( int32_value, int32_t( uint64_t( min ) ), int32_t( uint64_t( max ) ) ) ) \
             {                                                           \
                 return false;                                           \
             }                                                           \
@@ -2835,7 +2923,7 @@ namespace serialize
         do                                                              \
         {                                                               \
             serialize_assert( Stream::IsReading || serialize::int64_bounds_fit( (min), (max) ) ); \
-            serialize_assert( Stream::IsReading || int64_t(min) <= int64_t(max) ); \
+            serialize_assert( Stream::IsReading || int64_t( uint64_t(min) ) <= int64_t( uint64_t(max) ) ); \
             /* U16: a bound that does not fit int64 refuses on read before any bits move */ \
             if ( Stream::IsReading && !serialize::int64_bounds_fit( (min), (max) ) )  \
             {                                                           \
@@ -2844,10 +2932,10 @@ namespace serialize
             int64_t int64_value = 0;                                    \
             if ( Stream::IsWriting )                                    \
             {                                                           \
-                serialize_assert( serialize::value_in_int64_range( value, int64_t(min), int64_t(max) ) ); \
+                serialize_assert( serialize::value_in_int64_range( value, int64_t( uint64_t(min) ), int64_t( uint64_t(max) ) ) ); \
                 int64_value = (int64_t) ( value );                      \
             }                                                           \
-            if ( !stream.SerializeInteger64( int64_value, (int64_t) ( min ), (int64_t) ( max ) ) ) \
+            if ( !stream.SerializeInteger64( int64_value, int64_t( uint64_t( min ) ), int64_t( uint64_t( max ) ) ) ) \
             {                                                           \
                 return false;                                           \
             }                                                           \
@@ -3682,6 +3770,30 @@ namespace serialize
         return widened >= 0 && widened <= serialize_int_relative_max;
     }
 
+    // the 128 bit carriers, judged in their own width before anything narrows them: a value of
+    // 2^64 + 5 is past the domain, never the narrowed 5 it would become as an int64
+    inline bool value_in_int_relative_domain( uint128_t value )
+    {
+        return value <= uint128_t( serialize_int_relative_max );
+    }
+
+    inline bool value_in_int_relative_domain( int128_t value )
+    {
+        return value >= int128_t( 0 ) && value <= int128_t( serialize_int_relative_max );
+    }
+
+#if defined( SERIALIZE_UINT128_DEFINED ) && defined( __SIZEOF_INT128__ )
+    inline bool value_in_int_relative_domain( ::serialize_uint128_t value )
+    {
+        return value.hi == 0 && value.lo <= uint64_t( serialize_int_relative_max );
+    }
+
+    inline bool value_in_int_relative_domain( ::serialize_int128_t value )
+    {
+        return value >= ::serialize_int128_t( 0 ) && value <= ::serialize_int128_t( int( serialize_int_relative_max ) );
+    }
+#endif // #if defined( SERIALIZE_UINT128_DEFINED ) && defined( __SIZEOF_INT128__ )
+
     /**
         Accept a reconstructed int_relative value, or refuse the read.
         Every tier reconstructs current in a width that cannot wrap and lands here, where the result is checked against the domain and against previous. current is written only once both checks pass, so a refused read leaves the caller's value exactly as it was, and the refusal fails the stream.
@@ -3729,7 +3841,7 @@ namespace serialize
         {
             serialize_assert( previous < current );
             serialize_assert( int64_t( current ) <= serialize_int_relative_max );
-            difference = uint32_t( current ) - uint32_t( previous );
+            difference = uint32_t( int64_t( current ) ) - uint32_t( int64_t( previous ) );
         }
 
         bool oneBit = false;
@@ -3833,7 +3945,7 @@ namespace serialize
         uint32_t value = 0;
         if ( Stream::IsWriting )
         {
-            value = uint32_t( current );
+            value = uint32_t( int64_t( current ) );
         }
         serialize_bits( stream, value, 32 );
         if ( Stream::IsReading )
@@ -4257,7 +4369,7 @@ namespace serialize
                 return serialize::serialize_fail( stream, serialize::REFUSAL_VALUE_OUT_OF_RANGE ); \
             }                                                                               \
             int32_t int32_value = 0;                                                        \
-            if ( !stream.SerializeInteger( int32_value, (int32_t) ( min ), (int32_t) ( max ) ) ) \
+            if ( !stream.SerializeInteger( int32_value, int32_t( uint64_t( min ) ), int32_t( uint64_t( max ) ) ) ) \
             {                                                                               \
                 return false;                                                               \
             }                                                                               \
@@ -4274,7 +4386,7 @@ namespace serialize
                 return serialize::serialize_fail( stream, serialize::REFUSAL_VALUE_OUT_OF_RANGE ); \
             }                                                                               \
             int64_t int64_value = 0;                                                        \
-            if ( !stream.SerializeInteger64( int64_value, (int64_t) ( min ), (int64_t) ( max ) ) ) \
+            if ( !stream.SerializeInteger64( int64_value, int64_t( uint64_t( min ) ), int64_t( uint64_t( max ) ) ) ) \
             {                                                                               \
                 return false;                                                               \
             }                                                                               \
@@ -4386,21 +4498,21 @@ namespace serialize
     #define write_int( stream, value, min, max )                                            \
         do                                                                                  \
         {                                                                                   \
-            serialize_assert( int64_t( min ) <= int64_t( max ) );                           \
+            serialize_assert( int64_t( uint64_t( min ) ) <= int64_t( uint64_t( max ) ) );                           \
             serialize_assert( serialize::int_bounds_are_int32( (min), (max) ) ); \
-            serialize_assert( serialize::value_in_int64_range( value, int64_t( min ), int64_t( max ) ) ); \
+            serialize_assert( serialize::value_in_int64_range( value, int64_t( uint64_t( min ) ), int64_t( uint64_t( max ) ) ) ); \
             int32_t int32_value = (int32_t) ( value );                                      \
-            stream.SerializeInteger( int32_value, (int32_t) ( min ), (int32_t) ( max ) );    \
+            stream.SerializeInteger( int32_value, int32_t( uint64_t( min ) ), int32_t( uint64_t( max ) ) );    \
         } while (0)
 
     #define write_int64( stream, value, min, max )                                          \
         do                                                                                  \
         {                                                                                   \
             serialize_assert( serialize::int64_bounds_fit( (min), (max) ) );                \
-            serialize_assert( int64_t( min ) <= int64_t( max ) );                            \
-            serialize_assert( serialize::value_in_int64_range( value, int64_t( min ), int64_t( max ) ) ); \
+            serialize_assert( int64_t( uint64_t( min ) ) <= int64_t( uint64_t( max ) ) );                            \
+            serialize_assert( serialize::value_in_int64_range( value, int64_t( uint64_t( min ) ), int64_t( uint64_t( max ) ) ) ); \
             int64_t int64_value = (int64_t) ( value );                                      \
-            stream.SerializeInteger64( int64_value, (int64_t) ( min ), (int64_t) ( max ) );  \
+            stream.SerializeInteger64( int64_value, int64_t( uint64_t( min ) ), int64_t( uint64_t( max ) ) );  \
         } while (0)
 
     #define write_int128( stream, value, min, max )                                         \
@@ -4508,7 +4620,7 @@ namespace serialize
         do                                                                                  \
         {                                                                                   \
             serialize_assert( serialize::value_in_int_relative_domain( current ) );         \
-            int current_value = (int) ( current );                                          \
+            int current_value = int( int64_t( current ) );                                          \
             serialize::serialize_int_relative_internal( stream, previous, current_value );  \
         } while (0)
 
