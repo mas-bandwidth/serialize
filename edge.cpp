@@ -246,7 +246,13 @@ static int wide_declaration_edges()
     }
 #endif // #if defined( __SIZEOF_INT128__ )
 
-#if defined( SERIALIZE_UINT128_DEFINED )
+// The emulated-carrier cases below cannot compile against a header without
+// the wide-declaration fix (the narrower macros cast the emulated carrier to
+// int64_t), so a base check of this file uses the native-only form:
+// compile with SERIALIZE_WIDE_NATIVE_ONLY defined to keep only the native
+// cases above, which compile at base and fail there with
+// "native serialize_int64 accepted 128 bit bounds past int64".
+#if defined( SERIALIZE_UINT128_DEFINED ) && !defined( SERIALIZE_WIDE_NATIVE_ONLY )
     {
         serialize_uint128_t wide_min( 0 );
         wide_min.lo = 5;
@@ -321,7 +327,7 @@ static int wide_declaration_edges()
             return 1;
         }
     }
-#endif // #if defined( SERIALIZE_UINT128_DEFINED )
+#endif // #if defined( SERIALIZE_UINT128_DEFINED ) && !defined( SERIALIZE_WIDE_NATIVE_ONLY )
 
     printf( "    wide declarations: 128 bit bounds and previous judged in their own width     pass\n" );
     return 0;
