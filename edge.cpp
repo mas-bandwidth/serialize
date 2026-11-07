@@ -37,6 +37,10 @@
     interpreted.
 
     A unit test: a fixed seed, no clock, no sockets.
+
+    Declared sizes that do not fit the cursor are checked here too. The counts
+    are declared on a small local array and are never allocated: a negative
+    count, the largest count the cursor accepts, and one above it.
 */
 
 #include "serialize.h"
@@ -87,8 +91,179 @@ struct Op
     int64_t v64;
 };
 
+
+static bool cursor_refused( serialize::ReadStream & stream )
+{
+    uint32_t dest = 0xA5A5A5A5u;
+    uint8_t bytes[4];
+    memset( bytes, 0xAB, sizeof( bytes ) );
+    if ( stream.GetRefusal() != serialize::REFUSAL_VALUE_OUT_OF_RANGE )
+        return false;
+    // empty, then poisoned: the cursor is one, not a wrapped product
+    if ( stream.GetBitsProcessed() != int64_t( 1 ) )
+        return false;
+    if ( stream.SerializeBits( dest, 8 ) )
+        return false;
+    if ( dest != 0xA5A5A5A5u )
+        return false;
+    if ( stream.SerializeBytes( bytes, 4 ) )
+        return false;
+    for ( int i = 0; i < 4; i++ )
+    {
+        if ( bytes[i] != 0xAB )
+            return false;
+    }
+    if ( stream.GetRefusal() != serialize::REFUSAL_VALUE_OUT_OF_RANGE )
+        return false;
+    return true;
+}
+
+static int declared_size_edges()
+{
+    uint8_t local[16];
+    memset( local, 0x5A, sizeof( local ) );
+
+    // the largest multiple of 8 that is <= INT64_MAX - 8, divided by 8
+    const int64_t min_count = int64_t( -9223372036854775807LL ) - 1;
+    const int64_t max_count = ( int64_t( 9223372036854775807LL ) - 15 ) / 8;
+    const int64_t bad[3] = { min_count, int64_t( -1 ), max_count + 1 };
+
+    for ( int i = 0; i < 3; i++ )
+    {
+        const int64_t count = bad[i];
+        serialize::BitReader raw( local, count );
+        if ( raw.GetBitsRead() != int64_t( 0 ) || raw.GetBitsRemaining() != int64_t( 0 ) )
+        {
+            printf( "  bit reader kept count %lld\n", (long long) count );
+            return 1;
+        }
+        raw.Initialize( local, count );
+        if ( raw.GetBitsRead() != int64_t( 0 ) || raw.GetBitsRemaining() != int64_t( 0 ) )
+        {
+            printf( "  bit reader re-init kept count %lld\n", (long long) count );
+            return 1;
+        }
+
+        serialize::ReadStream stream( local, count );
+        if ( !cursor_refused( stream ) )
+        {
+            printf( "  stream count %lld refused as %d cursor %lld\n",
+                    (long long) count, (int) stream.GetRefusal(), (long long) stream.GetBitsProcessed() );
+            return 1;
+        }
+        stream.Initialize( local, int64_t( 8 ) );
+        if ( stream.GetRefusal() != serialize::REFUSAL_NONE || stream.GetBitsRemaining() != int64_t( 64 ) )
+        {
+            printf( "  re-init to 8 bytes did not clear count %lld\n", (long long) count );
+            return 1;
+        }
+        stream.Initialize( local, count );
+        if ( !cursor_refused( stream ) )
+        {
+            printf( "  re-init of count %lld did not refuse\n", (long long) count );
+            return 1;
+        }
+    }
+
+    serialize::BitReader raw_max( local, max_count );
+    if ( raw_max.GetBitsRead() != int64_t( 0 ) || raw_max.GetBitsRemaining() != max_count * 8 )
+    {
+        printf( "  largest count was not accepted by the bit reader\n" );
+        return 1;
+    }
+    raw_max.Initialize( local, max_count );
+    if ( raw_max.GetBitsRemaining() != max_count * 8 )
+    {
+        printf( "  largest count was not accepted on re-init\n" );
+        return 1;
+    }
+
+    serialize::ReadStream ok( local, max_count );
+    if ( ok.GetRefusal() != serialize::REFUSAL_NONE )
+    {
+        printf( "  largest count refused as %d\n", (int) ok.GetRefusal() );
+        return 1;
+    }
+    if ( ok.GetBitsProcessed() != int64_t( 0 ) || ok.GetBitsRemaining() != max_count * 8 )
+    {
+        printf( "  largest count cursor %lld remaining %lld\n",
+                (long long) ok.GetBitsProcessed(), (long long) ok.GetBitsRemaining() );
+        return 1;
+    }
+    ok.Initialize( local, min_count );
+    if ( !cursor_refused( ok ) )
+    {
+        printf( "  largest stream did not refuse a negative re-init\n" );
+        return 1;
+    }
+    ok.Initialize( local, max_count );
+    if ( ok.GetRefusal() != serialize::REFUSAL_NONE || ok.GetBitsRemaining() != max_count * 8 )
+    {
+        printf( "  largest count did not clear the refusal\n" );
+        return 1;
+    }
+
+    // poison the largest accepted cursor and round it up to a byte. the +7 must fit
+    serialize::ReadStream topped( local, max_count );
+    uint32_t dest = 0xA5A5A5A5u;
+    if ( topped.SerializeBits( dest, 0 ) )
+    {
+        printf( "  a zero bit count was accepted\n" );
+        return 1;
+    }
+    if ( dest != 0xA5A5A5A5u )
+    {
+        printf( "  a refused declaration wrote the destination\n" );
+        return 1;
+    }
+    if ( topped.GetRefusal() != serialize::REFUSAL_VALUE_OUT_OF_RANGE )
+    {
+        printf( "  a zero bit count refused as %d\n", (int) topped.GetRefusal() );
+        return 1;
+    }
+    const int64_t max_bits = max_count * 8;
+    if ( topped.GetBitsProcessed() != max_bits + 1 )
+    {
+        printf( "  poisoned cursor %lld\n", (long long) topped.GetBitsProcessed() );
+        return 1;
+    }
+    if ( topped.GetBytesProcessed() != ( max_bits + 1 + 7 ) / 8 )
+    {
+        printf( "  byte rounding %lld\n", (long long) topped.GetBytesProcessed() );
+        return 1;
+    }
+    if ( topped.GetBitsRemaining() != int64_t( -1 ) )
+    {
+        printf( "  poisoned remaining %lld\n", (long long) topped.GetBitsRemaining() );
+        return 1;
+    }
+    if ( topped.SerializeBits( dest, 8 ) || dest != 0xA5A5A5A5u )
+    {
+        printf( "  a later read wrote or was accepted\n" );
+        return 1;
+    }
+    if ( topped.GetRefusal() != serialize::REFUSAL_VALUE_OUT_OF_RANGE )
+    {
+        printf( "  the first reason was relabelled to %d\n", (int) topped.GetRefusal() );
+        return 1;
+    }
+
+    serialize::ReadStream zero( local, 0 );
+    if ( zero.GetRefusal() != serialize::REFUSAL_NONE || zero.GetBitsRemaining() != int64_t( 0 ) )
+    {
+        printf( "  a zero count was refused\n" );
+        return 1;
+    }
+
+    printf( "    declared sizes: negative, too large, and the largest that fits     pass\n" );
+    return 0;
+}
+
 int main()
 {
+    if ( declared_size_edges() != 0 )
+        return 1;
+
     printf( "\nbuffer edges\n\n" );
 
     const int64_t int64_min = int64_t( -9223372036854775807LL ) - 1;

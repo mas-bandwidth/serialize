@@ -20,10 +20,12 @@
 (* position, and always poisons.                                           *)
 (*                                                                         *)
 (* There are two initial states, because ReadStream has two: a stream over *)
-(* a non-negative byte count starts healthy, and a stream over a negative  *)
-(* byte count starts refused as value_out_of_range (U7). The second is why *)
-(* Fail records whatever the position: such a stream is past its end       *)
-(* before any read.                                                        *)
+(* a byte count that fits the cursor starts healthy, and a stream over a   *)
+(* count that does not starts refused as value_out_of_range (U7). The      *)
+(* second is why Fail records whatever the position: such a stream is past *)
+(* its end before any read. Which counts fit is SizeSpec, below. The latch *)
+(* specification holds the cursor at an empty fitting count and does not   *)
+(* change it.                                                              *)
 (*                                                                         *)
 (* The actions are the operations and the outside events: a primitive read *)
 (* the wire accepts, a primitive read the wire refuses for reason r, the   *)
@@ -44,11 +46,21 @@
 (* Re-initialization (ReadStream::Initialize) starts a new stream and a    *)
 (* new behaviour of this spec; it is not an action here.                   *)
 (*                                                                         *)
-(* Checked with TLC 2.19 on an idle bench machine, three wire reasons and  *)
-(* MaxDepth 3; the results are in the PR and in the commit that last       *)
-(* changed this file.                                                      *)
+(* The cursor's byte count is a separate specification in this module, on  *)
+(* a signed machine of width 6, the smallest width at which a positive     *)
+(* count still fits under the 8 bits of headroom the code leaves: poison   *)
+(* steps one past the end, and rounding the cursor up to a byte adds 7.    *)
+(* SizeSpec checks the count before multiplying. SizeSpecOld multiplies    *)
+(* first and then checks only the sign, which is the old order. A request  *)
+(* is compared by subtracting the cursor from the bit count; both ends of  *)
+(* that subtraction stay inside the machine. Re-initialization is again a  *)
+(* new behaviour, not an action.                                           *)
+(*                                                                         *)
+(* Checked with TLC 2.19, three wire reasons and MaxDepth 3 for the latch, *)
+(* and the two size configurations beside this file. The results are in    *)
+(* the commit that last changed this file.                                 *)
 (***************************************************************************)
-EXTENDS Naturals
+EXTENDS Integers
 
 CONSTANTS WireReasons,  \* a few of the wire's reasons, including past_end and value_out_of_range
           MaxDepth,     \* the deepest nesting of objects explored
@@ -68,8 +80,10 @@ ASSUME OldLatch \in BOOLEAN /\ OldFail \in BOOLEAN
 Reasons == WireReasons \cup {REJECTED}
 
 VARIABLES refused, reason, depth, last
+VARIABLES szBytes, szBits, szRead, szRefused, szReason
 
-vars == <<refused, reason, depth, last>>
+vars == <<refused, reason, depth, last, szBytes, szBits, szRead, szRefused, szReason>>
+szvars == <<szBytes, szBits, szRead, szRefused, szReason>>
 
 TypeOK ==
     /\ refused \in BOOLEAN
@@ -77,8 +91,16 @@ TypeOK ==
     /\ depth \in 0..MaxDepth
     /\ last \in {"start", "ok", "fail"}
 
-\* ReadStream( buffer, bytes ) and Initialize: healthy over bytes >= 0, refused
-\* as value_out_of_range over bytes < 0
+\* a fitting count, held still while the latch actions run
+SizeIdle ==
+    /\ szBytes = 0
+    /\ szBits = 0
+    /\ szRead = 0
+    /\ szRefused = FALSE
+    /\ szReason = NONE
+
+\* ReadStream( buffer, bytes ) and Initialize, abstracted to the two outcomes
+\* SizeSpec distinguishes. The cursor itself stays at SizeIdle here.
 Init ==
     /\ depth = 0
     /\ \/ /\ refused = FALSE
@@ -87,6 +109,7 @@ Init ==
        \/ /\ refused = TRUE
           /\ reason = OUT_OF_RANGE
           /\ last = "fail"
+    /\ SizeIdle
 
 \* ReadStream::Fail
 Fail(r) ==
@@ -94,6 +117,7 @@ Fail(r) ==
     IN  /\ reason' = IF reason = NONE THEN recorded ELSE reason
         /\ refused' = TRUE
         /\ last' = "fail"
+        /\ UNCHANGED szvars
 
 \* StreamRefusal<ReadStream>::Latch, which serialize_latch_failure calls
 Latch ==
@@ -101,6 +125,7 @@ Latch ==
     THEN /\ refused' = TRUE                    \* 2.0: poison, record nothing
          /\ UNCHANGED reason
          /\ last' = "fail"
+         /\ UNCHANGED szvars
     ELSE Fail(REJECTED)                        \* 2.1: Fail( REFUSAL_REJECTED )
 
 \* A primitive read whose bits the wire accepts. On a poisoned position the
@@ -111,21 +136,25 @@ ReadOk ==
        ELSE /\ last' = "ok"
             /\ UNCHANGED <<refused, reason>>
     /\ UNCHANGED depth
+    /\ UNCHANGED szvars
 
 \* A primitive read the wire refuses, for reason r.
 WireRefusal(r) ==
     /\ Fail(r)
     /\ UNCHANGED depth
+    /\ UNCHANGED szvars
 
 \* serialize_reject: the caller refuses a well formed value.
 Reject ==
     /\ Fail(REJECTED)
     /\ UNCHANGED depth
+    /\ UNCHANGED szvars
 
 \* serialize::serialize_fail from the caller, with any reason, none included
 CallerFail(r) ==
     /\ Fail(r)
     /\ UNCHANGED depth
+    /\ UNCHANGED szvars
 
 \* serialize_object's entry: a failed stream refuses before the callback runs.
 ObjectEnter ==
@@ -136,6 +165,7 @@ ObjectEnter ==
        ELSE /\ depth' = depth + 1
             /\ last' = "ok"
             /\ UNCHANGED <<refused, reason>>
+    /\ UNCHANGED szvars
 
 \* serialize_object's exit, with the callback's result. A false result, or a
 \* true one on a stream that failed inside the callback, latches.
@@ -146,6 +176,7 @@ ObjectExit(result) ==
        THEN Latch
        ELSE /\ last' = "ok"
             /\ UNCHANGED <<refused, reason>>
+    /\ UNCHANGED szvars
 
 Next ==
     \/ ReadOk
@@ -183,4 +214,108 @@ WireReasonKept == [][(reason \in WireReasons => reason' = reason)]_vars
 \* a callback returning false on a healthy stream refuses, as rejected
 CallbackFalseIsRejected ==
     [][((~refused /\ depth > 0 /\ depth' = depth - 1 /\ last' = "fail") => reason' = REJECTED)]_vars
+
+-----------------------------------------------------------------------------
+\* The byte count, on a signed machine of Width bits.
+\* Headroom is what the cursor checks still add after a request is compared
+\* by subtraction: poison stores one past the end, and the byte rounding adds 7.
+
+Width == 6
+Headroom == 8
+MinInt == -2^(Width - 1)
+MaxInt == 2^(Width - 1) - 1
+Modulo == 2^Width
+
+ToSigned(u) == IF u > MaxInt THEN u - Modulo ELSE u
+Wrap(x) == ToSigned(x % Modulo)
+
+MaxBits == MaxInt - Headroom
+FitsBytes(b) == b \in 0 .. MaxInt /\ b * 8 <= MaxBits
+MaxReadBytes == CHOOSE b \in 0 .. MaxInt : FitsBytes(b) /\ ~FitsBytes(b + 1)
+
+ASSUME MaxReadBytes = 2
+ASSUME MaxBits = 23
+ASSUME Wrap(-1 * 8) = -8
+ASSUME Wrap(4 * 8) = -32
+ASSUME Wrap(MinInt * 8) = 0
+ASSUME Wrap(24) = 24
+
+Requests == 0 .. MaxInt
+
+\* the latch variables, held still while the size actions run
+LatchIdle ==
+    /\ refused = FALSE
+    /\ reason = NONE
+    /\ depth = 0
+    /\ last = "start"
+
+\* the count is checked before the multiply. a count that does not fit is an
+\* empty reader, already refused as value_out_of_range, cursor one past the end
+SizeInit ==
+    \E b \in MinInt .. MaxInt :
+        IF b \in 0 .. MaxReadBytes
+        THEN /\ szBytes = b
+             /\ szBits = b * 8
+             /\ szRead = 0
+             /\ szRefused = FALSE
+             /\ szReason = NONE
+        ELSE /\ szBytes = b
+             /\ szBits = 0
+             /\ szRead = 1
+             /\ szRefused = TRUE
+             /\ szReason = OUT_OF_RANGE
+
+\* the old order: multiply, wrapping at the machine width, then reject only a
+\* negative count. the product is kept, including when it wrapped.
+SizeInitOld ==
+    \E b \in MinInt .. MaxInt :
+        LET product == Wrap(b * 8)
+        IN  /\ szBytes = b
+            /\ szBits = product
+            /\ IF b < 0
+               THEN /\ szRefused = TRUE
+                    /\ szReason = OUT_OF_RANGE
+                    /\ szRead = Wrap(product + 1)
+               ELSE /\ szRefused = FALSE
+                    /\ szReason = NONE
+                    /\ szRead = 0
+
+\* a later request, compared by subtraction. both ends are in range whenever
+\* CursorRoom holds. a request that does not fit poisons the cursor one past
+\* the end and records past_end, unless a reason is already recorded.
+SizeNext ==
+    \E n \in Requests :
+        LET remaining == szBits - szRead
+        IN  /\ remaining \in MinInt .. MaxInt
+            /\ IF szRefused \/ n > remaining
+               THEN /\ szRefused' = TRUE
+                    /\ szReason' = IF szReason = NONE THEN PAST_END ELSE szReason
+                    /\ szRead' = szBits + 1
+                    /\ UNCHANGED <<szBytes, szBits>>
+               ELSE /\ szRead' = szRead + n
+                    /\ UNCHANGED <<szBytes, szBits, szRefused, szReason>>
+
+SizeInitFull == SizeInit /\ LatchIdle
+SizeInitOldFull == SizeInitOld /\ LatchIdle
+SizeNextFull == SizeNext /\ UNCHANGED <<refused, reason, depth, last>>
+
+SizeSpec == SizeInitFull /\ [][SizeNextFull]_vars
+SizeSpecOld == SizeInitOldFull /\ [][SizeNextFull]_vars
+
+\* an invalid count stays an empty reader with its first reason
+BadCountIsEmpty ==
+    (szBytes < 0 \/ szBytes > MaxReadBytes) =>
+        (szBits = 0 /\ szRead = 1 /\ szRefused /\ szReason = OUT_OF_RANGE)
+
+\* the bit count, the cursor, and the subtraction that compares a request
+\* all stay inside the machine. a fitting count keeps the product it formed
+CursorRoom ==
+    /\ szBits \in 0 .. MaxBits
+    /\ szRead \in 0 .. (szBits + 1)
+    /\ szRead \in MinInt .. MaxInt
+    /\ (szBits - szRead) \in MinInt .. MaxInt
+    /\ szBytes \in 0 .. MaxReadBytes => szBits = szBytes * 8
+
+\* once the size check has refused, a later request does not relabel the reason
+ReasonStays == [][szRefused => szReason' = szReason]_vars
 =============================================================================
