@@ -1617,7 +1617,8 @@ namespace serialize
     inline bool byte_count_fits_reader( int64_t bytes )
     {
         const int64_t max_bytes = ( INT64_MAX - 15 ) / 8;
-        return bytes >= 0 && bytes <= max_bytes;
+        // one unsigned compare: a negative count converts above every accepted count
+        return uint64_t( bytes ) <= uint64_t( max_bytes );
     }
 
     serialize_static_assert( ( ( INT64_MAX - 15 ) / 8 ) * 8 <= INT64_MAX - 8, "the largest read count leaves cursor headroom" );
@@ -1669,9 +1670,9 @@ namespace serialize
             @see BitWriter
          */
 
-        BitReader( const void * serialize_restrict data, int64_t bytes ) : m_data( NULL ), m_numBits( 0 ), m_numBytes( 0 ), m_bitsRead( 0 )
+        BitReader( const void * serialize_restrict data, int64_t bytes ) : m_data( (const uint8_t*) data ), m_numBits( byte_count_fits_reader( bytes ) ? bytes * 8 : 0 ), m_numBytes( byte_count_fits_reader( bytes ) ? bytes : 0 ), m_bitsRead( 0 )
         {
-            Initialize( data, bytes );
+            serialize_assert( data );
         }
 
         /**
@@ -2220,10 +2221,11 @@ namespace serialize
             @param bytes The number of bytes of packet data to read. IMPORTANT: the underlying allocation must extend at least 8 bytes past the end of the data, because the bit reader loads 64 bit windows at byte granularity. See BitReader for details. For an exactly sized allocation, use InitializePadded.
          */
 
-        ReadStream( const uint8_t * buffer, int64_t bytes ) : m_refusal( REFUSAL_NONE )
+        ReadStream( const uint8_t * buffer, int64_t bytes ) : m_reader( buffer, byte_count_fits_reader( bytes ) ? bytes : 0 ), m_refusal( REFUSAL_NONE )
         {
             // U7: same check as Initialize, including a count that is too large for the cursor
-            Initialize( buffer, bytes );
+            if ( !byte_count_fits_reader( bytes ) )
+                Fail( REFUSAL_VALUE_OUT_OF_RANGE );
         }
 
         /**
