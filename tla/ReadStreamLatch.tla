@@ -56,6 +56,14 @@
 (* that subtraction stay inside the machine. Re-initialization is again a  *)
 (* new behaviour, not an action.                                           *)
 (*                                                                         *)
+(* The UTF bounds at the end model the length checks in                   *)
+(* serialize_string_is_valid_utf8 and serialize_utf.h on the same Width:  *)
+(* an index or an output length, a total or a capacity, and a width or a  *)
+(* needed count near the top of the machine. The new order checks both    *)
+(* operands and then compares by subtraction; the old order adds first    *)
+(* and wraps. UtfBounds.cfg must pass and UtfBoundsOld.cfg must report    *)
+(* UtfBounds violated.                                                    *)
+(*                                                                         *)
 (* Checked with TLC 2.19, three wire reasons and MaxDepth 3 for the latch, *)
 (* and the two size configurations beside this file. The results are in    *)
 (* the commit that last changed this file.                                 *)
@@ -81,9 +89,11 @@ Reasons == WireReasons \cup {REJECTED}
 
 VARIABLES refused, reason, depth, last
 VARIABLES szBytes, szBits, szRead, szRefused, szReason
+VARIABLES uI, uLen, uOut, uCap, uNeed, uRefused
 
-vars == <<refused, reason, depth, last, szBytes, szBits, szRead, szRefused, szReason>>
+vars == <<refused, reason, depth, last, szBytes, szBits, szRead, szRefused, szReason, uI, uLen, uOut, uCap, uNeed, uRefused>>
 szvars == <<szBytes, szBits, szRead, szRefused, szReason>>
+uvars == <<uI, uLen, uOut, uCap, uNeed, uRefused>>
 
 TypeOK ==
     /\ refused \in BOOLEAN
@@ -99,6 +109,15 @@ SizeIdle ==
     /\ szRefused = FALSE
     /\ szReason = NONE
 
+\* a settled conversion, held still while the latch and size actions run
+UtfIdle ==
+    /\ uI = 0
+    /\ uLen = 0
+    /\ uOut = 0
+    /\ uCap = 1
+    /\ uNeed = 1
+    /\ uRefused = FALSE
+
 \* ReadStream( buffer, bytes ) and Initialize, abstracted to the two outcomes
 \* SizeSpec distinguishes. The cursor itself stays at SizeIdle here.
 Init ==
@@ -110,6 +129,7 @@ Init ==
           /\ reason = OUT_OF_RANGE
           /\ last = "fail"
     /\ SizeIdle
+    /\ UtfIdle
 
 \* ReadStream::Fail
 Fail(r) ==
@@ -179,12 +199,13 @@ ObjectExit(result) ==
     /\ UNCHANGED szvars
 
 Next ==
-    \/ ReadOk
-    \/ \E r \in WireReasons : WireRefusal(r)
-    \/ Reject
-    \/ \E r \in Reasons \cup {NONE} : CallerFail(r)
-    \/ ObjectEnter
-    \/ \E result \in BOOLEAN : ObjectExit(result)
+    /\ \/ ReadOk
+       \/ \E r \in WireReasons : WireRefusal(r)
+       \/ Reject
+       \/ \E r \in Reasons \cup {NONE} : CallerFail(r)
+       \/ ObjectEnter
+       \/ \E result \in BOOLEAN : ObjectExit(result)
+    /\ UNCHANGED uvars
 
 Spec == Init /\ [][Next]_vars
 
@@ -295,9 +316,9 @@ SizeNext ==
                ELSE /\ szRead' = szRead + n
                     /\ UNCHANGED <<szBytes, szBits, szRefused, szReason>>
 
-SizeInitFull == SizeInit /\ LatchIdle
-SizeInitOldFull == SizeInitOld /\ LatchIdle
-SizeNextFull == SizeNext /\ UNCHANGED <<refused, reason, depth, last>>
+SizeInitFull == SizeInit /\ LatchIdle /\ UtfIdle
+SizeInitOldFull == SizeInitOld /\ LatchIdle /\ UtfIdle
+SizeNextFull == SizeNext /\ UNCHANGED <<refused, reason, depth, last>> /\ UNCHANGED uvars
 
 SizeSpec == SizeInitFull /\ [][SizeNextFull]_vars
 SizeSpecOld == SizeInitOldFull /\ [][SizeNextFull]_vars
@@ -318,4 +339,68 @@ CursorRoom ==
 
 \* once the size check has refused, a later request does not relabel the reason
 ReasonStays == [][szRefused => szReason' = szReason]_vars
+
+-----------------------------------------------------------------------------
+\* The UTF length checks, on the same signed machine of Width bits above.
+\* uI is an index into an input of uLen bytes, or an output length in a
+\* buffer of uCap units; one step converts a sequence of uNeed units. The
+\* values are bounded near the top of the machine, where the old sums wrap.
+
+UtfLens == {0, 1, 3, MaxInt - 1, MaxInt}
+UtfCaps == {2, 3, MaxInt - 1, MaxInt}
+UtfPoss == {0, 1, MaxInt - 3, MaxInt - 2, MaxInt - 1, MaxInt}
+
+\* the new order: both operands are checked before either subtraction, and
+\* the width and the needed count are compared with what remains. A step
+\* that does not fit refuses and moves neither index.
+UtfInit ==
+    \E len \in UtfLens, cap \in UtfCaps, i \in UtfPoss, out \in UtfPoss, need \in 1 .. 4 :
+        /\ i <= len
+        /\ out <= cap
+        /\ uLen = len
+        /\ uCap = cap
+        /\ uNeed = need
+        /\ IF need > len - i \/ need + 1 > cap - out
+           THEN /\ uI = i
+                /\ uOut = out
+                /\ uRefused = TRUE
+           ELSE /\ uI = i + need
+                /\ uOut = out + need
+                /\ uRefused = FALSE
+
+\* the old order: the sums are formed first, wrapping at the machine width,
+\* and compared afterwards. A wrapped sum reads as small or negative, so a
+\* step that does not fit is accepted and its indices wrap with it.
+UtfInitOld ==
+    \E len \in UtfLens, cap \in UtfCaps, i \in UtfPoss, out \in UtfPoss, need \in 1 .. 4 :
+        /\ i <= len
+        /\ out <= cap
+        /\ uLen = len
+        /\ uCap = cap
+        /\ uNeed = need
+        /\ IF Wrap(i + need - 1) >= len \/ Wrap(out + need + 1) > cap
+           THEN /\ uI = i
+                /\ uOut = out
+                /\ uRefused = TRUE
+           ELSE /\ uI = Wrap(i + need)
+                /\ uOut = Wrap(out + need)
+                /\ uRefused = FALSE
+
+UtfInitFull == UtfInit /\ LatchIdle /\ SizeIdle
+UtfInitOldFull == UtfInitOld /\ LatchIdle /\ SizeIdle
+
+UtfSpec == UtfInitFull /\ [][UNCHANGED vars]_vars
+UtfSpecOld == UtfInitOldFull /\ [][UNCHANGED vars]_vars
+
+\* an accepted step stays inside the input and the capacity, and both
+\* subtractions the check performs stay inside the machine
+UtfBounds ==
+    /\ uNeed \in 1 .. 4
+    /\ uLen \in 0 .. MaxInt
+    /\ uCap \in 0 .. MaxInt
+    /\ ~uRefused =>
+           /\ uI \in 0 .. uLen
+           /\ uOut \in 0 .. uCap
+           /\ (uLen - uI) \in MinInt .. MaxInt
+           /\ (uCap - uOut) \in MinInt .. MaxInt
 =============================================================================

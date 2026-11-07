@@ -35,6 +35,7 @@
 #include "serialize.h"
 #include "serialize_utf.h"
 
+#include <limits.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -274,6 +275,94 @@ static void test_decode_leaves_output_on_refusal()
     }
 }
 
+static void test_capacity_bounds()
+{
+    struct Scalar { uint32_t code; const char * utf8; int utf8_bytes; uint16_t utf16[2]; int utf16_count; };
+    const Scalar scalars[] =
+    {
+        { 0x41,    "A",                1, { 0x0041, 0 },        1 },
+        { 0x00E9,  "\xC3\xA9",         2, { 0x00E9, 0 },        1 },
+        { 0x56F4,  "\xE5\x9B\xB4",     3, { 0x56F4, 0 },        1 },
+        { 0x1F600, "\xF0\x9F\x98\x80", 4, { 0xD83D, 0xDE00 },   2 },
+    };
+    for ( int s = 0; s < (int) ( sizeof( scalars ) / sizeof( scalars[0] ) ); s++ )
+    {
+        const Scalar & scalar = scalars[s];
+        const uint32_t codes[1] = { scalar.code };
+
+        char exact8[8];
+        memset( exact8, 0xFF, sizeof( exact8 ) );
+        check( serialize_utf32_to_utf8( codes, 1, exact8, scalar.utf8_bytes + 1 ) == scalar.utf8_bytes && strcmp( exact8, scalar.utf8 ) == 0, "utf32 to utf8 exact fit" );
+        char short8[8];
+        memset( short8, 0xFF, sizeof( short8 ) );
+        check( serialize_utf32_to_utf8( codes, 1, short8, scalar.utf8_bytes ) == -1 && short8[0] == '\0', "utf32 to utf8 one short" );
+
+        memset( exact8, 0xFF, sizeof( exact8 ) );
+        check( serialize_utf16_to_utf8( scalar.utf16, scalar.utf16_count, exact8, scalar.utf8_bytes + 1 ) == scalar.utf8_bytes && strcmp( exact8, scalar.utf8 ) == 0, "utf16 to utf8 exact fit" );
+        memset( short8, 0xFF, sizeof( short8 ) );
+        check( serialize_utf16_to_utf8( scalar.utf16, scalar.utf16_count, short8, scalar.utf8_bytes ) == -1 && short8[0] == '\0', "utf16 to utf8 one short" );
+
+        uint32_t exact32[2];
+        check( serialize_utf8_to_utf32( scalar.utf8, scalar.utf8_bytes, exact32, 2 ) == 1 && exact32[0] == scalar.code && exact32[1] == 0, "utf8 to utf32 exact fit" );
+        uint32_t short32[1];
+        check( serialize_utf8_to_utf32( scalar.utf8, scalar.utf8_bytes, short32, 1 ) == -1 && short32[0] == 0, "utf8 to utf32 one short" );
+
+        uint16_t exact16[3];
+        check( serialize_utf8_to_utf16( scalar.utf8, scalar.utf8_bytes, exact16, scalar.utf16_count + 1 ) == scalar.utf16_count && memcmp( exact16, scalar.utf16, (size_t) scalar.utf16_count * sizeof( uint16_t ) ) == 0 && exact16[scalar.utf16_count] == 0, "utf8 to utf16 exact fit" );
+        uint16_t short16[2];
+        check( serialize_utf8_to_utf16( scalar.utf8, scalar.utf8_bytes, short16, scalar.utf16_count ) == -1 && short16[0] == 0, "utf8 to utf16 one short" );
+
+        const int wide_count = ( sizeof( wchar_t ) >= 4 ) ? 1 : scalar.utf16_count;
+        wchar_t exactw[3];
+        check( serialize_utf8_to_wide( scalar.utf8, exactw, wide_count + 1 ) == wide_count && exactw[wide_count] == 0, "utf8 to wide exact fit" );
+        wchar_t shortw[2];
+        check( serialize_utf8_to_wide( scalar.utf8, shortw, wide_count ) == -1 && shortw[0] == 0, "utf8 to wide one short" );
+
+        wchar_t wide_in[3];
+        if ( sizeof( wchar_t ) >= 4 )
+            wide_in[0] = (wchar_t) scalar.code;
+        else
+            for ( int k = 0; k < scalar.utf16_count; k++ )
+                wide_in[k] = (wchar_t) scalar.utf16[k];
+        wide_in[wide_count] = 0;
+        memset( exact8, 0xFF, sizeof( exact8 ) );
+        check( serialize_wide_to_utf8( wide_in, exact8, scalar.utf8_bytes + 1 ) == scalar.utf8_bytes && strcmp( exact8, scalar.utf8 ) == 0, "wide to utf8 exact fit" );
+        memset( short8, 0xFF, sizeof( short8 ) );
+        check( serialize_wide_to_utf8( wide_in, short8, scalar.utf8_bytes ) == -1 && short8[0] == '\0', "wide to utf8 one short" );
+
+        char appended[8];
+        memset( appended, 0, sizeof( appended ) );
+        check( serialize_utf8_append( appended, 0, scalar.utf8_bytes + 1, scalar.code ) == scalar.utf8_bytes && memcmp( appended, scalar.utf8, (size_t) scalar.utf8_bytes ) == 0, "append exact fit" );
+        check( serialize_utf8_append( appended, 0, scalar.utf8_bytes, scalar.code ) == -1, "append one short" );
+
+        uint8_t buffer[128];
+        memset( buffer, 0, sizeof( buffer ) );
+        serialize::WriteStream writeStream( buffer, 64 );
+        char sent[64];
+        memset( sent, 0, sizeof( sent ) );
+        memcpy( sent, scalar.utf8, (size_t) scalar.utf8_bytes );
+        check( serialize::serialize_string_internal( writeStream, sent, 64 ), "string write for capacity read" );
+        writeStream.Flush();
+        const int64_t written = writeStream.GetBytesProcessed();
+        serialize::ReadStream exactStream( buffer, written );
+        char received[8];
+        memset( received, 0, sizeof( received ) );
+        check( serialize::serialize_string_internal( exactStream, received, scalar.utf8_bytes + 1 ) && strcmp( received, scalar.utf8 ) == 0, "string read exact fit" );
+        serialize::ReadStream shortStream( buffer, written );
+        char received_short[8];
+        memset( received_short, 0, sizeof( received_short ) );
+        const int short_size = ( scalar.utf8_bytes == 1 ) ? 0 : scalar.utf8_bytes;
+        check( serialize::serialize_string_internal( shortStream, received_short, short_size ) == false, "string read one short" );
+    }
+
+    char guard[8] = { 0 };
+    check( serialize_utf8_append( guard, INT_MAX - 2, INT_MAX, 0x1F600 ) == -1, "append length near INT_MAX refused" );
+    check( serialize_utf8_append( guard, INT_MAX - 1, INT_MAX, 0x41 ) == -1, "append one byte length near INT_MAX refused" );
+    check( serialize_utf8_append( guard, 5, 4, 0x41 ) == -1, "append length beyond capacity refused" );
+    check( serialize_utf8_append( guard, -1, 8, 0x41 ) == -1, "append negative length refused" );
+    check( guard[0] == 0, "append refusals write nothing" );
+}
+
 int main()
 {
     printf( "\nserialize_utf.h\n\n" );
@@ -282,6 +371,7 @@ int main()
     test_lone_surrogates_refused();
     test_limits();
     test_decode_leaves_output_on_refusal();
+    test_capacity_bounds();
 
     if ( failures > 0 )
     {

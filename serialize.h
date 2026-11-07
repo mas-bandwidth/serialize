@@ -3487,7 +3487,7 @@ namespace serialize
             {
                 if ( lead > 0xF4 )                                                              // above U+10FFFF
                     return false;
-                if ( i + 3 >= length )
+                if ( length - i < 4 )
                     return false;
                 const uint32_t byte1 = (uint8_t) string[i+1];
                 const uint32_t byte2 = (uint8_t) string[i+2];
