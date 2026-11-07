@@ -3510,11 +3510,13 @@ namespace serialize
             {
                 if ( string[i] == '\0' )
                 {
+                    string[0] = '\0';
                     return serialize_fail( stream, REFUSAL_EMBEDDED_NUL );
                 }
             }
             if ( !serialize_string_is_valid_utf8( string, length ) )
             {
+                string[0] = '\0';
                 return serialize_fail( stream, REFUSAL_INVALID_UTF8 );
             }
             string[length] = '\0';
@@ -6011,6 +6013,60 @@ inline void test_string_read_validation()
         serialize::ReadStream readStream( buffer, writeStream.GetBytesProcessed() );
         serialize_check( serialize::serialize_string_internal( readStream, read_back, BufferSize ) );
         serialize_check( strcmp( read_back, text ) == 0 );
+    }
+
+    // a refused string leaves the destination holding an empty string: the payload
+    // was copied before validation, so refusal must write a NUL at index 0
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        serialize::WriteStream writeStream( buffer, sizeof( buffer ) );
+        int32_t length = 3;
+        serialize_check( writeStream.SerializeInteger( length, 0, BufferSize - 1 ) );
+        const uint8_t payload[3] = { 0xFF, 0xFE, 0xFF };
+        serialize_check( writeStream.SerializeBytes( payload, 3 ) );
+        writeStream.Flush();
+
+        char read_back[BufferSize];
+        memset( read_back, 0x7F, sizeof( read_back ) );
+        serialize::ReadStream readStream( buffer, writeStream.GetBytesProcessed() );
+        serialize_check( serialize::serialize_string_internal( readStream, read_back, BufferSize ) == false );
+        serialize_check( readStream.GetRefusal() == serialize::REFUSAL_INVALID_UTF8 );
+        serialize_check( read_back[0] == '\0' );
+    }
+
+    // the same empty-string guarantee on the interior-NUL refusal
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        serialize::WriteStream writeStream( buffer, sizeof( buffer ) );
+        int32_t length = 3;
+        serialize_check( writeStream.SerializeInteger( length, 0, BufferSize - 1 ) );
+        const uint8_t payload[3] = { 'a', 0x00, 'b' };
+        serialize_check( writeStream.SerializeBytes( payload, 3 ) );
+        writeStream.Flush();
+
+        char read_back[BufferSize];
+        memset( read_back, 0x7F, sizeof( read_back ) );
+        serialize::ReadStream readStream( buffer, writeStream.GetBytesProcessed() );
+        serialize_check( serialize::serialize_string_internal( readStream, read_back, BufferSize ) == false );
+        serialize_check( readStream.GetRefusal() == serialize::REFUSAL_EMBEDDED_NUL );
+        serialize_check( read_back[0] == '\0' );
+    }
+
+    // a stream that already failed before the call writes nothing at all
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        serialize::ReadStream readStream( buffer, sizeof( buffer ) );
+        serialize_check( readStream.Fail( serialize::REFUSAL_PAST_END ) == false );
+        char read_back[BufferSize];
+        memset( read_back, 0x7F, sizeof( read_back ) );
+        char expected[BufferSize];
+        memset( expected, 0x7F, sizeof( expected ) );
+        serialize_check( serialize::serialize_string_internal( readStream, read_back, BufferSize ) == false );
+        serialize_check( readStream.GetRefusal() == serialize::REFUSAL_PAST_END );
+        serialize_check( memcmp( read_back, expected, sizeof( read_back ) ) == 0 );
     }
 }
 
