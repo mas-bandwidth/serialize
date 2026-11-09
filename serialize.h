@@ -1105,10 +1105,51 @@ namespace serialize
         return decoded_destination_sign_matches( decoded_value, candidate, typename DecodedDestinationTag<T>::type() );
     }
 
-    template <typename T, typename W> inline bool decoded_fits_destination( W decoded_value, const T & destination )
+    // Before C++11 there is no decltype, so the destination type is recovered from the lvalue without
+    // evaluating it: the argument of a function call inside sizeof is unevaluated, so this never reads the
+    // not-yet-assigned destination (and never binds it to a const reference, which -Wuninitialized-const-reference
+    // reports). Each supported destination type maps to a distinct array size, and that size maps back to the type.
+
+    template <typename T> struct DecodedDestinationIndex;
+
+    template <> struct DecodedDestinationIndex<bool>               { enum { value = 1 }; };
+    template <> struct DecodedDestinationIndex<char>               { enum { value = 2 }; };
+    template <> struct DecodedDestinationIndex<signed char>        { enum { value = 3 }; };
+    template <> struct DecodedDestinationIndex<unsigned char>      { enum { value = 4 }; };
+    template <> struct DecodedDestinationIndex<short>              { enum { value = 5 }; };
+    template <> struct DecodedDestinationIndex<unsigned short>     { enum { value = 6 }; };
+    template <> struct DecodedDestinationIndex<int>                { enum { value = 7 }; };
+    template <> struct DecodedDestinationIndex<unsigned int>       { enum { value = 8 }; };
+    template <> struct DecodedDestinationIndex<long>               { enum { value = 9 }; };
+    template <> struct DecodedDestinationIndex<unsigned long>      { enum { value = 10 }; };
+    template <> struct DecodedDestinationIndex<long long>          { enum { value = 11 }; };
+    template <> struct DecodedDestinationIndex<unsigned long long> { enum { value = 12 }; };
+    template <> struct DecodedDestinationIndex<int128_t>           { enum { value = 13 }; };
+    template <> struct DecodedDestinationIndex<uint128_t>          { enum { value = 14 }; };
+
+    template <int N> struct DecodedDestinationFromIndex;
+
+    template <> struct DecodedDestinationFromIndex<1>  { typedef bool type; };
+    template <> struct DecodedDestinationFromIndex<2>  { typedef char type; };
+    template <> struct DecodedDestinationFromIndex<3>  { typedef signed char type; };
+    template <> struct DecodedDestinationFromIndex<4>  { typedef unsigned char type; };
+    template <> struct DecodedDestinationFromIndex<5>  { typedef short type; };
+    template <> struct DecodedDestinationFromIndex<6>  { typedef unsigned short type; };
+    template <> struct DecodedDestinationFromIndex<7>  { typedef int type; };
+    template <> struct DecodedDestinationFromIndex<8>  { typedef unsigned int type; };
+    template <> struct DecodedDestinationFromIndex<9>  { typedef long type; };
+    template <> struct DecodedDestinationFromIndex<10> { typedef unsigned long type; };
+    template <> struct DecodedDestinationFromIndex<11> { typedef long long type; };
+    template <> struct DecodedDestinationFromIndex<12> { typedef unsigned long long type; };
+    template <> struct DecodedDestinationFromIndex<13> { typedef int128_t type; };
+    template <> struct DecodedDestinationFromIndex<14> { typedef uint128_t type; };
+
+    template <typename T> char (&decoded_destination_probe( T ))[ DecodedDestinationIndex<T>::value ];
+
+    template <int N, typename W> inline bool decoded_fits_destination_indexed( W decoded_value )
     {
-        (void) destination;
-        return decoded_fits_destination_typed( decoded_value, (const T*) 0 );
+        typedef typename DecodedDestinationFromIndex<N>::type destination_type;
+        return decoded_fits_destination_typed( decoded_value, (const destination_type*) 0 );
     }
 
     /**
@@ -2782,7 +2823,7 @@ namespace serialize
 #if ( defined( __cplusplus ) && __cplusplus >= 201103L ) || defined( _MSC_VER )
     #define serialize_decoded_fits_destination( decoded_value, value ) serialize::decoded_fits_destination_typed( decoded_value, (typename serialize::RemoveReference<decltype( value )>::type*) 0 )
 #else
-    #define serialize_decoded_fits_destination( decoded_value, value ) serialize::decoded_fits_destination( decoded_value, value )
+    #define serialize_decoded_fits_destination( decoded_value, value ) serialize::decoded_fits_destination_indexed< (int) sizeof( serialize::decoded_destination_probe( value ) ) >( decoded_value )
 #endif
 
     /**
@@ -6890,13 +6931,13 @@ template <typename Stream, typename T> inline bool test_run_read_int64_dest( Str
 
 template <typename Stream, typename T> inline bool test_run_serialize_int128_dest( Stream & stream, T & value )
 {
-    serialize_int128( stream, value, serialize::int128_t( 0 ), serialize::int128_t( 1000 ) );
+    serialize_int128( stream, value, serialize::int128_t( 0 ), serialize::int128_t( 1 ) << 63 );
     return true;
 }
 
 template <typename Stream, typename T> inline bool test_run_read_int128_dest( Stream & stream, T & value )
 {
-    read_int128( stream, value, serialize::int128_t( 0 ), serialize::int128_t( 1000 ) );
+    read_int128( stream, value, serialize::int128_t( 0 ), serialize::int128_t( 1 ) << 63 );
     return true;
 }
 
@@ -7319,17 +7360,17 @@ inline void test_ranged_read_destination_fit()
         uint8_t buffer[32 + 8] = { 0 };
         {
             serialize::WriteStream writeStream( buffer, 32 );
-            serialize::int128_t wide = serialize::int128_t( 300 );
-            writeStream.SerializeInteger128( wide, serialize::int128_t( 0 ), serialize::int128_t( 1000 ) );
+            serialize::int128_t wide = serialize::int128_t( 1 ) << 63;
+            writeStream.SerializeInteger128( wide, serialize::int128_t( 0 ), serialize::int128_t( 1 ) << 63 );
             writeStream.Flush();
         }
         serialize::ReadStream streamA( buffer, 32 );
-        uint8_t valueA = 77;
+        int64_t valueA = 77;
         serialize_check( test_run_serialize_int128_dest( streamA, valueA ) == false );
         serialize_check( valueA == 77 );
         serialize_check( streamA.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
         serialize::ReadStream streamB( buffer, 32 );
-        uint8_t valueB = 77;
+        int64_t valueB = 77;
         serialize_check( test_run_read_int128_dest( streamB, valueB ) == false );
         serialize_check( valueB == 77 );
         serialize_check( streamB.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
