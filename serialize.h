@@ -4326,7 +4326,7 @@ namespace serialize
             serialize_assert( (bits) > 0 );                                                 \
             serialize_assert( (bits) <= 64 );                                               \
             serialize_assert( serialize::value_fits_in_bits( value, bits ) );               \
-            uint64_t uint64_value = value;                                                  \
+            uint64_t uint64_value = uint64_t( value );                                      \
             if ( (bits) <= 32 )                                                             \
             {                                                                               \
                 uint32_t uint32_value = (uint32_t) uint64_value;                            \
@@ -4386,7 +4386,7 @@ namespace serialize
     #define write_uint128( stream, value )                                                  \
         do                                                                                  \
         {                                                                                   \
-            serialize::uint128_t uint128_value = ( value );                                 \
+            serialize::uint128_t uint128_value = serialize::uint128_t( value );             \
             serialize::serialize_uint128_internal( stream, uint128_value );                 \
         } while (0)
 
@@ -4806,7 +4806,7 @@ namespace serialize
             }                                                                               \
             if ( Stream::IsReading )                                                        \
             {                                                                               \
-                value = uint64_value;                                                       \
+                value = serialize::decoded( uint64_value );                                 \
             }                                                                               \
         } while (0)
 
