@@ -3642,17 +3642,17 @@ namespace serialize
 
     /**
         Accept a reconstructed int_relative value, or refuse the read.
-        Every tier reconstructs current in a width that cannot wrap and lands here, where the result is checked against the domain and against previous. current is written only once both checks pass, so a refused read leaves the caller's value exactly as it was, and the refusal fails the stream.
+        Every tier reconstructs current in a width that cannot wrap and lands here, where the result is checked against the domain, against previous, and against the destination type. The destination check catches a T narrower than the reconstructed value, which would otherwise be accepted and then narrow to a value at or below previous. current is written only once all checks pass, so a refused read leaves the caller's value exactly as it was, and the refusal fails the stream.
         @param stream The stream the value was read from.
         @param previous The previous value, in the domain.
         @param current The destination. Written only on success.
         @param reconstructed The reconstructed current, computed in a width wide enough that it cannot wrap.
-        @returns True if the reconstruction is in the domain and strictly greater than previous, false otherwise.
+        @returns True if the reconstruction is in the domain, strictly greater than previous, and representable in T, false otherwise.
      */
 
     template <typename Stream, typename T> SERIALIZE_ALWAYS_INLINE bool serialize_int_relative_accept( Stream & stream, T previous, T & current, int64_t reconstructed )
     {
-        if ( reconstructed < 0 || reconstructed > serialize_int_relative_max || reconstructed <= int64_t( previous ) )
+        if ( reconstructed < 0 || reconstructed > serialize_int_relative_max || reconstructed <= int64_t( previous ) || int64_t( T( reconstructed ) ) != reconstructed )
         {
             return serialize_fail( stream, REFUSAL_VALUE_OUT_OF_RANGE );
         }
@@ -6099,6 +6099,26 @@ inline void test_int_relative_validation()
         int current = 0;
         serialize_check( serialize::serialize_int_relative_internal( readStream, previous, current ) == false );
         serialize_check( current == 0 );        // a refused read writes nothing to the destination
+    }
+
+    // a destination narrower than the reconstruction must refuse rather than wrap: the absolute
+    // tier carries a value inside the domain and above previous that does not fit the destination
+    {
+        uint8_t buffer[8 + 8] = { 0 };          // + 8: read buffer allocations extend 8 bytes past the data
+
+        serialize::WriteStream writeStream( buffer, 8 );
+        uint32_t six_false_bools = 0;
+        writeStream.SerializeBits( six_false_bools, 6 );
+        uint32_t wide_current = 135000;
+        writeStream.SerializeBits( wide_current, 32 );
+        writeStream.Flush();
+
+        serialize::ReadStream readStream( buffer, 8 );
+        uint16_t previous = 65000;
+        uint16_t current = 65000;
+        serialize_check( serialize::serialize_int_relative_internal( readStream, previous, current ) == false );
+        serialize_check( readStream.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
+        serialize_check( current == 65000 );    // a refused read writes nothing to the destination
     }
 }
 
