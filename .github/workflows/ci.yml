@@ -136,7 +136,7 @@ jobs:
           ./conformance_cxx03_no_int128 conformance/*.txt
 
   # serialize.h is clean under the flags a strict consumer builds with: -Wconversion -Wsign-conversion
-  # -Wcast-qual -Wundef, as errors, on both compilers. The serialize macros expand at the caller, so the
+  # -Wcast-qual -Wundef -Wshadow, as errors, on both compilers. The serialize macros expand at the caller, so the
   # check is a consumer translation unit (warnings.cpp) that touches every macro with destinations of every
   # width and signedness, plus the embedded tests (test.cpp), which are part of the header. Every cast that
   # keeps it clean is the conversion the code already did, spelled out: the machine code is unchanged.
@@ -150,12 +150,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7
 
-      - name: The consumer translation unit and the embedded tests, four flags as errors
+      - name: The consumer translation unit and the embedded tests, five flags as errors
         run: |
           for std in c++11 c++17 c++20; do
             for mode in "-DSERIALIZE_DEBUG" "-DSERIALIZE_RELEASE -O2"; do
-              ${{ matrix.compiler }} -std=$std -I. -Wall -Wextra -Wconversion -Wsign-conversion -Wcast-qual -Wundef -Werror -ffp-contract=off -fno-rtti $mode -c warnings.cpp -o /dev/null
-              ${{ matrix.compiler }} -std=$std -I. -Wall -Wextra -Wconversion -Wsign-conversion -Wcast-qual -Wundef -Werror -ffp-contract=off -fno-rtti -DSERIALIZE_ENABLE_TESTS=1 $mode -c test.cpp -o /dev/null
+              ${{ matrix.compiler }} -std=$std -I. -Wall -Wextra -Wconversion -Wsign-conversion -Wcast-qual -Wundef -Wshadow -Werror -ffp-contract=off -fno-rtti $mode -c warnings.cpp -o /dev/null
+              ${{ matrix.compiler }} -std=$std -I. -Wall -Wextra -Wconversion -Wsign-conversion -Wcast-qual -Wundef -Wshadow -Werror -ffp-contract=off -fno-rtti -DSERIALIZE_ENABLE_TESTS=1 $mode -c test.cpp -o /dev/null
             done
           done
 
@@ -167,7 +167,7 @@ jobs:
           mkdir control && cp serialize.h warnings.cpp control/
           sed -i 's/normalizedValue \* (float) max_integer_value;/normalizedValue * max_integer_value;/' control/serialize.h
           cmp -s serialize.h control/serialize.h && { echo "::error::the control sabotaged nothing"; exit 1; }
-          if ${{ matrix.compiler }} -std=c++17 -Icontrol -Wall -Wextra -Wconversion -Wsign-conversion -Wcast-qual -Wundef -Werror -DSERIALIZE_DEBUG -c control/warnings.cpp -o /dev/null; then
+          if ${{ matrix.compiler }} -std=c++17 -Icontrol -Wall -Wextra -Wconversion -Wsign-conversion -Wcast-qual -Wundef -Wshadow -Werror -DSERIALIZE_DEBUG -c control/warnings.cpp -o /dev/null; then
             echo "::error::the strict warnings job did not notice a removed cast"
             exit 1
           fi

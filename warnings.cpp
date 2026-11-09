@@ -24,8 +24,8 @@
 
 /*
     A consumer translation unit, compiled in CI with -Wall -Wextra -Wconversion -Wsign-conversion
-    -Wcast-qual -Wundef as errors (the `strict warnings` job), so serialize.h stays clean under the flags a
-    strict consumer builds with. It is never run. It touches every serialize macro, read, write and measure,
+    -Wcast-qual -Wundef -Wshadow as errors (the `strict warnings` job), so serialize.h stays clean under the
+    flags a strict consumer builds with. It is never run. It touches every serialize macro, read, write and measure,
     with destination variables of every width and signedness, because the macros expand at the caller and
     a conversion inside one is reported at the caller's line.
 
