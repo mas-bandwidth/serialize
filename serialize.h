@@ -1069,6 +1069,48 @@ namespace serialize
         return DecodedValue<U>( value );
     }
 
+    template <typename T> struct RemoveReference { typedef T type; };
+    template <typename T> struct RemoveReference<T&> { typedef T type; };
+
+    struct DecodedSignedDestination {};
+    struct DecodedUnsignedDestination {};
+    template <typename T> struct DecodedDestinationTag { typedef DecodedSignedDestination type; };
+    template <> struct DecodedDestinationTag<unsigned char> { typedef DecodedUnsignedDestination type; };
+    template <> struct DecodedDestinationTag<unsigned short> { typedef DecodedUnsignedDestination type; };
+    template <> struct DecodedDestinationTag<unsigned int> { typedef DecodedUnsignedDestination type; };
+    template <> struct DecodedDestinationTag<unsigned long> { typedef DecodedUnsignedDestination type; };
+    template <> struct DecodedDestinationTag<unsigned long long> { typedef DecodedUnsignedDestination type; };
+    template <> struct DecodedDestinationTag<bool> { typedef DecodedUnsignedDestination type; };
+    template <> struct DecodedDestinationTag<uint128_t> { typedef DecodedUnsignedDestination type; };
+
+    template <typename T, typename W> inline bool decoded_destination_sign_matches( W decoded_value, T candidate, DecodedSignedDestination )
+    {
+        return ( decoded_value < W(0) ) == ( candidate < T(0) );
+    }
+
+    template <typename T, typename W> inline bool decoded_destination_sign_matches( W decoded_value, T candidate, DecodedUnsignedDestination )
+    {
+        (void) candidate;
+        return !( decoded_value < W(0) );
+    }
+
+    template <typename T, typename W> inline bool decoded_fits_destination_typed( W decoded_value, const T * destination_tag )
+    {
+        (void) destination_tag;
+        const T candidate = (T) decoded_value;
+        if ( W( candidate ) != decoded_value )
+        {
+            return false;
+        }
+        return decoded_destination_sign_matches( decoded_value, candidate, typename DecodedDestinationTag<T>::type() );
+    }
+
+    template <typename T, typename W> inline bool decoded_fits_destination( W decoded_value, const T & destination )
+    {
+        (void) destination;
+        return decoded_fits_destination_typed( decoded_value, (const T*) 0 );
+    }
+
     /**
         Does a value fit in a raw bit field of this width?
         This is the write side range check for serialize_bits and write_bits, and it runs on the caller's value before the macro narrows it to the group width. An assertion placed after the narrowing sees a value already truncated to the field, so it cannot report the out of range input it exists to diagnose: writing a 40 bit value in 8 bits arrives at BitWriter::WriteBits as the low 8 bits, in range by construction.
@@ -2737,6 +2779,12 @@ namespace serialize
         return StreamRefusal<Stream>::Latch( stream );
     }
 
+#if ( defined( __cplusplus ) && __cplusplus >= 201103L ) || defined( _MSC_VER )
+    #define serialize_decoded_fits_destination( decoded_value, value ) serialize::decoded_fits_destination_typed( decoded_value, (typename serialize::RemoveReference<decltype( value )>::type*) 0 )
+#else
+    #define serialize_decoded_fits_destination( decoded_value, value ) serialize::decoded_fits_destination( decoded_value, value )
+#endif
+
     /**
         Serialize integer value (read/write/measure).
         This is a helper macro to make writing unified serialize functions easier.
@@ -2745,7 +2793,7 @@ namespace serialize
         On read, a refused read leaves value exactly as the caller left it, and fails the stream: every later read on that stream fails too, until the stream is re-initialized.
         IMPORTANT: This macro must be called inside a templated serialize function with template \<typename Stream\>. The serialize method must have a bool return value.
         @param stream The stream object. May be a read, write or measure stream.
-        @param value The integer value to serialize in [min,max]. The destination must be wide enough to hold the range; a narrower one is caller error, debug asserted.
+        @param value The integer value to serialize in [min,max]. On read, a value that does not fit the destination is refused and the destination is left unchanged.
         @param min The minimum value.
         @param max The maximum value.
      */
@@ -2774,8 +2822,11 @@ namespace serialize
             }                                                           \
             if ( Stream::IsReading )                                    \
             {                                                           \
+                if ( !serialize_decoded_fits_destination( int32_value, value ) ) \
+                {                                                       \
+                    return serialize::serialize_fail( stream, serialize::REFUSAL_VALUE_OUT_OF_RANGE ); \
+                }                                                       \
                 value = serialize::decoded( int32_value );          \
-                serialize_assert( int64_t(value) == int32_value );      \
             }                                                           \
         } while (0)
 
@@ -2813,8 +2864,11 @@ namespace serialize
             }                                                           \
             if ( Stream::IsReading )                                    \
             {                                                           \
+                if ( !serialize_decoded_fits_destination( int64_value, value ) ) \
+                {                                                       \
+                    return serialize::serialize_fail( stream, serialize::REFUSAL_VALUE_OUT_OF_RANGE ); \
+                }                                                       \
                 value = serialize::decoded( int64_value );          \
-                serialize_assert( int64_t(value) == int64_value );      \
             }                                                           \
         } while (0)
 
@@ -2855,8 +2909,11 @@ namespace serialize
             }                                                                                       \
             if ( Stream::IsReading )                                                                \
             {                                                                                       \
+                if ( !serialize_decoded_fits_destination( int128_value, value ) )                  \
+                {                                                                                   \
+                    return serialize::serialize_fail( stream, serialize::REFUSAL_VALUE_OUT_OF_RANGE ); \
+                }                                                                                   \
                 value = serialize::decoded( int128_value );                                     \
-                serialize_assert( serialize::int128_t(value) == int128_value );                     \
             }                                                                                       \
         } while (0)
 
@@ -2895,6 +2952,10 @@ namespace serialize
                 }                                                       \
                 if ( Stream::IsReading )                                \
                 {                                                       \
+                    if ( !serialize_decoded_fits_destination( uint32_value, value ) ) \
+                    {                                                   \
+                        return serialize::serialize_fail( stream, serialize::REFUSAL_VALUE_OUT_OF_RANGE ); \
+                    }                                                   \
                     value = serialize::decoded( uint32_value );     \
                 }                                                       \
             }                                                           \
@@ -2916,7 +2977,12 @@ namespace serialize
                 }                                                       \
                 if ( Stream::IsReading )                                \
                 {                                                       \
-                    value = serialize::decoded( ( uint64_t(hi) << 32 ) | lo ); \
+                    const uint64_t ranged_decoded_value = ( uint64_t(hi) << 32 ) | lo; \
+                    if ( !serialize_decoded_fits_destination( ranged_decoded_value, value ) ) \
+                    {                                                   \
+                        return serialize::serialize_fail( stream, serialize::REFUSAL_VALUE_OUT_OF_RANGE ); \
+                    }                                                   \
+                    value = serialize::decoded( ranged_decoded_value ); \
                 }                                                       \
             }                                                           \
         } while (0)
@@ -4188,7 +4254,11 @@ namespace serialize
                 {                                                                           \
                     return false;                                                           \
                 }                                                                           \
-                value = serialize::decoded( uint32_value );                             \
+                if ( !serialize_decoded_fits_destination( uint32_value, value ) )          \
+                {                                                                           \
+                    return serialize::serialize_fail( stream, serialize::REFUSAL_VALUE_OUT_OF_RANGE ); \
+                }                                                                           \
+                value = serialize::decoded( uint32_value );                                 \
             }                                                                               \
             else                                                                            \
             {                                                                               \
@@ -4202,7 +4272,14 @@ namespace serialize
                 {                                                                           \
                     return false;                                                           \
                 }                                                                           \
-                value = serialize::decoded( ( uint64_t(hi) << 32 ) | lo );              \
+                {                                                                           \
+                    const uint64_t ranged_decoded_value = ( uint64_t(hi) << 32 ) | lo;      \
+                    if ( !serialize_decoded_fits_destination( ranged_decoded_value, value ) ) \
+                    {                                                                       \
+                        return serialize::serialize_fail( stream, serialize::REFUSAL_VALUE_OUT_OF_RANGE ); \
+                    }                                                                       \
+                    value = serialize::decoded( ranged_decoded_value );                     \
+                }                                                                           \
             }                                                                               \
         } while (0)
 
@@ -4219,8 +4296,11 @@ namespace serialize
             {                                                                               \
                 return false;                                                               \
             }                                                                               \
-            value = serialize::decoded( int32_value );                                  \
-            serialize_assert( int64_t(value) == int64_t(int32_value) );                     \
+            if ( !serialize_decoded_fits_destination( int32_value, value ) )               \
+            {                                                                               \
+                return serialize::serialize_fail( stream, serialize::REFUSAL_VALUE_OUT_OF_RANGE ); \
+            }                                                                               \
+            value = serialize::decoded( int32_value );                                      \
         } while (0)
 
     #define read_int64( stream, value, min, max )                                           \
@@ -4236,8 +4316,11 @@ namespace serialize
             {                                                                               \
                 return false;                                                               \
             }                                                                               \
-            value = serialize::decoded( int64_value );                                  \
-            serialize_assert( int64_t(value) == int64_value );                              \
+            if ( !serialize_decoded_fits_destination( int64_value, value ) )               \
+            {                                                                               \
+                return serialize::serialize_fail( stream, serialize::REFUSAL_VALUE_OUT_OF_RANGE ); \
+            }                                                                               \
+            value = serialize::decoded( int64_value );                                      \
         } while (0)
 
     #define read_int128( stream, value, min, max )                                          \
@@ -4253,8 +4336,11 @@ namespace serialize
             {                                                                               \
                 return false;                                                               \
             }                                                                               \
-            value = serialize::decoded( int128_value );                                 \
-            serialize_assert( serialize::int128_t(value) == int128_value );                 \
+            if ( !serialize_decoded_fits_destination( int128_value, value ) )              \
+            {                                                                               \
+                return serialize::serialize_fail( stream, serialize::REFUSAL_VALUE_OUT_OF_RANGE ); \
+            }                                                                               \
+            value = serialize::decoded( int128_value );                                     \
         } while (0)
 
     #define read_fixed( stream, value, integer_bits, fraction_bits, min, max )                                  \
@@ -6778,6 +6864,54 @@ template <typename Stream> inline bool test_run_bits( Stream & stream, uint64_t 
     return true;
 }
 
+template <typename Stream, typename T> inline bool test_run_serialize_int_dest( Stream & stream, T & value )
+{
+    serialize_int( stream, value, 0, 1000 );
+    return true;
+}
+
+template <typename Stream, typename T> inline bool test_run_read_int_dest( Stream & stream, T & value )
+{
+    read_int( stream, value, 0, 1000 );
+    return true;
+}
+
+template <typename Stream, typename T> inline bool test_run_serialize_int64_dest( Stream & stream, T & value )
+{
+    serialize_int64( stream, value, 0, 5000000000LL );
+    return true;
+}
+
+template <typename Stream, typename T> inline bool test_run_read_int64_dest( Stream & stream, T & value )
+{
+    read_int64( stream, value, 0, 5000000000LL );
+    return true;
+}
+
+template <typename Stream, typename T> inline bool test_run_serialize_int128_dest( Stream & stream, T & value )
+{
+    serialize_int128( stream, value, serialize::int128_t( 0 ), serialize::int128_t( 1000 ) );
+    return true;
+}
+
+template <typename Stream, typename T> inline bool test_run_read_int128_dest( Stream & stream, T & value )
+{
+    read_int128( stream, value, serialize::int128_t( 0 ), serialize::int128_t( 1000 ) );
+    return true;
+}
+
+template <typename Stream, typename T> inline bool test_run_serialize_bits_dest( Stream & stream, T & value, int bits )
+{
+    serialize_bits( stream, value, bits );
+    return true;
+}
+
+template <typename Stream, typename T> inline bool test_run_read_bits_dest( Stream & stream, T & value, int bits )
+{
+    read_bits( stream, value, bits );
+    return true;
+}
+
 template <typename Stream> inline bool test_run_end( Stream & stream )
 {
     serialize_end( stream );
@@ -7123,6 +7257,120 @@ inline void test_uniform_rules()
         serialize_check( serialize::serialize_write_has_room( writeStream, 8, 7 ) == false );   // 1 + 8 + 7 + 56
         serialize::MeasureStream measureStream;
         serialize_check( serialize::serialize_write_has_room( measureStream, 1000, 1000000 ) == true );
+    }
+}
+
+inline void test_ranged_read_destination_fit()
+{
+    // a value that fits the destination reads normally
+    {
+        uint8_t buffer[32 + 8] = { 0 };
+        {
+            serialize::WriteStream writeStream( buffer, 32 );
+            int32_t wide = 42;
+            writeStream.SerializeInteger( wide, 0, 1000 );
+            writeStream.Flush();
+        }
+        serialize::ReadStream readStream( buffer, 32 );
+        uint8_t value = 7;
+        serialize_check( test_run_serialize_int_dest( readStream, value ) == true );
+        serialize_check( value == 42 );
+        serialize_check( readStream.GetRefusal() == serialize::REFUSAL_NONE );
+    }
+    {
+        uint8_t buffer[32 + 8] = { 0 };
+        {
+            serialize::WriteStream writeStream( buffer, 32 );
+            int32_t wide = 300;
+            writeStream.SerializeInteger( wide, 0, 1000 );
+            writeStream.Flush();
+        }
+        serialize::ReadStream streamA( buffer, 32 );
+        uint8_t valueA = 77;
+        serialize_check( test_run_serialize_int_dest( streamA, valueA ) == false );
+        serialize_check( valueA == 77 );
+        serialize_check( streamA.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
+        serialize::ReadStream streamB( buffer, 32 );
+        uint8_t valueB = 77;
+        serialize_check( test_run_read_int_dest( streamB, valueB ) == false );
+        serialize_check( valueB == 77 );
+        serialize_check( streamB.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
+    }
+    {
+        uint8_t buffer[32 + 8] = { 0 };
+        {
+            serialize::WriteStream writeStream( buffer, 32 );
+            int64_t wide = 5000000000LL;
+            writeStream.SerializeInteger64( wide, 0, 5000000000LL );
+            writeStream.Flush();
+        }
+        serialize::ReadStream streamA( buffer, 32 );
+        uint32_t valueA = 77;
+        serialize_check( test_run_serialize_int64_dest( streamA, valueA ) == false );
+        serialize_check( valueA == 77 );
+        serialize_check( streamA.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
+        serialize::ReadStream streamB( buffer, 32 );
+        uint32_t valueB = 77;
+        serialize_check( test_run_read_int64_dest( streamB, valueB ) == false );
+        serialize_check( valueB == 77 );
+        serialize_check( streamB.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
+    }
+    {
+        uint8_t buffer[32 + 8] = { 0 };
+        {
+            serialize::WriteStream writeStream( buffer, 32 );
+            serialize::int128_t wide = serialize::int128_t( 300 );
+            writeStream.SerializeInteger128( wide, serialize::int128_t( 0 ), serialize::int128_t( 1000 ) );
+            writeStream.Flush();
+        }
+        serialize::ReadStream streamA( buffer, 32 );
+        uint8_t valueA = 77;
+        serialize_check( test_run_serialize_int128_dest( streamA, valueA ) == false );
+        serialize_check( valueA == 77 );
+        serialize_check( streamA.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
+        serialize::ReadStream streamB( buffer, 32 );
+        uint8_t valueB = 77;
+        serialize_check( test_run_read_int128_dest( streamB, valueB ) == false );
+        serialize_check( valueB == 77 );
+        serialize_check( streamB.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
+    }
+    {
+        uint8_t buffer[32 + 8] = { 0 };
+        {
+            serialize::WriteStream writeStream( buffer, 32 );
+            uint64_t wide = 300;
+            serialize_check( test_run_bits( writeStream, wide, 16 ) == true );
+            writeStream.Flush();
+        }
+        serialize::ReadStream streamA( buffer, 32 );
+        uint8_t valueA = 77;
+        serialize_check( test_run_serialize_bits_dest( streamA, valueA, 16 ) == false );
+        serialize_check( valueA == 77 );
+        serialize_check( streamA.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
+        serialize::ReadStream streamB( buffer, 32 );
+        uint8_t valueB = 77;
+        serialize_check( test_run_read_bits_dest( streamB, valueB, 16 ) == false );
+        serialize_check( valueB == 77 );
+        serialize_check( streamB.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
+    }
+    {
+        uint8_t buffer[32 + 8] = { 0 };
+        {
+            serialize::WriteStream writeStream( buffer, 32 );
+            uint64_t wide = uint64_t( 0x123456789ULL );
+            serialize_check( test_run_bits( writeStream, wide, 40 ) == true );
+            writeStream.Flush();
+        }
+        serialize::ReadStream streamA( buffer, 32 );
+        uint32_t valueA = 77;
+        serialize_check( test_run_serialize_bits_dest( streamA, valueA, 40 ) == false );
+        serialize_check( valueA == 77 );
+        serialize_check( streamA.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
+        serialize::ReadStream streamB( buffer, 32 );
+        uint32_t valueB = 77;
+        serialize_check( test_run_read_bits_dest( streamB, valueB, 40 ) == false );
+        serialize_check( valueB == 77 );
+        serialize_check( streamB.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
     }
 }
 
@@ -11615,6 +11863,7 @@ inline void serialize_test()
     SERIALIZE_RUN_TEST( test_read_stream_failure_is_terminal );
     SERIALIZE_RUN_TEST( test_serialize_reject );
     SERIALIZE_RUN_TEST( test_uniform_rules );
+    SERIALIZE_RUN_TEST( test_ranged_read_destination_fit );
     SERIALIZE_RUN_TEST( test_copy_string );
         SERIALIZE_RUN_TEST( test_read_stream_initialize_padded );
         SERIALIZE_RUN_TEST( test_read_stream_bits_remaining );
