@@ -1423,6 +1423,7 @@ namespace serialize
             serialize_assert( bits <= 32 );
             serialize_assert( m_bitsWritten + bits <= m_numBits );
             serialize_assert( uint64_t( value ) <= ( ( 1ULL << bits ) - 1 ) );
+            serialize_assert( m_scratchBits == m_bitsWritten % 64 );    // writing after FlushBits mid-stream is not supported (see WriteBytes)
 
             m_scratch |= uint64_t( value ) << m_scratchBits;
 
