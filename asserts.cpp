@@ -632,6 +632,44 @@ static void test_write_checks_room_for_the_whole_operation()
     }
 }
 
+// FlushBits ends a stream: it stores the partial scratch word and moves to the next one, so bits
+// written after it would land past the bytes the writer reports. WriteBits asserts the scratch
+// still tracks the cursor, as WriteBytes does
+
+static void test_write_bits_after_flush_asserts()
+{
+    printf( "  write bits after flush\n" );
+
+    uint8_t buffer[64];
+    memset( buffer, 0, sizeof( buffer ) );
+    {
+        reset();
+        serialize::BitWriter writer( buffer, 64 );
+        writer.WriteBits( 0xAB, 8 );
+        writer.FlushBits();
+        check( assert_fires == 0, "bit writer: a write and a flush do not trip the assertion" );
+        writer.WriteBits( 0xCD, 8 );
+        writer.FlushBits();
+        check( assert_fires > 0, "bit writer: a write after a flush trips the assertion" );
+        check( strcmp( assert_condition, "m_scratchBits == m_bitsWritten % 64" ) == 0, "and the first to fire is the scratch tracking check" );
+        printf( "      assertion: %s\n", assert_condition );
+    }
+    {
+        reset();
+        serialize::WriteStream stream( buffer, 64 );
+        uint32_t ab = 0xAB;
+        uint32_t cd = 0xCD;
+        stream.SerializeBits( ab, 8 );
+        stream.Flush();
+        check( assert_fires == 0, "write stream: a write and a flush do not trip the assertion" );
+        stream.SerializeBits( cd, 8 );
+        stream.Flush();
+        check( assert_fires > 0, "write stream: a write after a flush trips the assertion" );
+        check( strcmp( assert_condition, "m_scratchBits == m_bitsWritten % 64" ) == 0, "and the first to fire is the scratch tracking check" );
+        printf( "      assertion: %s\n", assert_condition );
+    }
+}
+
 // IMPLEMENTING.md U9 and U14: serialize_fail on a write or measure stream returns false and never
 // asserts: it is the one routing every refusal takes, and only a read stream has anything to latch
 
@@ -971,6 +1009,7 @@ int main()
     test_reject_asserts_on_write_and_measure();
     test_int_bounds_are_int32();
     test_write_checks_room_for_the_whole_operation();
+    test_write_bits_after_flush_asserts();
     test_fail_on_write_and_measure_never_asserts();
     test_write_forms_catch_misuse_as_their_twins();
 
