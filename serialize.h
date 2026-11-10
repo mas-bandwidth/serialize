@@ -1359,7 +1359,7 @@ namespace serialize
 
     inline const char * refusal_name( Refusal refusal )
     {
-        switch ( refusal )
+        switch ( int( refusal ) )      // an int, so a value outside the list reaches the default without a warning that the default is unreachable
         {
             case REFUSAL_NONE:                  return "none";
             case REFUSAL_PAST_END:              return "past_end";
@@ -1371,7 +1371,6 @@ namespace serialize
             case REFUSAL_EMBEDDED_NUL:          return "embedded_nul";
             case REFUSAL_NON_CANONICAL:         return "non_canonical";
             case REFUSAL_REJECTED:              return "rejected";
-            case REFUSAL_NUM_REASONS:
             default:                           return "unknown";
         }
     }
