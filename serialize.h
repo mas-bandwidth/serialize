@@ -861,15 +861,14 @@ namespace serialize
 
     template <uint64_t x> struct PopCount
     {
-        enum {   a = x - ( ( x >> 1 )       & 0x5555555555555555ULL ),
-                 b =   ( ( ( a >> 2 )       & 0x3333333333333333ULL ) + ( a & 0x3333333333333333ULL ) ),
-                 c =   ( ( ( b >> 4 ) + b ) & 0x0f0f0f0f0f0f0f0fULL ),
-                 d =   c + ( c >> 8 ),
-                 e =   d + ( d >> 16 ),
-                 f =   e + ( e >> 32 ),
+        static const uint64_t a = x - ( ( x >> 1 )       & 0x5555555555555555ULL );
+        static const uint64_t b =   ( ( ( a >> 2 )       & 0x3333333333333333ULL ) + ( a & 0x3333333333333333ULL ) );
+        static const uint64_t c =   ( ( ( b >> 4 ) + b ) & 0x0f0f0f0f0f0f0f0fULL );
+        static const uint64_t d =   c + ( c >> 8 );
+        static const uint64_t e =   d + ( d >> 16 );
+        static const uint64_t f =   e + ( e >> 32 );
 
-            result = f & 0x0000007f
-        };
+        static const uint32_t result = uint32_t( f & 0x0000007f );
     };
 
     /**
@@ -880,16 +879,15 @@ namespace serialize
 
     template <uint64_t x> struct Log2
     {
-        enum {   a = x | ( x >> 1 ),
-                 b = a | ( a >> 2 ),
-                 c = b | ( b >> 4 ),
-                 d = c | ( c >> 8 ),
-                 e = d | ( d >> 16 ),
-                 f = e | ( e >> 32 ),
-                 g = f >> 1,
+        static const uint64_t a = x | ( x >> 1 );
+        static const uint64_t b = a | ( a >> 2 );
+        static const uint64_t c = b | ( b >> 4 );
+        static const uint64_t d = c | ( c >> 8 );
+        static const uint64_t e = d | ( d >> 16 );
+        static const uint64_t f = e | ( e >> 32 );
+        static const uint64_t g = f >> 1;
 
-            result = PopCount<g>::result
-        };
+        static const uint32_t result = PopCount<g>::result;
     };
 
     /**
