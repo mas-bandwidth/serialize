@@ -115,6 +115,418 @@ struct ValuePool
     }
 };
 
+// the compressed float declarations the harness drives: bands with a negative low bound, zero
+// based bands, resolutions from coarse to fine, and one whose resolution is coarser than the whole
+// band ({ 0, 1, 2 }: fewer than one step, which the params clamp up to one)
+struct FuzzCompressedFloatDeclaration
+{
+    float min;
+    float max;
+    float res;
+};
+
+static const FuzzCompressedFloatDeclaration fuzz_compressed_float_declarations[] =
+{
+    { -10.0f,  +10.0f,  0.01f },
+    { -1.0f,   +1.0f,   0.001f },
+    { 0.0f,    +100.0f, 1.0f },
+    { -100.0f, +100.0f, 0.5f },
+    { 0.0f,    +10.0f,  3.0f },
+    { 0.0f,    +1.0f,   0.0001f },
+    { 0.0f,    +1.0f,   2.0f },
+};
+
+static const int fuzz_num_compressed_float_declarations =
+    (int) ( sizeof( fuzz_compressed_float_declarations ) / sizeof( fuzz_compressed_float_declarations[0] ) );
+
+// the bytes and string directional macros do not cross type check (the write form takes a const
+// buffer, the read form a mutable one), so the direction selects a specialization instead
+template <bool IsWriting> struct FuzzDirectionalBytes;
+
+template <> struct FuzzDirectionalBytes<true>
+{
+    template <typename Stream> static bool Run( Stream & stream, ValuePool & pool )
+    {
+        uint8_t expected_bytes[32];
+        for ( int j = 0; j < 16; j++ )
+        {
+            expected_bytes[j] = pool.NextByte();
+        }
+        write_bytes( stream, expected_bytes, 16 );
+
+        char expected_string[32];
+        const int string_length = pool.NextByte() % ( sizeof( expected_string ) - 1 );
+        for ( int j = 0; j < string_length; j++ )
+        {
+            const uint8_t c = pool.NextByte() & 0x7F;
+            expected_string[j] = ( c != 0 ) ? (char) c : ' ';
+        }
+        expected_string[string_length] = '\0';
+        write_string( stream, expected_string, (int) sizeof( expected_string ) );
+        return true;
+    }
+};
+
+template <> struct FuzzDirectionalBytes<false>
+{
+    template <typename Stream> static bool Run( Stream & stream, ValuePool & pool )
+    {
+        uint8_t expected_bytes[32];
+        for ( int j = 0; j < 16; j++ )
+        {
+            expected_bytes[j] = pool.NextByte();
+        }
+        uint8_t bytes_value[32];
+        read_bytes( stream, bytes_value, 16 );
+        fuzz_check( memcmp( bytes_value, expected_bytes, 16 ) == 0 );
+
+        char expected_string[32];
+        const int string_length = pool.NextByte() % ( sizeof( expected_string ) - 1 );
+        for ( int j = 0; j < string_length; j++ )
+        {
+            const uint8_t c = pool.NextByte() & 0x7F;
+            expected_string[j] = ( c != 0 ) ? (char) c : ' ';
+        }
+        expected_string[string_length] = '\0';
+        char string_value[32];
+        read_string( stream, string_value, (int) sizeof( string_value ) );
+        fuzz_check( strcmp( string_value, expected_string ) == 0 );
+        return true;
+    }
+};
+
+// the directional read_* macros, in their intended direction, with the same in-contract checks the
+// unified forms get in pass 1
+template <typename Stream> bool FuzzDirectionalRead( Stream & stream )
+{
+    int32_t int_value = 0;
+    read_int( stream, int_value, -100, +100 );
+    fuzz_check( int_value >= -100 && int_value <= +100 );
+
+    int64_t int64_value = 0;
+    read_int64( stream, int64_value, -1000000, +1000000 );
+    fuzz_check( int64_value >= -1000000 && int64_value <= +1000000 );
+
+    uint32_t bits_value = 0;
+    read_bits( stream, bits_value, 17 );
+    fuzz_check( bits_value < ( 1U << 17 ) );
+
+    uint64_t bits64_value = 0;
+    read_bits( stream, bits64_value, 40 );
+    fuzz_check( bits64_value < ( uint64_t( 1 ) << 40 ) );
+
+    uint8_t uint8_value = 0;
+    read_uint8( stream, uint8_value );
+    (void) uint8_value;
+
+    uint16_t uint16_value = 0;
+    read_uint16( stream, uint16_value );
+    (void) uint16_value;
+
+    uint32_t uint32_value = 0;
+    read_uint32( stream, uint32_value );
+    (void) uint32_value;
+
+    uint64_t uint64_value = 0;
+    read_uint64( stream, uint64_value );
+    (void) uint64_value;
+
+    int32_t fixed_value = 0;
+    read_fixed( stream, fixed_value, 16, 16, -1000, +1000 );
+    fuzz_check( fixed_value >= -1000 * 65536 && fixed_value <= 1000 * 65536 );
+
+    bool bool_value = false;
+    read_bool( stream, bool_value );
+    (void) bool_value;
+
+    float float_value = 0.0f;
+    read_float( stream, float_value );
+    uint32_t float_bits = 0;
+    memcpy( &float_bits, &float_value, 4 );
+    fuzz_check( serialize::float_bits_are_finite( float_bits ) );
+
+    double double_value = 0.0;
+    read_double( stream, double_value );
+    uint64_t double_bits = 0;
+    memcpy( &double_bits, &double_value, 8 );
+    fuzz_check( serialize::double_bits_are_finite( double_bits ) );
+
+    const serialize::int128_t bound128 = serialize::int128_t( 1 ) << 40;
+    serialize::int128_t int128_value = 0;
+    read_int128( stream, int128_value, -bound128, +bound128 );
+    fuzz_check( int128_value >= -bound128 && int128_value <= +bound128 );
+
+    serialize::uint128_t uint128_value = 0;
+    read_uint128( stream, uint128_value );
+
+    uint8_t bytes_value[32];
+    read_bytes( stream, bytes_value, 16 );
+
+    char string_value[32];
+    read_string( stream, string_value, (int) sizeof( string_value ) );
+    fuzz_check( strlen( string_value ) < sizeof( string_value ) );
+
+    int previous = 0;
+    int current = 0;
+    read_int_relative( stream, previous, current );
+    fuzz_check( current > previous );
+
+    read_align( stream );
+
+    return true;
+}
+
+// the directional read_* and write_* macros, selected by the stream direction. Stream::IsWriting is
+// a compile time constant, so the unused half folds away but both halves are type checked.
+template <typename Stream> bool FuzzDirectionalRoundTrip( Stream & stream, ValuePool & pool )
+{
+    const int32_t expected_int = -100 + int32_t( pool.NextUint32() % 201 );
+    int32_t int_value = Stream::IsWriting ? expected_int : 0;
+    if ( Stream::IsWriting )
+    {
+        write_int( stream, int_value, -100, +100 );
+    }
+    else
+    {
+        read_int( stream, int_value, -100, +100 );
+    }
+    if ( Stream::IsReading )
+    {
+        fuzz_check( int_value == expected_int );
+    }
+
+    const int64_t expected_int64 = -1000000 + int64_t( pool.NextUint32() % 2000001 );
+    int64_t int64_value = Stream::IsWriting ? expected_int64 : 0;
+    if ( Stream::IsWriting )
+    {
+        write_int64( stream, int64_value, -1000000, +1000000 );
+    }
+    else
+    {
+        read_int64( stream, int64_value, -1000000, +1000000 );
+    }
+    if ( Stream::IsReading )
+    {
+        fuzz_check( int64_value == expected_int64 );
+    }
+
+    const uint32_t expected_bits = pool.NextUint32() & 0x1FFFF;
+    uint32_t bits_value = Stream::IsWriting ? expected_bits : 0;
+    if ( Stream::IsWriting )
+    {
+        write_bits( stream, bits_value, 17 );
+    }
+    else
+    {
+        read_bits( stream, bits_value, 17 );
+    }
+    if ( Stream::IsReading )
+    {
+        fuzz_check( bits_value == expected_bits );
+    }
+
+    const uint64_t expected_bits64 = pool.NextUint64() & 0xFFFFFFFFFFULL;
+    uint64_t bits64_value = Stream::IsWriting ? expected_bits64 : 0;
+    if ( Stream::IsWriting )
+    {
+        write_bits( stream, bits64_value, 40 );
+    }
+    else
+    {
+        read_bits( stream, bits64_value, 40 );
+    }
+    if ( Stream::IsReading )
+    {
+        fuzz_check( bits64_value == expected_bits64 );
+    }
+
+    const uint8_t expected_uint8 = pool.NextByte();
+    uint8_t uint8_value = Stream::IsWriting ? expected_uint8 : (uint8_t) 0;
+    if ( Stream::IsWriting )
+    {
+        write_uint8( stream, uint8_value );
+    }
+    else
+    {
+        read_uint8( stream, uint8_value );
+    }
+    if ( Stream::IsReading )
+    {
+        fuzz_check( uint8_value == expected_uint8 );
+    }
+
+    const uint16_t expected_uint16 = (uint16_t) pool.NextUint32();
+    uint16_t uint16_value = Stream::IsWriting ? expected_uint16 : (uint16_t) 0;
+    if ( Stream::IsWriting )
+    {
+        write_uint16( stream, uint16_value );
+    }
+    else
+    {
+        read_uint16( stream, uint16_value );
+    }
+    if ( Stream::IsReading )
+    {
+        fuzz_check( uint16_value == expected_uint16 );
+    }
+
+    const uint32_t expected_uint32 = pool.NextUint32();
+    uint32_t uint32_value = Stream::IsWriting ? expected_uint32 : 0;
+    if ( Stream::IsWriting )
+    {
+        write_uint32( stream, uint32_value );
+    }
+    else
+    {
+        read_uint32( stream, uint32_value );
+    }
+    if ( Stream::IsReading )
+    {
+        fuzz_check( uint32_value == expected_uint32 );
+    }
+
+    const uint64_t expected_uint64 = pool.NextUint64();
+    uint64_t uint64_value = Stream::IsWriting ? expected_uint64 : 0;
+    if ( Stream::IsWriting )
+    {
+        write_uint64( stream, uint64_value );
+    }
+    else
+    {
+        read_uint64( stream, uint64_value );
+    }
+    if ( Stream::IsReading )
+    {
+        fuzz_check( uint64_value == expected_uint64 );
+    }
+
+    const uint32_t fixed_range = 2000U * 65536;
+    const int32_t expected_fixed = int32_t( uint32_t( -1000 * 65536 ) + pool.NextUint32() % ( fixed_range + 1 ) );
+    int32_t fixed_value = Stream::IsWriting ? expected_fixed : 0;
+    if ( Stream::IsWriting )
+    {
+        write_fixed( stream, fixed_value, 16, 16, -1000, +1000 );
+    }
+    else
+    {
+        read_fixed( stream, fixed_value, 16, 16, -1000, +1000 );
+    }
+    if ( Stream::IsReading )
+    {
+        fuzz_check( fixed_value == expected_fixed );
+    }
+
+    const bool expected_bool = ( pool.NextByte() & 1 ) != 0;
+    bool bool_value = Stream::IsWriting ? expected_bool : false;
+    if ( Stream::IsWriting )
+    {
+        write_bool( stream, bool_value );
+    }
+    else
+    {
+        read_bool( stream, bool_value );
+    }
+    if ( Stream::IsReading )
+    {
+        fuzz_check( bool_value == expected_bool );
+    }
+
+    const uint32_t float_raw = pool.NextUint32();
+    const uint32_t float_expected_bits = serialize::float_bits_are_finite( float_raw ) ? float_raw : ( float_raw & 0x807FFFFF );
+    float float_value = 0.0f;
+    if ( Stream::IsWriting )
+    {
+        memcpy( &float_value, &float_expected_bits, 4 );
+        write_float( stream, float_value );
+    }
+    else
+    {
+        read_float( stream, float_value );
+        uint32_t float_bits = 0;
+        memcpy( &float_bits, &float_value, 4 );
+        fuzz_check( float_bits == float_expected_bits );
+    }
+
+    const uint64_t double_raw = pool.NextUint64();
+    const uint64_t double_expected_bits = serialize::double_bits_are_finite( double_raw ) ? double_raw : ( double_raw & 0x800FFFFFFFFFFFFFULL );
+    double double_value = 0.0;
+    if ( Stream::IsWriting )
+    {
+        memcpy( &double_value, &double_expected_bits, 8 );
+        write_double( stream, double_value );
+    }
+    else
+    {
+        read_double( stream, double_value );
+        uint64_t double_bits = 0;
+        memcpy( &double_bits, &double_value, 8 );
+        fuzz_check( double_bits == double_expected_bits );
+    }
+
+    const serialize::int128_t bound128 = serialize::int128_t( 1 ) << 40;
+    const serialize::int128_t expected_int128 = serialize::int128_t( int64_t( pool.NextUint64() & 0x1FFFFFFFFFFULL ) ) - bound128;
+    serialize::int128_t int128_value = Stream::IsWriting ? expected_int128 : serialize::int128_t( 0 );
+    if ( Stream::IsWriting )
+    {
+        write_int128( stream, int128_value, -bound128, +bound128 );
+    }
+    else
+    {
+        read_int128( stream, int128_value, -bound128, +bound128 );
+    }
+    if ( Stream::IsReading )
+    {
+        fuzz_check( int128_value == expected_int128 );
+    }
+
+    const serialize::uint128_t expected_uint128 = ( serialize::uint128_t( pool.NextUint64() ) << 64 ) | pool.NextUint64();
+    serialize::uint128_t uint128_value = Stream::IsWriting ? expected_uint128 : serialize::uint128_t( 0 );
+    if ( Stream::IsWriting )
+    {
+        write_uint128( stream, uint128_value );
+    }
+    else
+    {
+        read_uint128( stream, uint128_value );
+    }
+    if ( Stream::IsReading )
+    {
+        fuzz_check( uint128_value == expected_uint128 );
+    }
+
+    if ( !FuzzDirectionalBytes<( Stream::IsWriting != 0 )>::Run( stream, pool ) )
+    {
+        return false;
+    }
+
+    const int previous = 0;
+    const int expected_current = 1 + int( pool.NextUint32() % 1000000 );
+    int current = Stream::IsWriting ? expected_current : 0;
+    if ( Stream::IsWriting )
+    {
+        write_int_relative( stream, previous, current );
+    }
+    else
+    {
+        read_int_relative( stream, previous, current );
+    }
+    if ( Stream::IsReading )
+    {
+        fuzz_check( current == expected_current );
+    }
+
+    if ( Stream::IsWriting )
+    {
+        write_align( stream );
+    }
+    else
+    {
+        read_align( stream );
+    }
+
+    return true;
+}
+
 // pass 1: hostile read. arbitrary bytes go in, reads must fail cleanly or produce in-contract values.
 
 template <typename Stream> bool FuzzRead( Stream & stream, const uint8_t * ops, int numOps )
@@ -195,6 +607,36 @@ template <typename Stream> bool FuzzRead( Stream & stream, const uint8_t * ops, 
 
                 serialize::int128_t full128 = 0;
                 serialize_int128( stream, full128, serialize::int128_t( serialize::uint128_t( 1 ) << 127 ), serialize::int128_t( ~( serialize::uint128_t( 1 ) << 127 ) ) );
+
+#if defined( SERIALIZE_HAS_COMPILE_TIME_SURFACE )
+                int32_t compile_time_int = 0;
+                switch ( param & 3 )
+                {
+                    case 0: serialize_int_compile_time( stream, compile_time_int, -100, +100 ); break;
+                    case 1: serialize_int_compile_time( stream, compile_time_int, 0, 65535 ); break;
+                    case 2: serialize_int_compile_time( stream, compile_time_int, INT32_MIN, INT32_MAX ); break;
+                    default: serialize_int_compile_time( stream, compile_time_int, -2000000000, +2000000000 ); break;
+                }
+
+                int64_t compile_time_int64 = 0;
+                serialize_int64_compile_time( stream, compile_time_int64, -5000000000LL, +5000000000LL );
+                fuzz_check( compile_time_int64 >= -5000000000LL && compile_time_int64 <= +5000000000LL );
+
+                uint32_t compile_time_bits = 0;
+                switch ( param & 3 )
+                {
+                    case 0: serialize_bits_compile_time( stream, compile_time_bits, 5 ); break;
+                    case 1: serialize_bits_compile_time( stream, compile_time_bits, 17 ); break;
+                    case 2: serialize_bits_compile_time( stream, compile_time_bits, 32 ); break;
+                    default: serialize_bits_compile_time( stream, compile_time_bits, 1 ); break;
+                }
+
+                uint64_t compile_time_bits64 = 0;
+                serialize_bits64_compile_time( stream, compile_time_bits64, 40 );
+
+                bool compile_time_bool = false;
+                serialize_bool_compile_time( stream, compile_time_bool );
+#endif
             }
             break;
 
@@ -228,11 +670,29 @@ template <typename Stream> bool FuzzRead( Stream & stream, const uint8_t * ops, 
 
             case 7:
             {
+                const int declaration_index = param % fuzz_num_compressed_float_declarations;
+                const FuzzCompressedFloatDeclaration & declaration = fuzz_compressed_float_declarations[declaration_index];
+
+                uint32_t max_integer_value = 0;
+                int bits = 0;
+                float delta = 0.0f;
+                serialize::serialize_compressed_float_params( declaration.min, declaration.max, declaration.res, max_integer_value, bits, delta );
+
                 float value = 0.0f;
-                serialize_compressed_float( stream, value, -10.0f, +10.0f, 0.01f );
+                if ( ( param & 1 ) != 0 )
+                {
+                    serialize_compressed_float_precomputed( stream, value, max_integer_value, bits, delta, declaration.min );
+                }
+                else
+                {
+                    serialize_compressed_float( stream, value, declaration.min, declaration.max, declaration.res );
+                }
+
                 uint32_t value_bits = 0;
                 memcpy( &value_bits, &value, 4 );
                 fuzz_check( serialize::float_bits_are_finite( value_bits ) );
+                fuzz_check( value >= declaration.min );
+                fuzz_check( value <= declaration.min + delta );
             }
             break;
 
@@ -300,6 +760,11 @@ template <typename Stream> bool FuzzRead( Stream & stream, const uint8_t * ops, 
                 serialize_uint16( stream, value16 );
                 uint32_t value32 = 0;
                 serialize_uint32( stream, value32 );
+
+                if ( !FuzzDirectionalRead( stream ) )
+                {
+                    return false;
+                }
             }
             break;
         }
@@ -414,6 +879,102 @@ template <typename Stream> bool FuzzRoundTrip( Stream & stream, const uint8_t * 
                 {
                     fuzz_check( wide == expected_wide );
                 }
+
+#if defined( SERIALIZE_HAS_COMPILE_TIME_SURFACE )
+                {
+                    int32_t expected_compile_time_int = 0;
+                    int32_t compile_time_int = 0;
+                    switch ( param & 3 )
+                    {
+                        case 0:
+                        {
+                            expected_compile_time_int = -100 + int32_t( pool.NextUint32() % 201 );
+                            compile_time_int = Stream::IsWriting ? expected_compile_time_int : 0;
+                            serialize_int_compile_time( stream, compile_time_int, -100, +100 );
+                        }
+                        break;
+                        case 1:
+                        {
+                            expected_compile_time_int = int32_t( pool.NextUint32() % 65536 );
+                            compile_time_int = Stream::IsWriting ? expected_compile_time_int : 0;
+                            serialize_int_compile_time( stream, compile_time_int, 0, 65535 );
+                        }
+                        break;
+                        case 2:
+                        {
+                            expected_compile_time_int = int32_t( pool.NextUint32() );
+                            compile_time_int = Stream::IsWriting ? expected_compile_time_int : 0;
+                            serialize_int_compile_time( stream, compile_time_int, INT32_MIN, INT32_MAX );
+                        }
+                        break;
+                        default:
+                        {
+                            expected_compile_time_int = int32_t( -2000000000LL + int64_t( pool.NextUint32() % 4000000001U ) );
+                            compile_time_int = Stream::IsWriting ? expected_compile_time_int : 0;
+                            serialize_int_compile_time( stream, compile_time_int, -2000000000, +2000000000 );
+                        }
+                        break;
+                    }
+                    if ( Stream::IsReading )
+                    {
+                        fuzz_check( compile_time_int == expected_compile_time_int );
+                    }
+
+                    const int64_t expected_compile_time_int64 = -5000000000LL + int64_t( pool.NextUint64() % 10000000001ULL );
+                    int64_t compile_time_int64 = Stream::IsWriting ? expected_compile_time_int64 : 0;
+                    serialize_int64_compile_time( stream, compile_time_int64, -5000000000LL, +5000000000LL );
+                    if ( Stream::IsReading )
+                    {
+                        fuzz_check( compile_time_int64 == expected_compile_time_int64 );
+                    }
+
+                    uint32_t expected_compile_time_bits = 0;
+                    uint32_t compile_time_bits = 0;
+                    switch ( param & 3 )
+                    {
+                        case 0:
+                            expected_compile_time_bits = pool.NextUint32() & 0x1F;
+                            compile_time_bits = Stream::IsWriting ? expected_compile_time_bits : 0;
+                            serialize_bits_compile_time( stream, compile_time_bits, 5 );
+                            break;
+                        case 1:
+                            expected_compile_time_bits = pool.NextUint32() & 0x1FFFF;
+                            compile_time_bits = Stream::IsWriting ? expected_compile_time_bits : 0;
+                            serialize_bits_compile_time( stream, compile_time_bits, 17 );
+                            break;
+                        case 2:
+                            expected_compile_time_bits = pool.NextUint32();
+                            compile_time_bits = Stream::IsWriting ? expected_compile_time_bits : 0;
+                            serialize_bits_compile_time( stream, compile_time_bits, 32 );
+                            break;
+                        default:
+                            expected_compile_time_bits = pool.NextUint32() & 0x1;
+                            compile_time_bits = Stream::IsWriting ? expected_compile_time_bits : 0;
+                            serialize_bits_compile_time( stream, compile_time_bits, 1 );
+                            break;
+                    }
+                    if ( Stream::IsReading )
+                    {
+                        fuzz_check( compile_time_bits == expected_compile_time_bits );
+                    }
+
+                    const uint64_t expected_compile_time_bits64 = pool.NextUint64() & 0xFFFFFFFFFFULL;
+                    uint64_t compile_time_bits64 = Stream::IsWriting ? expected_compile_time_bits64 : 0;
+                    serialize_bits64_compile_time( stream, compile_time_bits64, 40 );
+                    if ( Stream::IsReading )
+                    {
+                        fuzz_check( compile_time_bits64 == expected_compile_time_bits64 );
+                    }
+
+                    const bool expected_compile_time_bool = ( pool.NextByte() & 1 ) != 0;
+                    bool compile_time_bool = Stream::IsWriting ? expected_compile_time_bool : false;
+                    serialize_bool_compile_time( stream, compile_time_bool );
+                    if ( Stream::IsReading )
+                    {
+                        fuzz_check( compile_time_bool == expected_compile_time_bool );
+                    }
+                }
+#endif
             }
             break;
 
@@ -479,20 +1040,40 @@ template <typename Stream> bool FuzzRoundTrip( Stream & stream, const uint8_t * 
                 // in debug, so the writer is fed only finite input: clearing the exponent of a
                 // non-finite pattern yields a subnormal, keeping the sign and mantissa entropy.
                 // hostile non-finite coverage belongs to the read path, which stage one exercises.
+                const int declaration_index = param % fuzz_num_compressed_float_declarations;
+                const FuzzCompressedFloatDeclaration & declaration = fuzz_compressed_float_declarations[declaration_index];
+
+                uint32_t max_integer_value = 0;
+                int bits = 0;
+                float delta = 0.0f;
+                serialize::serialize_compressed_float_params( declaration.min, declaration.max, declaration.res, max_integer_value, bits, delta );
+
                 const uint32_t raw_bits = pool.NextUint32();
                 const bool raw_finite = ( raw_bits & 0x7FFFFFFF ) < 0x7F800000;
                 const uint32_t expected_bits = raw_finite ? raw_bits : ( raw_bits & 0x807FFFFF );
                 float expected = 0.0f;
                 memcpy( &expected, &expected_bits, 4 );
                 float value = Stream::IsWriting ? expected : 0.0f;
-                serialize_compressed_float( stream, value, -10.0f, +10.0f, 0.01f );
+                if ( ( param & 1 ) != 0 )
+                {
+                    serialize_compressed_float_precomputed( stream, value, max_integer_value, bits, delta, declaration.min );
+                }
+                else
+                {
+                    serialize_compressed_float( stream, value, declaration.min, declaration.max, declaration.res );
+                }
                 if ( Stream::IsReading )
                 {
-                    fuzz_check( value >= -10.001f && value <= +10.001f );
+                    uint32_t value_bits = 0;
+                    memcpy( &value_bits, &value, 4 );
+                    fuzz_check( serialize::float_bits_are_finite( value_bits ) );
+                    fuzz_check( value >= declaration.min );
+                    fuzz_check( value <= declaration.min + delta );
                     const bool finite = ( expected_bits & 0x7FFFFFFF ) < 0x7F800000;            // bit test: immune to fast math
-                    if ( finite && expected >= -10.0f && expected <= +10.0f )
+                    if ( finite && expected >= declaration.min && expected <= declaration.max )
                     {
-                        fuzz_check( fabs( value - expected ) <= 0.011f );
+                        const float tolerance = declaration.res + ( declaration.max - declaration.min ) * 1e-6f;
+                        fuzz_check( fabs( value - expected ) <= tolerance );
                     }
                 }
             }
@@ -667,6 +1248,11 @@ template <typename Stream> bool FuzzRoundTrip( Stream & stream, const uint8_t * 
                     fuzz_check( value16 == expected16 );
                     fuzz_check( value32 == expected32 );
                 }
+
+                if ( !FuzzDirectionalRoundTrip( stream, pool ) )
+                {
+                    return false;
+                }
             }
             break;
         }
@@ -697,7 +1283,8 @@ template <typename Stream> bool SentinelInt128( Stream & stream, serialize::int1
 template <typename Stream> bool SentinelBool( Stream & stream, bool & value ) { serialize_bool( stream, value ); return true; }
 template <typename Stream> bool SentinelFloat( Stream & stream, float & value ) { serialize_float( stream, value ); return true; }
 template <typename Stream> bool SentinelDouble( Stream & stream, double & value ) { serialize_double( stream, value ); return true; }
-template <typename Stream> bool SentinelCompressedFloat( Stream & stream, float & value ) { serialize_compressed_float( stream, value, -10.0f, +10.0f, 0.01f ); return true; }
+template <typename Stream> bool SentinelCompressedFloat( Stream & stream, float & value, int declaration_index ) { const FuzzCompressedFloatDeclaration & declaration = fuzz_compressed_float_declarations[declaration_index]; serialize_compressed_float( stream, value, declaration.min, declaration.max, declaration.res ); return true; }
+template <typename Stream> bool SentinelCompressedFloatPrecomputed( Stream & stream, float & value, int declaration_index ) { const FuzzCompressedFloatDeclaration & declaration = fuzz_compressed_float_declarations[declaration_index]; uint32_t max_integer_value = 0; int bits = 0; float delta = 0.0f; serialize::serialize_compressed_float_params( declaration.min, declaration.max, declaration.res, max_integer_value, bits, delta ); serialize_compressed_float_precomputed( stream, value, max_integer_value, bits, delta, declaration.min ); return true; }
 template <typename Stream> bool SentinelUint64( Stream & stream, uint64_t & value ) { serialize_uint64( stream, value ); return true; }
 template <typename Stream> bool SentinelUint128( Stream & stream, serialize::uint128_t & value ) { serialize_uint128( stream, value ); return true; }
 template <typename Stream> bool SentinelBits32Narrow( Stream & stream, uint8_t & value ) { serialize_uint8( stream, value ); return true; }
@@ -707,6 +1294,18 @@ template <typename Stream> bool SentinelString( Stream & stream, char * string, 
 template <typename Stream> bool SentinelEnd( Stream & stream ) { serialize_end( stream ); return true; }
 template <typename Stream> bool SentinelAlign( Stream & stream ) { serialize_align( stream ); return true; }
 template <typename Stream> bool SentinelIntRelative( Stream & stream, int previous, int & current ) { serialize_int_relative( stream, previous, current ); return true; }
+template <typename Stream> bool SentinelReadIntDirectional( Stream & stream, int32_t & value ) { read_int( stream, value, -100, +100 ); return true; }
+template <typename Stream> bool SentinelReadBitsDirectional( Stream & stream, uint32_t & value ) { read_bits( stream, value, 17 ); return true; }
+template <typename Stream> bool SentinelReadUint8Directional( Stream & stream, uint8_t & value ) { read_uint8( stream, value ); return true; }
+template <typename Stream> bool SentinelReadFloatDirectional( Stream & stream, float & value ) { read_float( stream, value ); return true; }
+template <typename Stream> bool SentinelReadIntRelativeDirectional( Stream & stream, int previous, int & current ) { read_int_relative( stream, previous, current ); return true; }
+#if defined( SERIALIZE_HAS_COMPILE_TIME_SURFACE )
+template <typename Stream> bool SentinelIntCompileTime( Stream & stream, int32_t & value ) { serialize_int_compile_time( stream, value, -100, +100 ); return true; }
+template <typename Stream> bool SentinelInt64CompileTime( Stream & stream, int64_t & value ) { serialize_int64_compile_time( stream, value, -5000000000LL, +5000000000LL ); return true; }
+template <typename Stream> bool SentinelBitsCompileTime( Stream & stream, uint32_t & value ) { serialize_bits_compile_time( stream, value, 17 ); return true; }
+template <typename Stream> bool SentinelBits64CompileTime( Stream & stream, uint64_t & value ) { serialize_bits64_compile_time( stream, value, 40 ); return true; }
+template <typename Stream> bool SentinelBoolCompileTime( Stream & stream, bool & value ) { serialize_bool_compile_time( stream, value ); return true; }
+#endif
 
 struct SentinelRun
 {
@@ -825,6 +1424,13 @@ static void FuzzReadSentinel( serialize::ReadStream & stream, const uint8_t * op
                 const serialize::int128_t bound128 = serialize::int128_t( 1 ) << ( 20 + ( param % 100 ) );
                 sentinel_read( run, serialize::int128_t, SentinelInt128( stream, destination, -bound128, +bound128 ) );
                 sentinel_read( run, serialize::int128_t, SentinelInt128( stream, destination, serialize::int128_t( serialize::uint128_t( 1 ) << 127 ), serialize::int128_t( ~( serialize::uint128_t( 1 ) << 127 ) ) ) );
+#if defined( SERIALIZE_HAS_COMPILE_TIME_SURFACE )
+                sentinel_read( run, int32_t, SentinelIntCompileTime( stream, destination ) );
+                sentinel_read( run, int64_t, SentinelInt64CompileTime( stream, destination ) );
+                sentinel_read( run, uint32_t, SentinelBitsCompileTime( stream, destination ) );
+                sentinel_read( run, uint64_t, SentinelBits64CompileTime( stream, destination ) );
+                sentinel_read( run, bool, SentinelBoolCompileTime( stream, destination ) );
+#endif
             }
             break;
 
@@ -854,7 +1460,9 @@ static void FuzzReadSentinel( serialize::ReadStream & stream, const uint8_t * op
 
             case 7:
             {
-                sentinel_read( run, float, SentinelCompressedFloat( stream, destination ) );
+                const int declaration_index = param % fuzz_num_compressed_float_declarations;
+                sentinel_read( run, float, SentinelCompressedFloat( stream, destination, declaration_index ) );
+                sentinel_read( run, float, SentinelCompressedFloatPrecomputed( stream, destination, declaration_index ) );
             }
             break;
 
@@ -910,6 +1518,11 @@ static void FuzzReadSentinel( serialize::ReadStream & stream, const uint8_t * op
                 sentinel_read( run, uint8_t, SentinelBits32Narrow( stream, destination ) );
                 sentinel_read( run, uint16_t, SentinelBits16Narrow( stream, destination ) );
                 sentinel_read( run, uint32_t, SentinelBits32( stream, destination, 32 ) );
+                sentinel_read( run, int32_t, SentinelReadIntDirectional( stream, destination ) );
+                sentinel_read( run, uint32_t, SentinelReadBitsDirectional( stream, destination ) );
+                sentinel_read( run, uint8_t, SentinelReadUint8Directional( stream, destination ) );
+                sentinel_read( run, float, SentinelReadFloatDirectional( stream, destination ) );
+                sentinel_read( run, int, SentinelReadIntRelativeDirectional( stream, param * 1000, destination ) );
             }
             break;
         }

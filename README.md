@@ -150,6 +150,8 @@ struct Player
 
 See [example.cpp](example.cpp) for more.
 
+`serialize_int`, `serialize_int64` and `serialize_bits`, and their `read_` and `write_` forms, evaluate value, min, max and bits exactly once each on a call that does not refuse, in debug and in release and on every stream, so `serialize_int( stream, items[count++], 0, 100 )` advances `count` once. A refused read does not evaluate value, and leaves it as the caller left it. stream may be evaluated more than once: the bits path wider than 32 bits names it twice, so pass the stream variable itself. The other macros make no such promise, so keep side effects out of their arguments.
+
 # Reading untrusted data
 
 Packets come off the network, so the read path validates in release builds and drops invalid data. Five rules govern what happens when it does, and code that reads packets should be written against them:
