@@ -1511,6 +1511,7 @@ namespace serialize
         void WriteBytes( const uint8_t * serialize_restrict data, int64_t bytes ) serialize_restrict     // restrict qualified this: see WriteBits
         {
             serialize_assert( m_data );                 // if this fires, the writer was used before Initialize
+            serialize_assert( data || bytes == 0 );
             serialize_assert( uint64_t(m_bitsWritten) + uint64_t(bytes) * 8 <= uint64_t(m_numBits) );
             serialize_assert( ( m_bitsWritten % 8 ) == 0 );                         // byte aligned (GetAlignBits() == 0, spelled directly: a restrict qualified function cannot call unqualified members on some compilers)
             serialize_assert( m_scratchBits == m_bitsWritten % 64 );                // mid-stream the scratch tracks the cursor (writing after FlushBits mid-stream was never supported)
@@ -1526,7 +1527,10 @@ namespace serialize
             }
 
             // the body: the whole payload, straight in at the byte cursor
-            SERIALIZE_BULK_COPY( m_data + static_cast<size_t>( m_bitsWritten >> 3 ), data, static_cast<size_t>( bytes ) );
+            if ( bytes > 0 )
+            {
+                SERIALIZE_BULK_COPY( m_data + static_cast<size_t>( m_bitsWritten >> 3 ), data, static_cast<size_t>( bytes ) );
+            }
 
             m_bitsWritten += bytes * 8;
             m_wordIndex = m_bitsWritten / 64;
@@ -1762,13 +1766,17 @@ namespace serialize
         void ReadBytes( uint8_t * serialize_restrict data, int64_t bytes )
         {
             serialize_assert( m_data );                 // if this fires, the reader was used before Initialize
+            serialize_assert( data || bytes == 0 );
             serialize_assert( GetAlignBits() == 0 );
             serialize_assert( uint64_t(m_bitsRead) + uint64_t(bytes) * 8 <= uint64_t(m_numBits) );
 
             // the bit index is byte aligned here (see the align assert), so this is a straight copy —
             // through SERIALIZE_BULK_COPY, because a plain memcpy spelling here re-arms the fortify
             // capture the word moves already dodge
-            SERIALIZE_BULK_COPY( data, m_data + ( m_bitsRead >> 3 ), static_cast<size_t>( bytes ) );
+            if ( bytes > 0 )
+            {
+                SERIALIZE_BULK_COPY( data, m_data + ( m_bitsRead >> 3 ), static_cast<size_t>( bytes ) );
+            }
 
             m_bitsRead += bytes * 8;
         }
@@ -2037,7 +2045,7 @@ namespace serialize
 
         SERIALIZE_ALWAYS_INLINE bool SerializeBytes( const uint8_t * data, int64_t bytes )
         {
-            serialize_assert( data );
+            serialize_assert( data || bytes == 0 );
             serialize_assert( bytes >= 0 );
             // IMPLEMENTING.md U10: room for the align and the payload together, before the align writes
             serialize_assert( uint64_t( GetAlignBits() ) + uint64_t( bytes ) * 8 <= uint64_t( m_writer.GetBitsAvailable() ) );
@@ -2444,6 +2452,8 @@ namespace serialize
         SERIALIZE_ALWAYS_INLINE bool SerializeBytes( uint8_t * data, int64_t bytes )
         {
             if ( bytes < 0 )
+                return Fail( REFUSAL_VALUE_OUT_OF_RANGE );
+            if ( data == NULL && bytes > 0 )
                 return Fail( REFUSAL_VALUE_OUT_OF_RANGE );
             // the align is what refuses on a failed stream: a poisoned position reads past the end at every align width
             if ( !SerializeAlign() )
@@ -11281,6 +11291,56 @@ template <typename Stream> bool ZeroLengthStringSerialize( Stream & stream, uint
     return true;
 }
 
+inline void test_zero_length_bytes_null_buffer()
+{
+    // A zero-length byte span may carry a null data pointer: an empty container is allowed to
+    // return NULL from data(), and the operation must accept that. The zero-length bytes still
+    // align, so the wire bytes match the non-null zero-length vector above.
+    static const uint8_t pinned_bytes[2] = { 0x05, 0xA5 };
+
+    uint8_t * null_data = NULL;
+
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        serialize::WriteStream stream( buffer, (int) sizeof( buffer ) );
+        uint32_t head = 5;
+        uint32_t tail = 0xA5;
+        serialize_check( ZeroLengthBytesSerialize( stream, head, null_data, tail ) == true );
+        stream.Flush();
+        serialize_check( stream.GetBytesProcessed() == (int) sizeof( pinned_bytes ) );
+        serialize_check( memcmp( buffer, pinned_bytes, sizeof( pinned_bytes ) ) == 0 );
+    }
+
+    {
+        serialize::MeasureStream stream;
+        uint32_t head = 5;
+        uint32_t tail = 0xA5;
+        serialize_check( ZeroLengthBytesSerialize( stream, head, null_data, tail ) == true );
+    }
+
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        memcpy( buffer, pinned_bytes, sizeof( pinned_bytes ) );
+        serialize::ReadStream stream( buffer, (int) sizeof( pinned_bytes ) );
+        uint32_t head = 0;
+        uint32_t tail = 0;
+        serialize_check( ZeroLengthBytesSerialize( stream, head, null_data, tail ) == true );
+        serialize_check( head == 5 );
+        serialize_check( tail == 0xA5 );
+    }
+
+    {
+        // a null buffer with a positive length is caller misuse on read, and is refused
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        serialize::ReadStream stream( buffer, 8 );
+        serialize_check( stream.SerializeBytes( null_data, 1 ) == false );
+        serialize_check( stream.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
+    }
+}
+
 inline void test_golden_zero_length_string()
 {
     // { bits(5,3); string("", buffer_size 8); bits(0xA5,8) }. The empty string is a 3-bit
@@ -12204,6 +12264,7 @@ inline void serialize_test()
         SERIALIZE_RUN_TEST( test_float_non_finite_refused );
         SERIALIZE_RUN_TEST( test_compressed_float_decode_is_finite );
         SERIALIZE_RUN_TEST( test_golden_zero_length_bytes );
+        SERIALIZE_RUN_TEST( test_zero_length_bytes_null_buffer );
         SERIALIZE_RUN_TEST( test_golden_zero_length_string );
         SERIALIZE_RUN_TEST( test_golden_unaligned_bytes );
         SERIALIZE_RUN_TEST( test_measure_bound );
