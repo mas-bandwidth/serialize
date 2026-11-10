@@ -1099,6 +1099,14 @@ namespace serialize
         return reinterpret_cast<T>( value );
     }
 
+#if ( defined( __cplusplus ) && __cplusplus >= 201103L ) || defined( _MSC_VER )
+    // the literal nullptr, which reinterpret_cast does not take: a zero-length block may be passed as nullptr
+    template <typename T> inline T reinterpreted( decltype( nullptr ) )
+    {
+        return static_cast<T>( nullptr );
+    }
+#endif
+
     /**
         Does a decoded value survive the trip into the caller's destination type?
         On read, the ranged macros check this before assigning, so a value the destination cannot hold is refused and the destination is left unchanged. The destination type is named by an empty tag, so the check never touches the destination itself, which has not been read yet.
@@ -12387,6 +12395,14 @@ template <typename Stream> bool ZeroLengthStringSerialize( Stream & stream, uint
     return true;
 }
 
+#if ( defined( __cplusplus ) && __cplusplus >= 201103L ) || defined( _MSC_VER )
+template <typename Stream> bool test_run_read_bytes_nullptr( Stream & stream )
+{
+    read_bytes( stream, nullptr, 0 );
+    return true;
+}
+#endif
+
 inline void test_zero_length_bytes_null_buffer()
 {
     // A zero-length byte span may carry a null data pointer: an empty container is allowed to
@@ -12435,6 +12451,21 @@ inline void test_zero_length_bytes_null_buffer()
         serialize_check( stream.SerializeBytes( null_data, 1 ) == false );
         serialize_check( stream.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
     }
+
+#if ( defined( __cplusplus ) && __cplusplus >= 201103L ) || defined( _MSC_VER )
+    {
+        // the split forms take the literal nullptr as well as a null pointer
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        serialize::WriteStream writeStream( buffer, (int) sizeof( buffer ) );
+        write_bytes( writeStream, nullptr, 0 );
+        writeStream.Flush();
+        serialize_check( writeStream.GetBitsProcessed() == 0 );
+        serialize::ReadStream readStream( buffer, 8 );
+        serialize_check( test_run_read_bytes_nullptr( readStream ) == true );
+        serialize_check( readStream.GetBitsProcessed() == 0 );
+    }
+#endif
 }
 
 inline void test_golden_zero_length_string()
