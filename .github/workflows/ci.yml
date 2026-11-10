@@ -172,7 +172,7 @@ jobs:
       - name: The consumer translation unit under clang's full warning set
         if: matrix.compiler == 'clang++'
         run: |
-          clang++ -std=c++17 -I. -Weverything -Werror -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-padded -Wno-unsafe-buffer-usage -Wno-missing-prototypes -Wno-pre-c++14-compat -Wno-covered-switch-default -ffp-contract=off -fno-rtti -DSERIALIZE_DEBUG -c warnings.cpp -o /dev/null
+          clang++ -std=c++17 -I. -Weverything -Werror -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-padded -Wno-unsafe-buffer-usage -Wno-missing-prototypes -Wno-pre-c++14-compat -ffp-contract=off -fno-rtti -DSERIALIZE_DEBUG -c warnings.cpp -o /dev/null
 
       # NEGATIVE CONTROL: the job must be able to go red. A scratch copy of the header with one of the
       # casts taken out again has to fail the consumer translation unit; if it passes, the flags are not

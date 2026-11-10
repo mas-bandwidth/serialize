@@ -36,8 +36,8 @@
 
 #define SERIALIZE_VERSION_MAJOR 2
 #define SERIALIZE_VERSION_MINOR 1
-#define SERIALIZE_VERSION_PATCH 3
-#define SERIALIZE_VERSION "2.1.3"
+#define SERIALIZE_VERSION_PATCH 4
+#define SERIALIZE_VERSION "2.1.4"
 
 #if defined(_MSC_VER)
 #define serialize_restrict __restrict
@@ -1099,9 +1099,17 @@ namespace serialize
         return reinterpret_cast<T>( value );
     }
 
+#if ( defined( __cplusplus ) && __cplusplus >= 201103L ) || defined( _MSC_VER )
+    // the literal nullptr, which reinterpret_cast does not take: a zero-length block may be passed as nullptr
+    template <typename T> inline T reinterpreted( decltype( nullptr ) )
+    {
+        return static_cast<T>( nullptr );
+    }
+#endif
+
     /**
         Does a decoded value survive the trip into the caller's destination type?
-        On read, the ranged and raw macros check this before assigning, so a value the destination cannot hold is refused and the destination is left unchanged. The destination type is named by an empty tag, so the check never touches the destination itself, which has not been read yet.
+        On read, the ranged macros check this before assigning, so a value the destination cannot hold is refused and the destination is left unchanged. The destination type is named by an empty tag, so the check never touches the destination itself, which has not been read yet.
      */
 
     template <typename T> struct RemoveReference { typedef T type; };
@@ -1181,6 +1189,23 @@ namespace serialize
     template <size_t N, typename W> inline bool decoded_fits_destination_indexed( W decoded_value )
     {
         return decoded_fits_destination_typed( decoded_value, DecodedDestination<typename DecodedDestinationFromIndex<N>::type>() );
+    }
+
+    /**
+        Does a raw bit field survive the trip into the caller's destination type?
+        A raw bit field carries a bit pattern, not a signed value, so the sign test above does not apply: the read is accepted when the low bits bits of the destination's two's complement value equal the bits read. ff ff ff ff in 32 bits reads into an int32_t as -1, c8 in 8 bits reads into a char of either signedness, and the 16 bit field ffc8 reads into a signed char as -56. A field the destination cannot hold, such as 300 in 16 bits into a uint8_t or the 16 bit field 00c8 into a signed char, is refused. This is a read rule only: writing a negative value through a raw bit field stays caller error (see value_fits_in_bits).
+     */
+
+    template <typename T, typename W> inline bool decoded_bits_fit_destination_typed( W decoded_value, int bits, DecodedDestination<T> )
+    {
+        const T candidate = converted<T>( decoded_value );
+        const W field_mask = bits >= int( sizeof( W ) * 8 ) ? ~W( 0 ) : ( W( 1 ) << bits ) - 1;
+        return ( converted<W>( candidate ) & field_mask ) == decoded_value;
+    }
+
+    template <size_t N, typename W> inline bool decoded_bits_fit_destination_indexed( W decoded_value, int bits )
+    {
+        return decoded_bits_fit_destination_typed( decoded_value, bits, DecodedDestination<typename DecodedDestinationFromIndex<N>::type>() );
     }
 
     /**
@@ -1334,7 +1359,7 @@ namespace serialize
 
     inline const char * refusal_name( Refusal refusal )
     {
-        switch ( refusal )
+        switch ( int( refusal ) )      // an int, so a value outside the list reaches the default without a warning that the default is unreachable
         {
             case REFUSAL_NONE:                  return "none";
             case REFUSAL_PAST_END:              return "past_end";
@@ -1346,7 +1371,6 @@ namespace serialize
             case REFUSAL_EMBEDDED_NUL:          return "embedded_nul";
             case REFUSAL_NON_CANONICAL:         return "non_canonical";
             case REFUSAL_REJECTED:              return "rejected";
-            case REFUSAL_NUM_REASONS:
             default:                           return "unknown";
         }
     }
@@ -2938,8 +2962,10 @@ namespace serialize
 
 #if ( defined( __cplusplus ) && __cplusplus >= 201103L ) || defined( _MSC_VER )
     #define serialize_decoded_fits_destination( decoded_value, value ) serialize::decoded_fits_destination_typed( decoded_value, serialize::DecodedDestination<typename serialize::RemoveReference<decltype( value )>::type>() )
+    #define serialize_decoded_bits_fit_destination( decoded_value, bits, value ) serialize::decoded_bits_fit_destination_typed( decoded_value, bits, serialize::DecodedDestination<typename serialize::RemoveReference<decltype( value )>::type>() )
 #else
     #define serialize_decoded_fits_destination( decoded_value, value ) serialize::decoded_fits_destination_indexed< sizeof( serialize::decoded_destination_probe( value ) ) >( decoded_value )
+    #define serialize_decoded_bits_fit_destination( decoded_value, bits, value ) serialize::decoded_bits_fit_destination_indexed< sizeof( serialize::decoded_destination_probe( value ) ) >( decoded_value, bits )
 #endif
 
     /**
@@ -3092,11 +3118,11 @@ namespace serialize
         IMPORTANT: This macro must be called inside a templated serialize function with template \<typename Stream\>. The serialize method must have a bool return value.
         On a call that does not refuse, value and bits are each evaluated exactly once, in every build mode and on every stream, so those arguments may carry a side effect. A refused read does not evaluate value, and leaves it as the caller left it. stream may be evaluated more than once: the path wider than 32 bits names it twice, so pass the stream variable itself.
         @param stream The stream object. May be a read, write or measure stream.
-        @param value The unsigned integer value to serialize. Must be in [0,(1\<\<bits)-1]; a wider value is caller error, debug asserted before the macro narrows it to the group width.
+        @param value The unsigned integer value to serialize. Must be in [0,(1\<\<bits)-1]; a wider value is caller error, debug asserted before the macro narrows it to the group width. On read, the field is a bit pattern: it is accepted when the low bits bits of value's two's complement value equal the bits read (ff ff ff ff in 32 bits reads into an int32_t as -1), and otherwise refused with value left unchanged. Writing a negative value stays caller error.
         @param bits The number of bits to serialize in [1,64].
      */
 
-    #define serialize_bits( stream, value, bits )                       \
+    #define serialize_bits( stream, value, bits )                     \
         do                                                              \
         {                                                               \
             const int serialize_macro_bits_ = serialize::bit_count( bits ); \
@@ -3120,7 +3146,7 @@ namespace serialize
                 }                                                       \
                 if ( Stream::IsReading )                                \
                 {                                                       \
-                    if ( !serialize_decoded_fits_destination( serialize_macro_uint32_value_, value ) ) \
+                    if ( !serialize_decoded_bits_fit_destination( serialize_macro_uint32_value_, serialize_macro_bits_, value ) ) \
                     {                                                   \
                         return serialize::serialize_fail( stream, serialize::REFUSAL_VALUE_OUT_OF_RANGE ); \
                     }                                                   \
@@ -3148,7 +3174,7 @@ namespace serialize
                 if ( Stream::IsReading )                                \
                 {                                                       \
                     const uint64_t serialize_macro_ranged_value_ = ( uint64_t(serialize_macro_hi_) << 32 ) | serialize_macro_lo_; \
-                    if ( !serialize_decoded_fits_destination( serialize_macro_ranged_value_, value ) ) \
+                    if ( !serialize_decoded_bits_fit_destination( serialize_macro_ranged_value_, serialize_macro_bits_, value ) ) \
                     {                                                   \
                         return serialize::serialize_fail( stream, serialize::REFUSAL_VALUE_OUT_OF_RANGE ); \
                     }                                                   \
@@ -4442,7 +4468,7 @@ namespace serialize
                 {                                                                           \
                     return false;                                                           \
                 }                                                                           \
-                if ( !serialize_decoded_fits_destination( serialize_macro_uint32_value_, value ) )          \
+                if ( !serialize_decoded_bits_fit_destination( serialize_macro_uint32_value_, serialize_macro_bits_, value ) )          \
                 {                                                                           \
                     return serialize::serialize_fail( stream, serialize::REFUSAL_VALUE_OUT_OF_RANGE ); \
                 }                                                                           \
@@ -4462,7 +4488,7 @@ namespace serialize
                 }                                                                           \
                 {                                                                           \
                     const uint64_t serialize_macro_ranged_value_ = ( uint64_t(serialize_macro_hi_) << 32 ) | serialize_macro_lo_;      \
-                    if ( !serialize_decoded_fits_destination( serialize_macro_ranged_value_, value ) ) \
+                    if ( !serialize_decoded_bits_fit_destination( serialize_macro_ranged_value_, serialize_macro_bits_, value ) ) \
                     {                                                                       \
                         return serialize::serialize_fail( stream, serialize::REFUSAL_VALUE_OUT_OF_RANGE ); \
                     }                                                                       \
@@ -4475,7 +4501,7 @@ namespace serialize
         Read a ranged integer from the stream, the read-only companion to serialize_int.
         On a call that does not refuse, value, min and max are each evaluated exactly once, in every build mode, so those arguments may carry a side effect. A refused read does not evaluate value, and leaves it as the caller left it. stream is evaluated once on the path taken.
         @param stream The stream object. Must be a read stream.
-        @param value The integer the read writes. The destination must be wide enough to hold the range.
+        @param value The integer the read writes. A value that does not fit the destination is refused and the destination is left unchanged.
         @param min The minimum value.
         @param max The maximum value.
      */
@@ -5037,7 +5063,7 @@ namespace serialize
         Serialize macros returns false on error so we don't need to use exceptions for error handling on read. This is an important safety measure because packet data comes from the network and may be malicious.
         IMPORTANT: This macro must be called inside a templated serialize function with template \<typename Stream\>. The serialize method must have a bool return value.
         @param stream The stream object. May be a read, write or measure stream.
-        @param value The integer value to serialize in [min,max].
+        @param value The integer value to serialize in [min,max]. On read, a value that does not fit the destination is refused and the destination is left unchanged.
         @param min The minimum value. Must be a constant expression.
         @param max The maximum value. Must be a constant expression.
      */
@@ -5057,6 +5083,10 @@ namespace serialize
             }                                                                               \
             if ( Stream::IsReading )                                                        \
             {                                                                               \
+                if ( !serialize_decoded_fits_destination( serialize_macro_int32_value_, value ) ) \
+                {                                                                           \
+                    return serialize::serialize_fail( stream, serialize::REFUSAL_VALUE_OUT_OF_RANGE ); \
+                }                                                                           \
                 value = serialize::decoded( serialize_macro_int32_value_ );                              \
             }                                                                               \
         } while (0)
@@ -5067,7 +5097,7 @@ namespace serialize
         Serialize macros returns false on error so we don't need to use exceptions for error handling on read. This is an important safety measure because packet data comes from the network and may be malicious.
         IMPORTANT: This macro must be called inside a templated serialize function with template \<typename Stream\>. The serialize method must have a bool return value.
         @param stream The stream object. May be a read, write or measure stream.
-        @param value The 64 bit integer value to serialize in [min,max].
+        @param value The 64 bit integer value to serialize in [min,max]. On read, a value that does not fit the destination is refused and the destination is left unchanged.
         @param min The minimum value. Must be a constant expression.
         @param max The maximum value. Must be a constant expression.
      */
@@ -5087,6 +5117,10 @@ namespace serialize
             }                                                                               \
             if ( Stream::IsReading )                                                        \
             {                                                                               \
+                if ( !serialize_decoded_fits_destination( serialize_macro_int64_value_, value ) ) \
+                {                                                                           \
+                    return serialize::serialize_fail( stream, serialize::REFUSAL_VALUE_OUT_OF_RANGE ); \
+                }                                                                           \
                 value = serialize::decoded( serialize_macro_int64_value_ );                              \
             }                                                                               \
         } while (0)
@@ -5097,7 +5131,7 @@ namespace serialize
         Serialize macros returns false on error so we don't need to use exceptions for error handling on read. This is an important safety measure because packet data comes from the network and may be malicious.
         IMPORTANT: This macro must be called inside a templated serialize function with template \<typename Stream\>. The serialize method must have a bool return value.
         @param stream The stream object. May be a read, write or measure stream.
-        @param value The unsigned integer value to serialize.
+        @param value The unsigned integer value to serialize. On read, the field is a bit pattern, judged as serialize_bits judges it: a field the destination cannot hold is refused and the destination is left unchanged.
         @param bits The number of bits to serialize in [1,32]. Must be a constant expression.
      */
 
@@ -5116,6 +5150,10 @@ namespace serialize
             }                                                                               \
             if ( Stream::IsReading )                                                        \
             {                                                                               \
+                if ( !serialize_decoded_bits_fit_destination( serialize_macro_uint32_value_, (bits), value ) ) \
+                {                                                                           \
+                    return serialize::serialize_fail( stream, serialize::REFUSAL_VALUE_OUT_OF_RANGE ); \
+                }                                                                           \
                 value = serialize::decoded( serialize_macro_uint32_value_ );                             \
             }                                                                               \
         } while (0)
@@ -5126,7 +5164,7 @@ namespace serialize
         Serialize macros returns false on error so we don't need to use exceptions for error handling on read. This is an important safety measure because packet data comes from the network and may be malicious.
         IMPORTANT: This macro must be called inside a templated serialize function with template \<typename Stream\>. The serialize method must have a bool return value.
         @param stream The stream object. May be a read, write or measure stream.
-        @param value The unsigned 64 bit integer value to serialize.
+        @param value The unsigned 64 bit integer value to serialize. On read, the field is a bit pattern, judged as serialize_bits judges it: a field the destination cannot hold is refused and the destination is left unchanged.
         @param bits The number of bits to serialize in [1,64]. Must be a constant expression.
      */
 
@@ -5145,6 +5183,10 @@ namespace serialize
             }                                                                               \
             if ( Stream::IsReading )                                                        \
             {                                                                               \
+                if ( !serialize_decoded_bits_fit_destination( serialize_macro_uint64_value_, (bits), value ) ) \
+                {                                                                           \
+                    return serialize::serialize_fail( stream, serialize::REFUSAL_VALUE_OUT_OF_RANGE ); \
+                }                                                                           \
                 value = serialize::decoded( serialize_macro_uint64_value_ );                                                       \
             }                                                                               \
         } while (0)
@@ -7369,6 +7411,12 @@ template <typename Stream, typename T> inline bool test_run_serialize_int_dest( 
     return true;
 }
 
+template <typename Stream, typename T> inline bool test_run_serialize_int_signed_dest( Stream & stream, T & value )
+{
+    serialize_int( stream, value, -5, 5 );
+    return true;
+}
+
 template <typename Stream, typename T> inline bool test_run_read_int_dest( Stream & stream, T & value )
 {
     read_int( stream, value, 0, 1000 );
@@ -7870,6 +7918,95 @@ inline void test_ranged_read_destination_fit()
         serialize_check( test_run_read_bits_dest( streamB, valueB, 40 ) == false );
         serialize_check( valueB == 77 );
         serialize_check( streamB.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
+    }
+    // a raw bit read into a signed destination of the field's width reads the bit pattern: ff ff ff ff in 32 bits is -1
+    {
+        uint8_t buffer[32 + 8] = { 0 };
+        {
+            serialize::WriteStream writeStream( buffer, 32 );
+            uint64_t wide = 0xFFFFFFFFULL;
+            serialize_check( test_run_bits( writeStream, wide, 32 ) == true );
+            writeStream.Flush();
+        }
+        serialize::ReadStream streamA( buffer, 32 );
+        int32_t valueA = 77;
+        serialize_check( test_run_serialize_bits_dest( streamA, valueA, 32 ) == true );
+        serialize_check( valueA == -1 );
+        serialize::ReadStream streamB( buffer, 32 );
+        int32_t valueB = 77;
+        serialize_check( test_run_read_bits_dest( streamB, valueB, 32 ) == true );
+        serialize_check( valueB == -1 );
+    }
+    // the same in 64 bits: 01 00 00 00 00 00 00 80 is INT64_MIN + 1
+    {
+        uint8_t buffer[32 + 8] = { 0 };
+        {
+            serialize::WriteStream writeStream( buffer, 32 );
+            uint64_t wide = 0x8000000000000001ULL;
+            serialize_check( test_run_bits( writeStream, wide, 64 ) == true );
+            writeStream.Flush();
+        }
+        serialize::ReadStream streamA( buffer, 32 );
+        int64_t valueA = 77;
+        serialize_check( test_run_serialize_bits_dest( streamA, valueA, 64 ) == true );
+        serialize_check( valueA == INT64_MIN + 1 );
+        serialize::ReadStream streamB( buffer, 32 );
+        int64_t valueB = 77;
+        serialize_check( test_run_read_bits_dest( streamB, valueB, 64 ) == true );
+        serialize_check( valueB == INT64_MIN + 1 );
+    }
+    // and in 8 bits into plain char, whichever signedness char has: c8 reads as the byte c8
+    {
+        uint8_t buffer[32 + 8] = { 0xC8 };
+        serialize::ReadStream streamA( buffer, 32 );
+        char valueA = 'x';
+        serialize_check( test_run_serialize_bits_dest( streamA, valueA, 8 ) == true );
+        serialize_check( uint8_t( valueA ) == 0xC8 );
+        serialize::ReadStream streamB( buffer, 32 );
+        char valueB = 'x';
+        serialize_check( test_run_read_bits_dest( streamB, valueB, 8 ) == true );
+        serialize_check( uint8_t( valueB ) == 0xC8 );
+    }
+    // a raw bit field wider than a signed destination: ffc8 in 16 bits is the low 16 bits of -56, so it reads into a signed char as -56
+    {
+        uint8_t buffer[32 + 8] = { 0xC8, 0xFF };
+        serialize::ReadStream streamA( buffer, 32 );
+        signed char valueA = 7;
+        serialize_check( test_run_serialize_bits_dest( streamA, valueA, 16 ) == true );
+        serialize_check( valueA == -56 );
+        serialize::ReadStream streamB( buffer, 32 );
+        signed char valueB = 7;
+        serialize_check( test_run_read_bits_dest( streamB, valueB, 16 ) == true );
+        serialize_check( valueB == -56 );
+    }
+    // but 00c8 in 16 bits is 200, which no signed char holds, so it is refused
+    {
+        uint8_t buffer[32 + 8] = { 0xC8 };
+        serialize::ReadStream streamA( buffer, 32 );
+        signed char valueA = 7;
+        serialize_check( test_run_serialize_bits_dest( streamA, valueA, 16 ) == false );
+        serialize_check( valueA == 7 );
+        serialize_check( streamA.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
+        serialize::ReadStream streamB( buffer, 32 );
+        signed char valueB = 7;
+        serialize_check( test_run_read_bits_dest( streamB, valueB, 16 ) == false );
+        serialize_check( valueB == 7 );
+        serialize_check( streamB.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
+    }
+    // a ranged read keeps the sign: -1 over [-5,5] does not fit an unsigned destination of the same width
+    {
+        uint8_t buffer[32 + 8] = { 0 };
+        {
+            serialize::WriteStream writeStream( buffer, 32 );
+            int32_t wide = -1;
+            writeStream.SerializeInteger( wide, -5, 5 );
+            writeStream.Flush();
+        }
+        serialize::ReadStream streamA( buffer, 32 );
+        uint32_t valueA = 77;
+        serialize_check( test_run_serialize_int_signed_dest( streamA, valueA ) == false );
+        serialize_check( valueA == 77 );
+        serialize_check( streamA.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
     }
 }
 
@@ -10217,6 +10354,76 @@ inline void test_compile_time_bits_validation()
     }
 }
 
+template <typename Stream, typename T> bool serialize_int_compile_time_dest( Stream & stream, T & value )
+{
+    serialize_int_compile_time( stream, value, 0, 1000 );
+    return true;
+}
+
+template <typename Stream, typename T> bool serialize_int64_compile_time_dest( Stream & stream, T & value )
+{
+    serialize_int64_compile_time( stream, value, 0, 1000 );
+    return true;
+}
+
+template <typename Stream, typename T> bool serialize_bits_compile_time_dest( Stream & stream, T & value )
+{
+    serialize_bits_compile_time( stream, value, 16 );
+    return true;
+}
+
+template <typename Stream, typename T> bool serialize_bits64_compile_time_dest( Stream & stream, T & value )
+{
+    serialize_bits64_compile_time( stream, value, 40 );
+    return true;
+}
+
+inline void test_compile_time_destination_fit()
+{
+    // the compile time forms refuse a value the destination cannot hold, as the runtime forms do, and leave it unchanged
+    uint8_t buffer[16 + 8] = { 0 };          // + 8: read buffer allocations extend 8 bytes past the data
+    {
+        serialize::WriteStream writeStream( buffer, 16 );
+        int32_t wide = 300;
+        writeStream.SerializeInteger( wide, 0, 1000 );
+        writeStream.Flush();
+    }
+    {
+        serialize::ReadStream readStream( buffer, 16 );
+        uint8_t value = 77;
+        serialize_check( serialize_int_compile_time_dest( readStream, value ) == false );
+        serialize_check( value == 77 );
+        serialize_check( readStream.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
+    }
+    {
+        serialize::ReadStream readStream( buffer, 16 );
+        uint8_t value = 77;
+        serialize_check( serialize_int64_compile_time_dest( readStream, value ) == false );
+        serialize_check( value == 77 );
+        serialize_check( readStream.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
+    }
+    {
+        serialize::ReadStream readStream( buffer, 16 );
+        uint8_t value = 77;
+        serialize_check( serialize_bits_compile_time_dest( readStream, value ) == false );
+        serialize_check( value == 77 );
+        serialize_check( readStream.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
+    }
+    {
+        serialize::WriteStream writeStream( buffer, 16 );
+        uint64_t wide = uint64_t( 0x123456789ULL );
+        serialize_check( serialize_bits64_compile_time_form<40>( writeStream, wide ) == true );
+        writeStream.Flush();
+    }
+    {
+        serialize::ReadStream readStream( buffer, 16 );
+        uint32_t value = 77;
+        serialize_check( serialize_bits64_compile_time_dest( readStream, value ) == false );
+        serialize_check( value == 77 );
+        serialize_check( readStream.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
+    }
+}
+
 // a packet exercising every compile time form next to its runtime twin, field for field
 
 struct CompileTimeTestPacket
@@ -12187,6 +12394,14 @@ template <typename Stream> bool ZeroLengthStringSerialize( Stream & stream, uint
     return true;
 }
 
+#if ( defined( __cplusplus ) && __cplusplus >= 201103L ) || defined( _MSC_VER )
+template <typename Stream> bool test_run_read_bytes_nullptr( Stream & stream )
+{
+    read_bytes( stream, nullptr, 0 );
+    return true;
+}
+#endif
+
 inline void test_zero_length_bytes_null_buffer()
 {
     // A zero-length byte span may carry a null data pointer: an empty container is allowed to
@@ -12235,6 +12450,21 @@ inline void test_zero_length_bytes_null_buffer()
         serialize_check( stream.SerializeBytes( null_data, 1 ) == false );
         serialize_check( stream.GetRefusal() == serialize::REFUSAL_VALUE_OUT_OF_RANGE );
     }
+
+#if ( defined( __cplusplus ) && __cplusplus >= 201103L ) || defined( _MSC_VER )
+    {
+        // the split forms take the literal nullptr as well as a null pointer
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        serialize::WriteStream writeStream( buffer, (int) sizeof( buffer ) );
+        write_bytes( writeStream, nullptr, 0 );
+        writeStream.Flush();
+        serialize_check( writeStream.GetBitsProcessed() == 0 );
+        serialize::ReadStream readStream( buffer, 8 );
+        serialize_check( test_run_read_bytes_nullptr( readStream ) == true );
+        serialize_check( readStream.GetBitsProcessed() == 0 );
+    }
+#endif
 }
 
 inline void test_golden_zero_length_string()
@@ -13207,6 +13437,7 @@ inline void serialize_test()
         SERIALIZE_RUN_TEST( test_compile_time_int_validation );
         SERIALIZE_RUN_TEST( test_compile_time_int64_validation );
         SERIALIZE_RUN_TEST( test_compile_time_bits_validation );
+        SERIALIZE_RUN_TEST( test_compile_time_destination_fit );
         SERIALIZE_RUN_TEST( test_compile_time_packet );
 #endif // #if defined( SERIALIZE_HAS_COMPILE_TIME_SURFACE )
         SERIALIZE_RUN_TEST( test_golden_wire_format );

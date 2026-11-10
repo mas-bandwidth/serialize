@@ -234,6 +234,12 @@ it now refuses. A read stream over a negative byte count refused but reported
 none; it now latches `value_out_of_range` at initialization. A ranged read with
 `min > max` accepted wrong data; it now refuses. test_uniform_rules.)*
 
+A `bytes` read with no destination and a positive count is caller misuse on
+read, and must refuse as `value_out_of_range` before any bits move. A `bytes` of
+zero count with no destination is not misuse on any stream: it performs the
+align, as every `bytes` does, and copies nothing. *(C++ 2.1.4; the wire is
+unchanged. test_zero_length_bytes_null_buffer.)*
+
 **U8. Over-wide values on write are caught in the checked build.** Every
 implementation's checked build (debug, dev, `-ea`, or an always-checked port)
 must catch a value that does not fit its bit width, as "The check model" above
@@ -312,7 +318,12 @@ and payload, before the first bit; asserts.cpp proves the whole-operation check
 is the first assertion to fire.)*
 
 **U11. A writer's buffer is unspecified until flush.** Flush is required, and
-every implementation's documentation says so. *(C++: `WriteStream::Flush`.)*
+every implementation's documentation says so. Flush ends the write: a write
+after a flush that stored a partial word is write misuse (U9), because its bits
+would land past the bytes the writer reports. *(C++: `WriteStream::Flush`; since
+2.1.4 `BitWriter::WriteBits` asserts `m_scratchBits == m_bitsWritten % 64`, and
+release output after it is unspecified. asserts.cpp,
+test_write_bits_after_flush_asserts.)*
 
 **U12. `end` on a write or measure stream is a no-op returning true.** *(C++:
 test_uniform_rules.)*
@@ -461,3 +472,51 @@ capacity of its own, so the capacity rule has nothing to check there; a
 fixed point declaration that does not fit its Q format is a compile error;
 string `buffer_size` is U7. On write and measure each of these stays a debug
 assertion. test_uniform_rules proves the read refusals.)*
+
+*A scalar destination's width is a capacity of its own.* Where the API stores a
+decoded value into a caller's variable of a type the declaration does not fix
+(C++ macros and templates; a typed reader such as C's typed pointers, Rust's
+`u8` or Go's `uint8` fixes it, and has nothing to check), a read must refuse as
+`value_out_of_range`, with the destination unwritten, when the destination
+cannot hold what was decoded. An accepted read never stores a value other than
+the one decoded, with one exception the caller owns: a C++ bit-field
+destination is checked against its declared type, not its width, so the
+caller sizes the bit field to hold the declared range.
+
+* **A ranged read** (`int`, `int64`, `int128`, and `int_relative`) judges the
+  decoded value, sign included: 300 over `[0,1000]` does not fit an 8-bit
+  unsigned destination, and -1 over `[-5,5]` does not fit an unsigned one of
+  any width. `int_relative` judges the reconstruction after the domain and
+  ordering checks: 135000 does not fit a 16-bit `current`.
+* **A raw bit read** (`bits`, the `uint8` to `uint64` aliases, `bool`) judges
+  the bit pattern: it is accepted when the low `bits` bits of the
+  destination's two's complement value equal the bits read. `ff ff ff ff` in
+  32 bits reads into a signed 32-bit destination as -1, `c8` in 8 bits into a
+  `char` of either signedness, and `ffc8` in 16 bits into a signed 8-bit
+  destination as -56; 300 in 16 bits into an 8-bit destination, `00c8` in 16
+  bits into a signed 8-bit one, a 40-bit value into a 32-bit one, and `02` in
+  8 bits into a `bool` are refused. This is a read rule only: writing a
+  negative value through a raw bit field stays write misuse (U8).
+
+| read | wire | result |
+|---|---|---|
+| `int` over `[0,1000]` into `uint8_t` | `2c 01` | refused `value_out_of_range` |
+| `bits` 16 into `uint8_t` | `2c 01` | refused `value_out_of_range` |
+| `bits` 40 into `uint32_t` | `01 00 00 00 01` | refused `value_out_of_range` |
+| `bits` 8 into `bool` | `02` | refused `value_out_of_range` |
+| `bits` 32 into `int32_t` | `ff ff ff ff` | accepted, -1 |
+| `bits` 16 into `signed char` | `c8 ff` | accepted, -56 |
+| `bits` 16 into `signed char` | `c8 00` | refused `value_out_of_range` |
+| `int_relative` absolute tier, 135000, into `uint16_t` after 65000 | `00 d6 83 00 00` | refused `value_out_of_range` |
+
+*(C++ 2.1.4: every ranged and raw read macro, the `read_` forms and the
+compile time forms; test_ranged_read_destination_fit,
+test_compile_time_destination_fit, test_int_relative_validation.)*
+
+*A refused string read into a fixed-capacity buffer* (C, C++, goose) leaves the
+buffer NUL terminated at the length read whenever the payload was read: a
+refusal for the payload's content (`invalid_utf8`, `embedded_nul`) leaves the
+sender's bytes and a terminator, never an unterminated buffer. A refusal before
+the payload is read leaves the buffer as STANDARD.md says, unspecified. *(C++
+2.1.4: the terminator is written straight after the bytes, before the content
+checks. test_string_read_validation.)*
