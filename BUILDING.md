@@ -42,7 +42,7 @@ If you use CMake, you can consume it as a target instead — via FetchContent:
     FetchContent_MakeAvailable(serialize)
     target_link_libraries(your_target PRIVATE serialize::serialize)
 
-or via `add_subdirectory`, or install it (`cmake --install build`) and use `find_package(serialize CONFIG REQUIRED)`. In all cases the `serialize::serialize` target carries only the include path: none of this repo's warning or fast-math flags leak into your build, and the test and example targets are only built when serialize is the top level project.
+or via `add_subdirectory`, or install it (`cmake --install build`) and use `find_package(serialize CONFIG REQUIRED)`. In all cases the `serialize::serialize` target carries only the include path: none of this repo's warning or floating-point flags leak into your build, and the test and example targets are only built when serialize is the top level project.
 
 `GIT_TAG` names a release, never a branch. A release carries a stated format version, and both endpoints of a connection must run releases carrying the same format version or they do not interoperate. The format version is stated at the head of [STANDARD.md](STANDARD.md) and is not the library version; [COMPATIBILITY.md](COMPATIBILITY.md) lists the release of every implementation in the family that carries the current one. A floating branch moves one endpoint on its own schedule, which is how two endpoints end up on different format versions.
 
