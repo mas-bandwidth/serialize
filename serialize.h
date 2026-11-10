@@ -5045,6 +5045,66 @@ inline void test_bits_required()
     serialize_check( serialize::bits_required( 0, 4294967295 ) == 32 );
 }
 
+template <uint32_t x> inline void check_bit_helpers_compile_time()
+{
+    serialize_check( static_cast<uint32_t>( serialize::PopCount<x>::result ) == serialize::popcount( x ) );
+    serialize_check( static_cast<uint32_t>( serialize::Log2<x>::result ) == serialize::log2( x ) );
+}
+
+template <int64_t min, int64_t max> inline void check_bits_required_compile_time()
+{
+    serialize_check( static_cast<int>( serialize::BitsRequired<min, max>::result ) == serialize::bits_required( static_cast<uint32_t>( min ), static_cast<uint32_t>( max ) ) );
+}
+
+inline void test_compile_time_bit_helpers()
+{
+    // PopCount and Log2 against their runtime forms at the boundary shapes: zero, one, powers of
+    // two, one less than a power of two, and the top of the 32 bit range.
+    check_bit_helpers_compile_time<0>();
+    check_bit_helpers_compile_time<1>();
+    check_bit_helpers_compile_time<2>();
+    check_bit_helpers_compile_time<3>();
+    check_bit_helpers_compile_time<4>();
+    check_bit_helpers_compile_time<7>();
+    check_bit_helpers_compile_time<8>();
+    check_bit_helpers_compile_time<15>();
+    check_bit_helpers_compile_time<16>();
+    check_bit_helpers_compile_time<31>();
+    check_bit_helpers_compile_time<32>();
+    check_bit_helpers_compile_time<255>();
+    check_bit_helpers_compile_time<256>();
+    check_bit_helpers_compile_time<65535>();
+    check_bit_helpers_compile_time<65536>();
+    check_bit_helpers_compile_time<0x7FFFFFFF>();
+    check_bit_helpers_compile_time<0x80000000>();
+    check_bit_helpers_compile_time<0xFFFFFFFF>();
+
+    // the full word: 32 bits set, and the highest set bit is 31
+    serialize_check( ( serialize::PopCount<0xFFFFFFFF>::result ) == 32 );
+    serialize_check( ( serialize::Log2<0xFFFFFFFF>::result ) == 31 );
+
+    // BitsRequired against the runtime bits_required over the same boundaries, plus a signed
+    // range and a degenerate range where min == max.
+    check_bits_required_compile_time<0, 0>();
+    check_bits_required_compile_time<5, 5>();
+    check_bits_required_compile_time<0, 1>();
+    check_bits_required_compile_time<0, 2>();
+    check_bits_required_compile_time<0, 3>();
+    check_bits_required_compile_time<0, 4>();
+    check_bits_required_compile_time<0, 7>();
+    check_bits_required_compile_time<0, 8>();
+    check_bits_required_compile_time<0, 15>();
+    check_bits_required_compile_time<0, 16>();
+    check_bits_required_compile_time<0, 255>();
+    check_bits_required_compile_time<0, 256>();
+    check_bits_required_compile_time<0, 65535>();
+    check_bits_required_compile_time<0, 65536>();
+    check_bits_required_compile_time<0, 0x7FFFFFFF>();
+    check_bits_required_compile_time<-100, 100>();
+    check_bits_required_compile_time<INT32_MIN, INT32_MAX>();
+    check_bits_required_compile_time<0, 0xFFFFFFFF>();
+}
+
 inline void test_bits_required64()
 {
     serialize_check( serialize::bits_required64( 0, 0 ) == 0 );
@@ -11467,13 +11527,13 @@ inline void test_measure_bound()
 
 inline void test_unaligned_writer()
 {
-    // the bit writer stores each dword with memcpy, so the write buffer does not need 4 byte alignment.
-    // exercise every offset within a dword, covering the WriteBits, WriteBytes and FlushBits store paths.
+    // the bit writer stores each qword with memcpy, so the write buffer does not need any alignment.
+    // exercise every byte offset within a qword, covering the WriteBits, WriteBytes and FlushBits store paths.
 
-    uint32_t storage_words[( 256 + 4 ) / 4];                    // uint32_t backing guarantees 4 byte alignment without requiring C++11 alignas
+    uint32_t storage_words[( 256 + 8 ) / 4];                    // uint32_t backing guarantees 4 byte alignment without requiring C++11 alignas
     uint8_t * storage = (uint8_t*) storage_words;
 
-    for ( int offset = 0; offset < 4; offset++ )
+    for ( int offset = 0; offset < 8; offset++ )
     {
         memset( storage, 0, sizeof( storage_words ) );
 
@@ -12139,6 +12199,7 @@ inline void serialize_test()
         SERIALIZE_RUN_TEST( test_endian );
         SERIALIZE_RUN_TEST( test_bitpacker );
         SERIALIZE_RUN_TEST( test_bits_required );
+        SERIALIZE_RUN_TEST( test_compile_time_bit_helpers );
         SERIALIZE_RUN_TEST( test_bits_required64 );
         SERIALIZE_RUN_TEST( test_bits_required128 );
         SERIALIZE_RUN_TEST( test_zigzag );
