@@ -475,11 +475,11 @@ assertion. test_uniform_rules proves the read refusals.)*
 
 *A scalar destination's width is a capacity of its own.* Where the API stores a
 decoded value into a caller's variable of a type the declaration does not fix
-(C and C++ macros and templates; a typed reader such as Rust's `u8` or Go's
-`uint8` fixes it, and has nothing to check), a read must refuse as
+(C++ macros and templates; a typed reader such as C's typed pointers, Rust's
+`u8` or Go's `uint8` fixes it, and has nothing to check), a read must refuse as
 `value_out_of_range`, with the destination unwritten, when the destination
 cannot hold what was decoded. An accepted read never stores a value other than
-the one decoded, with one exception the caller owns: a C or C++ bit-field
+the one decoded, with one exception the caller owns: a C++ bit-field
 destination is checked against its declared type, not its width, so the
 caller sizes the bit field to hold the declared range.
 
