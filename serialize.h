@@ -4494,7 +4494,7 @@ namespace serialize
         Read a ranged integer from the stream, the read-only companion to serialize_int.
         On a call that does not refuse, value, min and max are each evaluated exactly once, in every build mode, so those arguments may carry a side effect. A refused read does not evaluate value, and leaves it as the caller left it. stream is evaluated once on the path taken.
         @param stream The stream object. Must be a read stream.
-        @param value The integer the read writes. The destination must be wide enough to hold the range.
+        @param value The integer the read writes. A value that does not fit the destination is refused and the destination is left unchanged.
         @param min The minimum value.
         @param max The maximum value.
      */
