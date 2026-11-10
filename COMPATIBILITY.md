@@ -44,7 +44,7 @@ behind it.
 
 ## What 2.0 changed, and what it breaks
 
-The principle *(Glenn Fiedler, 2026-10-22)*: the wire carries only integers and
+The principle *(2026-10-22)*: the wire carries only integers and
 bytes, and every value has exactly one encoding. **Every finite value 1.1 could
 carry keeps its exact bytes.** What breaks:
 
