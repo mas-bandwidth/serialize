@@ -114,7 +114,7 @@ jobs:
       # dead: the comment arrives, no `if` matches, the job never starts, and
       # the contributor gets no run, no log and no error. It is also the only
       # way to clear a red check after a signature is recorded by hand.
-      # Dependabot (Glenn, 2026-10-27): its PRs skip the CAA. The test is the
+      # Dependabot (the owner, 2026-10-27): its PRs skip the CAA. The test is the
       # PR's author LOGIN, which GitHub verifies, never a commit author name
       # (see `allowlist` below for why a name entry would be a bypass).
       # Dependabot branches live in this repository, so only accounts with
@@ -138,15 +138,13 @@ jobs:
           branch: cla-signatures
           path-to-signatures: signatures/caa.json
           path-to-document: https://github.com/mas-bandwidth/.github/blob/main/CAA.md
-          # LOGINS ONLY (Glenn, 2026-10-22: "remove all name entries from the CAA
-          # allowlist in every repo, allow-list logins only"; "So it's my login
-          # and yours"). The action matches a commit that has no linked GitHub
+          # LOGINS ONLY (the owner, 2026-10-22: "remove all name entries from the CAA
+          # allowlist in every repo, allow-list logins only"). The action matches a commit that has no linked GitHub
           # account by its git author NAME, which anyone can set, so every name
           # entry, and every wildcard (*[bot] included: the name match applies
           # to it too), let an outsider skip the CAA. A login is verified by
-          # GitHub and cannot be spoofed. Our agents commit as
-          # Rowan Claude <305107455+rowan-claude@users.noreply.github.com>,
-          # which GitHub links to the rowan-claude login. The action always
+          # GitHub and cannot be spoofed. Our agents commit under a
+          # noreply address that GitHub links to the agent login on this list. The action always
           # skips github-actions[bot] itself (user id 41898282); any other bot
           # is not on this list and fails it (dependabot is skipped by the
           # step's condition above, by verified PR author). Never add a

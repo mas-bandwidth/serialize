@@ -10,7 +10,7 @@ DECISIONS THAT READ AS BUGS (they are not — do not "fix" them)
   attacker-controlled data. The library is low-level C-style and deliberately does not use
   exceptions. Serialize functions must be `template <typename Stream>` returning bool. Do
   not propose exceptions or error codes; the early-return macro IS the mechanism.
-- **serialize.h is clean under `-Wconversion -Wsign-conversion -Wcast-qual -Wundef`** (2.1.3, Glenn's zero warnings rule: framework builds with them as errors). Every conversion is spelled with a cast, and the macros assign the decoded temporary back through `serialize::decoded()`. The machine code is unchanged; do not drop the casts to "simplify". The CI job `strict warnings` (warnings.cpp, test.cpp, clang and gcc, with a negative control) holds it. A change on the packet-wire path still needs before/after packet-wire bench numbers.
+- **serialize.h is clean under `-Wconversion -Wsign-conversion -Wcast-qual -Wundef`** (2.1.3, the zero warnings rule: consumer builds use them as errors). Every conversion is spelled with a cast, and the macros assign the decoded temporary back through `serialize::decoded()`. The machine code is unchanged; do not drop the casts to "simplify". The CI job `strict warnings` (warnings.cpp, test.cpp, clang and gcc, with a negative control) holds it. A change on the packet-wire path still needs before/after packet-wire bench numbers.
 - **Asserts on the write path, runtime validation on the read path.** Write-side misuse is
   a programmer error (size buffers conservatively or pre-measure with `MeasureStream`); the
   READ path validates in release and drops invalid data, because asserts are not enough at
@@ -52,7 +52,7 @@ DECISIONS THAT READ AS BUGS (they are not — do not "fix" them)
   helpers there. Do not remove the qualifiers, and do not trust member-restrict placements.
 
 THE WRITE/READ RULE — this library is the clearest statement of it, IN ITS OWN DOCS
-Glenn, 2026-07-26: "intention is on write, user is responsible to not crash or do undefined
+The owner, 2026-07-26: "intention is on write, user is responsible to not crash or do undefined
 behavior. asserts are there to help. callers responsibility. on read, obviously, we must
 check." Plus Postel: "be conservative in what you send, permissive in what you receive."
 serialize.h says it directly in WriteStream::SerializeInteger, SerializeInteger64 and

@@ -18,7 +18,7 @@ and a release states which format version it implements.
 in the family that carries it, pinned to the commit of this document and of the
 corpus that those releases vendor.
 
-The principle 2.0 adopts *(Glenn Fiedler, 2026-10-22)*: **the wire carries only
+The principle 2.0 adopts *(2026-10-22)*: **the wire carries only
 integers and bytes, and every value has exactly one encoding.** A reader
 refuses anything a conforming writer cannot produce, so the same value is always
 the same bytes. [vectors: message-golden-whole, align-refuse-one-non-zero-pad-bit, end-refuse-zero-byte-after-an-unaligned-object, end-refuse-lowest-padding-bit, absolute-refuse-non-canonical-difference-of-one, float-refuse-quiet-nan, int-range-0-8-refuse-offset-one-past-the-span]
@@ -389,7 +389,7 @@ The 64 bits of the IEEE-754 double-precision representation, written as one
 
 ### Finite values only, every one bit exact
 
-*(Adopted 2026-10-22; Glenn Fiedler: "What if we just took all the non-correct
+*(Adopted 2026-10-22; the owner's words: "What if we just took all the non-correct
 numbers for float/double and just disallowed sending them across all langs?
 infs, nans and so on", then "Good. Let's do this".)*
 
@@ -883,7 +883,7 @@ Each rule's vectors include the values a wrong reading gets wrong.
 
 ## Provenance
 
-Written 2026-07-21 by Rowan, by reading the then-existing implementation and
+Written 2026-07-21 by reading the then-existing implementation and
 verifying every claim against its golden test vector, and revised for format
 2.0 on 2026-10-22.
 

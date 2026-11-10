@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-# A no-op build prints nothing (rowan-new#110). The per-target "Built target" lines are
+# A no-op build prints nothing. The per-target "Built target" lines are
 # the only output a rebuild with nothing to do produces, and they carry no information; a
 # real build still prints its [ x%] progress lines, and errors are untouched. This sits
 # above project() because CMAKE_TARGET_MESSAGES initializes the TARGET_MESSAGES global

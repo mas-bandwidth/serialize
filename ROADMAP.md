@@ -104,7 +104,7 @@ Tests that would go red if the code were wrong. A runner that skips an operation
 
 ## Speed
 
-Glenn's bar: each port is the fastest correct implementation its language allows, measured on the fleet with schema-generated code.
+The owner's bar: each port is the fastest correct implementation its language allows, measured on the fleet with schema-generated code.
 
 <!-- nova-work:speed:start -->
 
