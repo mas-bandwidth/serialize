@@ -115,8 +115,9 @@ struct ValuePool
     }
 };
 
-// the compressed float declarations the harness drives: a zero based band, bands with a non zero
-// low bound, resolutions from coarse to fine, and one whose resolution is coarser than the band
+// the compressed float declarations the harness drives: bands with a negative low bound, zero
+// based bands, resolutions from coarse to fine, and one whose resolution is coarser than the whole
+// band ({ 0, 1, 2 }: fewer than one step, which the params clamp up to one)
 struct FuzzCompressedFloatDeclaration
 {
     float min;
@@ -132,6 +133,7 @@ static const FuzzCompressedFloatDeclaration fuzz_compressed_float_declarations[]
     { -100.0f, +100.0f, 0.5f },
     { 0.0f,    +10.0f,  3.0f },
     { 0.0f,    +1.0f,   0.0001f },
+    { 0.0f,    +1.0f,   2.0f },
 };
 
 static const int fuzz_num_compressed_float_declarations =
