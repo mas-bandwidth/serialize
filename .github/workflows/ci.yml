@@ -138,8 +138,9 @@ jobs:
   # serialize.h is clean under the flags a strict consumer builds with: -Wconversion -Wsign-conversion
   # -Wcast-qual -Wundef -Wshadow, as errors, on both compilers. The serialize macros expand at the caller, so the
   # check is a consumer translation unit (warnings.cpp) that touches every macro with destinations of every
-  # width and signedness, plus the embedded tests (test.cpp), which are part of the header. Every cast that
-  # keeps it clean is the conversion the code already did, spelled out: the machine code is unchanged.
+  # width and signedness, plus the embedded tests (test.cpp), which are part of the header, and every
+  # other program (every *.cpp in the repository, found rather than listed) under the same flags. Every
+  # cast that keeps it clean is the conversion the code already did, spelled out: the machine code is unchanged.
   strict-warnings:
     name: strict warnings (${{ matrix.compiler }})
     runs-on: ubuntu-24.04
@@ -156,6 +157,10 @@ jobs:
             for mode in "-DSERIALIZE_DEBUG" "-DSERIALIZE_RELEASE -O2"; do
               ${{ matrix.compiler }} -std=$std -I. -Wall -Wextra -Wconversion -Wsign-conversion -Wcast-qual -Wundef -Wshadow -Werror -ffp-contract=off -fno-rtti $mode -c warnings.cpp -o /dev/null
               ${{ matrix.compiler }} -std=$std -I. -Wall -Wextra -Wconversion -Wsign-conversion -Wcast-qual -Wundef -Wshadow -Werror -ffp-contract=off -fno-rtti -DSERIALIZE_ENABLE_TESTS=1 $mode -c test.cpp -o /dev/null
+              for file in $(git ls-files '*.cpp'); do
+                if [ "$file" = warnings.cpp ] || [ "$file" = test.cpp ]; then continue; fi
+                ${{ matrix.compiler }} -std=$std -I. -Wall -Wextra -Wconversion -Wsign-conversion -Wcast-qual -Wundef -Wshadow -Werror -ffp-contract=off -fno-rtti $mode -c $file -o /dev/null
+              done
             done
           done
 

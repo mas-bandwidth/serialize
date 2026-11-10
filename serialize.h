@@ -4327,7 +4327,7 @@ namespace serialize
             serialize_assert( (bits) > 0 );                                                 \
             serialize_assert( (bits) <= 64 );                                               \
             serialize_assert( serialize::value_fits_in_bits( value, bits ) );               \
-            uint64_t serialize_macro_uint64_value_ = value;                                                  \
+            uint64_t serialize_macro_uint64_value_ = uint64_t( value );                                                  \
             if ( (bits) <= 32 )                                                             \
             {                                                                               \
                 uint32_t serialize_macro_uint32_value_ = (uint32_t) serialize_macro_uint64_value_;                            \
@@ -4387,7 +4387,7 @@ namespace serialize
     #define write_uint128( stream, value )                                                  \
         do                                                                                  \
         {                                                                                   \
-            serialize::uint128_t serialize_macro_uint128_value_ = ( value );                                 \
+            serialize::uint128_t serialize_macro_uint128_value_ = serialize::uint128_t( value );                                 \
             serialize::serialize_uint128_internal( stream, serialize_macro_uint128_value_ );                 \
         } while (0)
 
@@ -4807,7 +4807,7 @@ namespace serialize
             }                                                                               \
             if ( Stream::IsReading )                                                        \
             {                                                                               \
-                value = serialize_macro_uint64_value_;                                                       \
+                value = serialize::decoded( serialize_macro_uint64_value_ );                                                       \
             }                                                                               \
         } while (0)
 

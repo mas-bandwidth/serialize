@@ -217,7 +217,7 @@ inline int serialize_utf8_to_utf16( const char * input, int input_bytes, uint16_
         if ( consumed == 0 || code == 0 )
             return serialize_utf_refuse( output, output_units );
         const int needed = ( code >= 0x10000 ) ? 2 : 1;
-        if ( length + needed + 1 > output_units )
+        if ( (uint32_t) length + (uint32_t) needed + 1u > (uint32_t) output_units )
             return serialize_utf_refuse( output, output_units );
         if ( needed == 2 )
         {
