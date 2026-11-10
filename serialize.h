@@ -7372,6 +7372,7 @@ inline void test_compressed_float_validation()
 
 #include <unistd.h>         // fork, _exit
 #include <sys/wait.h>       // waitpid
+#include <signal.h>         // raise, SIGTERM
 
 // run fn in a forked child with stderr silenced, and report whether it died on a signal --
 // which is what a fired debug assert looks like from outside (assert calls abort, SIGABRT).
@@ -7449,6 +7450,22 @@ inline void test_compressed_float_non_finite_asserts()
 #else
     // silently skipped: needs an assert-enabled build and fork. An expected
     // skip is not information — the suite prints test names and failures only.
+#endif // #if !defined( NDEBUG ) && !defined( _WIN32 )
+}
+
+inline void serialize_test_die_without_assert()
+{
+    raise( SIGTERM );
+}
+
+inline void test_assert_death_is_recognized()
+{
+    // a child that dies on a signal other than an assertion must not be counted as one
+#if !defined( NDEBUG ) && !defined( _WIN32 )
+    serialize_check( serialize_test_assert_fires( serialize_test_die_without_assert ) == false );
+    serialize_check( serialize_test_assert_fires( serialize_test_write_non_finite_value ) == true );
+#else
+    // silently skipped: needs an assert-enabled build and fork.
 #endif // #if !defined( NDEBUG ) && !defined( _WIN32 )
 }
 
@@ -12166,6 +12183,7 @@ inline void serialize_test()
         SERIALIZE_RUN_TEST( test_read_stream_bits_remaining );
         SERIALIZE_RUN_TEST( test_compressed_float_validation );
         SERIALIZE_RUN_TEST( test_compressed_float_top_of_range_clamp );
+        SERIALIZE_RUN_TEST( test_assert_death_is_recognized );
         SERIALIZE_RUN_TEST( test_compressed_float_non_finite_asserts );
         SERIALIZE_RUN_TEST( test_compressed_float_precomputed_validation );
         SERIALIZE_RUN_TEST( test_compressed_float_precomputed_asserts );
