@@ -11517,14 +11517,7 @@ inline void test_large_buffer()
 
     const int64_t bufferSize = int64_t( 320 ) * 1024 * 1024;
     uint8_t * buffer = (uint8_t*) malloc( (size_t) bufferSize + 8 );        // + 8: read buffer allocations extend 8 bytes past the data
-    if ( !buffer )
-    {
-        if ( serialize_test_verbose() )
-        {
-            printf( "(skipped test_large_buffer: could not allocate the buffer)\n" );
-        }
-        return;
-    }
+    serialize_check( buffer != NULL );
 
     static uint8_t chunk[1024*1024];
     for ( int i = 0; i < (int) sizeof( chunk ); i++ )
@@ -11550,8 +11543,10 @@ inline void test_large_buffer()
         serialize::ReadStream readStream( buffer, bytesWritten );
         static uint8_t readChunk[1024*1024];
         for ( int i = 0; i < numChunks; i++ )
+        {
             serialize_check( readStream.SerializeBytes( readChunk, sizeof( readChunk ) ) == true );
-        serialize_check( memcmp( readChunk, chunk, sizeof( chunk ) ) == 0 );        // the final chunk, decoded from past the boundary
+            serialize_check( memcmp( readChunk, chunk, sizeof( chunk ) ) == 0 );    // every chunk, including those before the boundary
+        }
         uint32_t sentinel = 0;
         serialize_check( readStream.SerializeBits( sentinel, 32 ) == true );
         serialize_check( sentinel == 0xDEADBEEF );
