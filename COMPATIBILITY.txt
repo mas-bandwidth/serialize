@@ -39,9 +39,9 @@ version_pattern project(serialize VERSION 2.1.4 LANGUAGES CXX)
 runtime serialize.c
 language C
 repository mas-bandwidth/serialize.c
-release v2.1.1
+release v2.1.2
 version_file serialize.h
-version_pattern #define SERIALIZE_VERSION "2.1.1"
+version_pattern #define SERIALIZE_VERSION "2.1.2"
 
 runtime serialize.cs
 language C#
