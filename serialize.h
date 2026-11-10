@@ -4344,7 +4344,7 @@ namespace serialize
         do                                                                                  \
         {                                                                                   \
             char * serialize_macro_string_ptr_ = serialize::reinterpreted<char*>( string );                                         \
-            if ( !serialize_string_internal( stream, serialize_macro_string_ptr_, buffer_size ) )            \
+            if ( !serialize::serialize_string_internal( stream, serialize_macro_string_ptr_, buffer_size ) )            \
             {                                                                               \
                 return false;                                                               \
             }                                                                               \
@@ -11956,6 +11956,49 @@ struct MacroLocalNamesPacket
     }
 };
 
+struct ForwardingReadStream
+{
+    static const bool IsReading = true;
+    static const bool IsWriting = false;
+
+    explicit ForwardingReadStream( serialize::ReadStream & inner ) : m_inner( inner ) {}
+
+    bool SerializeInteger( int32_t & value, int32_t min, int32_t max )
+    {
+        return m_inner.SerializeInteger( value, min, max );
+    }
+
+    bool SerializeBytes( uint8_t * data, int64_t bytes )
+    {
+        return m_inner.SerializeBytes( data, bytes );
+    }
+
+    serialize::ReadStream & m_inner;
+};
+
+template <typename Stream> bool read_string_forwarding_stream( Stream & stream, char * string_ptr, int buffer_size )
+{
+    read_string( stream, string_ptr, buffer_size );
+    return true;
+}
+
+inline void test_read_string_forwarding_stream()
+{
+    uint8_t buffer[64];
+    const char * source = "forwarding stream";
+    char string_ptr[32];
+
+    serialize::WriteStream write_stream( buffer, (int64_t) sizeof( buffer ) );
+    serialize_check( write_string_plain_macro_local( write_stream, source, 32 ) == true );
+    write_stream.Flush();
+
+    memset( string_ptr, 0, sizeof( string_ptr ) );
+    serialize::ReadStream read_stream( buffer, write_stream.GetBytesProcessed() );
+    ForwardingReadStream forwarding_stream( read_stream );
+    serialize_check( read_string_forwarding_stream( forwarding_stream, string_ptr, 32 ) == true );
+    serialize_check( strcmp( string_ptr, source ) == 0 );
+}
+
 inline void test_macro_local_names()
 {
     // The public macros expand at the caller, so their local variables must not collide with
@@ -12411,6 +12454,7 @@ inline void serialize_test()
         SERIALIZE_RUN_TEST( test_measure_bound );
         SERIALIZE_RUN_TEST( test_unaligned_writer );
         SERIALIZE_RUN_TEST( test_large_buffer );
+        SERIALIZE_RUN_TEST( test_read_string_forwarding_stream );
         SERIALIZE_RUN_TEST( test_macro_local_names );
         SERIALIZE_RUN_TEST( test_fp_contract_on_skip_return_code );
     }
