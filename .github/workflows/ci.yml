@@ -164,13 +164,23 @@ jobs:
             done
           done
 
+      - name: The consumer translation unit under the broader GCC warning set
+        if: matrix.compiler == 'g++'
+        run: |
+          g++ -std=c++17 -I. -Wall -Wextra -Wconversion -Wsign-conversion -Wcast-qual -Wundef -Wshadow -Wold-style-cast -Wfloat-equal -Wuseless-cast -Werror -ffp-contract=off -fno-rtti -DSERIALIZE_DEBUG -c warnings.cpp -o /dev/null
+
+      - name: The consumer translation unit under clang's full warning set
+        if: matrix.compiler == 'clang++'
+        run: |
+          clang++ -std=c++17 -I. -Weverything -Werror -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-padded -Wno-unsafe-buffer-usage -Wno-missing-prototypes -Wno-pre-c++14-compat -Wno-covered-switch-default -ffp-contract=off -fno-rtti -DSERIALIZE_DEBUG -c warnings.cpp -o /dev/null
+
       # NEGATIVE CONTROL: the job must be able to go red. A scratch copy of the header with one of the
       # casts taken out again has to fail the consumer translation unit; if it passes, the flags are not
       # reaching the header and every green above is worth nothing.
       - name: Control, a header with one cast removed must fail
         run: |
           mkdir control && cp serialize.h warnings.cpp control/
-          sed -i 's/normalizedValue \* (float) max_integer_value;/normalizedValue * max_integer_value;/' control/serialize.h
+          sed -i 's/normalizedValue \* static_cast<float>( max_integer_value );/normalizedValue * max_integer_value;/' control/serialize.h
           cmp -s serialize.h control/serialize.h && { echo "::error::the control sabotaged nothing"; exit 1; }
           if ${{ matrix.compiler }} -std=c++17 -Icontrol -Wall -Wextra -Wconversion -Wsign-conversion -Wcast-qual -Wundef -Wshadow -Werror -DSERIALIZE_DEBUG -c control/warnings.cpp -o /dev/null; then
             echo "::error::the strict warnings job did not notice a removed cast"
