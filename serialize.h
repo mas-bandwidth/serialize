@@ -1593,7 +1593,7 @@ namespace serialize
 
         /**
             How many bits are still available to write?
-            For example, if the buffer size is 4, we have 32 bits available to write, if we have already written 10 bytes then 22 are still available to write.
+            For example, if the buffer size is 8, we have 64 bits available to write; if we have already written 10 bits then 54 are still available to write.
             @returns The number of bits available to write.
          */
 
@@ -1666,7 +1666,7 @@ namespace serialize
 
         /**
             Bit reader constructor.
-            Any buffer size is supported, as non-multiples of four naturally occur when packets are read from the network.
+            Any buffer size is supported, as packets read from the network need not be a multiple of any word size.
             IMPORTANT: The actual buffer allocated for the packet data must extend at least 8 bytes past the end of the data, because the reader loads a 64 bit window from the current byte position, and near the end of the stream that window begins inside the final bytes. The bytes past the end are loaded but never interpreted.
             @param data Pointer to the bitpacked data to read. Does not need to be aligned: the reader loads each window with memcpy, which packet payloads require because they typically start at an unaligned offset once the transport header is stripped.
             @param bytes The number of bytes of bitpacked data to read. Buffer sizes are effectively unlimited, because bit counts are stored in 64 bit signed integers.
@@ -1795,7 +1795,7 @@ namespace serialize
 
         /**
             How many bits are still available to read?
-            For example, if the buffer size is 4, we have 32 bits available to read, if we have already written 10 bytes then 22 are still available.
+            For example, if the buffer size is 8, we have 64 bits available to read; if we have already read 10 bits then 54 are still available to read.
             @returns The number of bits available to read.
          */
 
@@ -11467,10 +11467,10 @@ inline void test_measure_bound()
 
 inline void test_unaligned_writer()
 {
-    // the bit writer stores each dword with memcpy, so the write buffer does not need 4 byte alignment.
-    // exercise every offset within a dword, covering the WriteBits, WriteBytes and FlushBits store paths.
+    // the bit writer stores each qword with memcpy, so the write buffer does not need 8 byte alignment.
+    // exercise a range of consecutive byte offsets, covering the WriteBits, WriteBytes and FlushBits store paths.
 
-    uint32_t storage_words[( 256 + 4 ) / 4];                    // uint32_t backing guarantees 4 byte alignment without requiring C++11 alignas
+    uint32_t storage_words[( 256 + 4 ) / 4];                    // uint32_t backing gives a known 4 byte alignment without requiring C++11 alignas; the writer requires none
     uint8_t * storage = (uint8_t*) storage_words;
 
     for ( int offset = 0; offset < 4; offset++ )
