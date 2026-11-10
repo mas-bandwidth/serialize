@@ -55,7 +55,7 @@ The compressed float wire format requires exact `float32` rounding (STANDARD.md)
 - `-ffast-math` (and `-Ofast`) are not supported: they license reciprocal approximation and reassociation, which change the wire in ways no barrier can pin. The test suite refuses such a build by name.
 - Building with `-ffp-contract=off` is still the standing policy for the network libraries this header ships in (serialize, netcode, reliable, yojimbo, flow, rocketnet) — belt and braces on top of the in-source barrier, and the certification setting for golden vectors.
 
-On 32-bit x86 without SSE, the header selects a volatile-store rounding barrier instead of the XMM register constraint, so x87 (`-mfpmath=387`) builds compile and produce the same wire as SSE builds.
+On 32-bit x86 without SSE, the header selects a volatile-store rounding barrier instead of the XMM register constraint. Every compressed-float intermediate — the derived delta and step count, the writer's normalized value, product and `+0.5` sum, and the reader's quotient and final add — goes through that barrier, so x87 (`-mfpmath=387`, where `FLT_EVAL_METHOD == 2` carries float expressions wider than `float32`) builds compile and produce the same wire and decoded bit patterns as SSE builds.
 
 ## Debug builds
 
