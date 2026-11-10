@@ -843,53 +843,57 @@ namespace serialize
 #endif // #if defined(__SIZEOF_INT128__)
 
     /**
-        Calculates the population count of an unsigned 32 bit integer at compile time.
+        Calculates the population count of an unsigned 64 bit integer at compile time.
         Population count is the number of bits in the integer that set to 1.
         See "Hacker's Delight" and http://www.hackersdelight.org/hdcodetxt/popArrayHS.c.txt
         @see serialize::Log2
         @see serialize::BitsRequired
      */
 
-    template <uint32_t x> struct PopCount
+    template <uint64_t x> struct PopCount
     {
-        enum {   a = x - ( ( x >> 1 )       & 0x55555555 ),
-                 b =   ( ( ( a >> 2 )       & 0x33333333 ) + ( a & 0x33333333 ) ),
-                 c =   ( ( ( b >> 4 ) + b ) & 0x0f0f0f0f ),
+        enum {   a = x - ( ( x >> 1 )       & 0x5555555555555555ULL ),
+                 b =   ( ( ( a >> 2 )       & 0x3333333333333333ULL ) + ( a & 0x3333333333333333ULL ) ),
+                 c =   ( ( ( b >> 4 ) + b ) & 0x0f0f0f0f0f0f0f0fULL ),
                  d =   c + ( c >> 8 ),
                  e =   d + ( d >> 16 ),
+                 f =   e + ( e >> 32 ),
 
-            result = e & 0x0000003f
+            result = f & 0x0000007f
         };
     };
 
     /**
-        Calculates the log 2 of an unsigned 32 bit integer at compile time.
+        Calculates the log 2 of an unsigned 64 bit integer at compile time.
         @see serialize::Log2
         @see serialize::BitsRequired
      */
 
-    template <uint32_t x> struct Log2
+    template <uint64_t x> struct Log2
     {
         enum {   a = x | ( x >> 1 ),
                  b = a | ( a >> 2 ),
                  c = b | ( b >> 4 ),
                  d = c | ( c >> 8 ),
                  e = d | ( d >> 16 ),
-                 f = e >> 1,
+                 f = e | ( e >> 32 ),
+                 g = f >> 1,
 
-            result = PopCount<f>::result
+            result = PopCount<g>::result
         };
     };
 
     /**
         Calculates the number of bits required to serialize an integer value in [min,max] at compile time.
+        The subtraction is performed in the unsigned domain, so ranges wider than 32 bits keep their high bits.
         @see Log2
         @see PopCount
+        @see serialize::BitsRequired64
      */
 
     template <int64_t min, int64_t max> struct BitsRequired
     {
-        static const uint32_t result = ( min == max ) ? 0 : ( Log2<uint32_t(max-min)>::result + 1 );
+        static const uint32_t result = ( min == max ) ? 0 : uint32_t( Log2<uint64_t(max)-uint64_t(min)>::result + 1 );
     };
 
     /**
@@ -5043,6 +5047,39 @@ inline void test_bits_required()
     serialize_check( serialize::bits_required( 0, 255 ) == 8 );
     serialize_check( serialize::bits_required( 0, 65535 ) == 16 );
     serialize_check( serialize::bits_required( 0, 4294967295 ) == 32 );
+}
+
+inline void test_bits_required_metafunctions()
+{
+    serialize_check( serialize::PopCount<0>::result == 0 );
+    serialize_check( serialize::PopCount<1>::result == 1 );
+    serialize_check( serialize::PopCount<0xFF>::result == 8 );
+    serialize_check( serialize::PopCount<0xF0F0F0F0>::result == 16 );
+    serialize_check( serialize::PopCount<0xFFFFFFFF>::result == 32 );
+    serialize_check( serialize::PopCount<0xF0F0F0F0F0F0F0F0ULL>::result == 32 );
+    serialize_check( serialize::PopCount<0xFFFFFFFFFFFFFFFFULL>::result == 64 );
+
+    serialize_check( serialize::Log2<0>::result == 0 );
+    serialize_check( serialize::Log2<1>::result == 0 );
+    serialize_check( serialize::Log2<2>::result == 1 );
+    serialize_check( serialize::Log2<3>::result == 1 );
+    serialize_check( serialize::Log2<4>::result == 2 );
+    serialize_check( serialize::Log2<0xFFFFFFFF>::result == 31 );
+    serialize_check( serialize::Log2<0x100000000ULL>::result == 32 );
+    serialize_check( serialize::Log2<0xFFFFFFFFFFFFFFFFULL>::result == 63 );
+
+    serialize_check( ( serialize::BitsRequired<0, 0>::result ) == 0 );
+    serialize_check( ( serialize::BitsRequired<0, 1>::result ) == 1 );
+    serialize_check( ( serialize::BitsRequired<0, 255>::result ) == 8 );
+    serialize_check( ( serialize::BitsRequired<0, 4294967295LL>::result ) == 32 );
+    serialize_check( ( serialize::BitsRequired<0, 4294967296LL>::result ) == 33 );
+    serialize_check( ( serialize::BitsRequired<-5000000000LL, 5000000000LL>::result ) == 34 );
+    serialize_check( ( serialize::BitsRequired<INT64_MIN, INT64_MAX>::result ) == 64 );
+
+    // and it agrees with the runtime helper wherever both are defined
+    serialize_check( ( serialize::BitsRequired<0, 4294967296LL>::result ) == serialize::bits_required64( 0, 4294967296ULL ) );
+    serialize_check( ( serialize::BitsRequired<-5000000000LL, 5000000000LL>::result ) == serialize::bits_required64( uint64_t( -5000000000LL ), uint64_t( 5000000000LL ) ) );
+    serialize_check( ( serialize::BitsRequired<INT64_MIN, INT64_MAX>::result ) == serialize::bits_required64( uint64_t( INT64_MIN ), uint64_t( INT64_MAX ) ) );
 }
 
 inline void test_bits_required64()
@@ -12139,6 +12176,7 @@ inline void serialize_test()
         SERIALIZE_RUN_TEST( test_endian );
         SERIALIZE_RUN_TEST( test_bitpacker );
         SERIALIZE_RUN_TEST( test_bits_required );
+        SERIALIZE_RUN_TEST( test_bits_required_metafunctions );
         SERIALIZE_RUN_TEST( test_bits_required64 );
         SERIALIZE_RUN_TEST( test_bits_required128 );
         SERIALIZE_RUN_TEST( test_zigzag );
