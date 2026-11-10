@@ -132,15 +132,24 @@
     The reference pair: on GCC and clang an empty asm with a register output operand makes
     the stored value opaque to the contraction pass at zero cost — the product and the add
     compile to separate rounded instructions with no memory traffic ("+w" is an FP/SIMD
-    register on arm64, "+x" an XMM register on x86). Everywhere else — MSVC, and GNU
-    targets whose register class this header does not spell — the same property is
+    register on arm64, "+x" an XMM register on x86 when SSE is available). The "+x" form is
+    selected only when __SSE__ is defined: on 32-bit x86 without SSE (the x87 default) there
+    is no XMM register for the constraint to name. Everywhere else — MSVC, x86 without SSE,
+    and GNU targets whose register class this header does not spell — the same property is
     emulated with a volatile store, which is correct on every compiler at the cost of a
     stack round-trip. (MSVC's /fp:precise does not contract, so the volatile slot there is
     belt on an uncontracted build; /fp:fast builds are held to the rounding by it.)
+
+    It also pins an intermediate that would otherwise be carried wider than float32. On x87
+    (FLT_EVAL_METHOD == 2) an unbarriered float expression can stay in extended precision
+    across statements, so the compressed float's derived step count, its quantized code and
+    its decoded value would all depend on the target's evaluation width. Every load-bearing
+    intermediate in that arithmetic goes through this macro so the wire depends only on
+    float32 roundings, which is what makes the x87 and SSE builds agree bit for bit.
 */
 #if ( defined( __GNUC__ ) || defined( __clang__ ) ) && ( defined( __aarch64__ ) || defined( _M_ARM64 ) )
 #define SERIALIZE_FLOAT_FORCE_ROUND( x ) __asm__ ( "" : "+w" ( x ) )
-#elif ( defined( __GNUC__ ) || defined( __clang__ ) ) && ( defined( __x86_64__ ) || defined( __i386__ ) )
+#elif ( defined( __GNUC__ ) || defined( __clang__ ) ) && defined( __SSE__ ) && ( defined( __x86_64__ ) || defined( __i386__ ) )
 #define SERIALIZE_FLOAT_FORCE_ROUND( x ) __asm__ ( "" : "+x" ( x ) )
 #else
 #define SERIALIZE_FLOAT_FORCE_ROUND( x )                                                    \
@@ -3056,8 +3065,10 @@ namespace serialize
         serialize_assert( min < max && res > 0 );
 
         delta = max - min;
+        SERIALIZE_FLOAT_FORCE_ROUND( delta );
 
         float values = delta / res;
+        SERIALIZE_FLOAT_FORCE_ROUND( values );
 
         // a declaration whose delta or values is not finite in float32 is non-conforming
         // (STANDARD.md, adopted 2026-08-15) -- assert in debug, per the writer-trusted model.
@@ -3127,6 +3138,7 @@ namespace serialize
 
             // clamp with the !>= / !<= form so a NaN value is forced into range instead of reaching the uint32 cast below
             float normalizedValue = (value - min) / delta;
+            SERIALIZE_FLOAT_FORCE_ROUND( normalizedValue );
             if ( !( normalizedValue >= 0.0f ) )
             {
                 normalizedValue = 0.0f;
@@ -3156,7 +3168,9 @@ namespace serialize
             // rounding is ever lost.
             float scaled = normalizedValue * static_cast<float>( max_integer_value );
             SERIALIZE_FLOAT_FORCE_ROUND( scaled );
-            integerValue = static_cast<uint32_t>( floor( scaled + 0.5f ) );
+            float rounded = scaled + 0.5f;
+            SERIALIZE_FLOAT_FORCE_ROUND( rounded );
+            integerValue = static_cast<uint32_t>( floor( rounded ) );
             // STANDARD.md: the integer clamp is normative (2026-08-23). Once
             // max_integer_value >= 2^23 the float32 ulp at the top of the range
             // reaches 1, so the rounded sum can exceed max_integer_value itself:
@@ -3180,7 +3194,8 @@ namespace serialize
             {
                 return serialize_fail( stream, REFUSAL_VALUE_OUT_OF_RANGE );
             }
-            const float normalizedValue = static_cast<float>( integerValue ) / float(max_integer_value);
+            float normalizedValue = static_cast<float>( integerValue ) / float(max_integer_value);
+            SERIALIZE_FLOAT_FORCE_ROUND( normalizedValue );
             // The reader rounds twice for the same reason the writer above does:
             // the product must round to float32 BEFORE min is added, and the
             // local plus the barrier are what force that. Written as one
@@ -3201,7 +3216,8 @@ namespace serialize
             // back into one expression or the barrier removed.
             float scaledValue = normalizedValue * delta;
             SERIALIZE_FLOAT_FORCE_ROUND( scaledValue );
-            const float decodedValue = scaledValue + min;
+            float decodedValue = scaledValue + min;
+            SERIALIZE_FLOAT_FORCE_ROUND( decodedValue );
             // STANDARD.md, "compressed_float": the decode must be finite. The integer is in range
             // and every operand is finite, but at the top of a declaration that reaches FLT_MAX the
             // final add can round past it to an infinity: [3 * 2^103, FLT_MAX] at resolution 2^104
@@ -3238,8 +3254,10 @@ namespace serialize
             {
                 return serialize_fail( stream, REFUSAL_VALUE_OUT_OF_RANGE );
             }
-            const float declared_delta = max - min;
-            const float declared_values = declared_delta / res;
+            float declared_delta = max - min;
+            SERIALIZE_FLOAT_FORCE_ROUND( declared_delta );
+            float declared_values = declared_delta / res;
+            SERIALIZE_FLOAT_FORCE_ROUND( declared_values );
             if ( !float_is_finite( declared_delta ) || !float_is_finite( declared_values ) )
             {
                 return serialize_fail( stream, REFUSAL_VALUE_OUT_OF_RANGE );
@@ -10183,17 +10201,20 @@ inline void test_past_end_poison()
 //                            an FMA and this build is permitted to use it.
 //   crosses_statements    -- a PLAIN local store against the volatile one. The language
 //                            rounds a float local, so only a compiler contracting ACROSS the
-//                            statement boundary can make these two disagree. That is the
-//                            -ffp-contract=fast behaviour (GCC's default at every -O level),
-//                            and it is not a stricter `on`: it is a different mode, in which
-//                            a plain float local suppresses nothing. The WIRE is safe in
-//                            such a build -- the audited home pins both roundings with
+//                            statement boundary -- or a target that carries a float local
+//                            wider than float32 (x87, FLT_EVAL_METHOD == 2) -- can make these
+//                            two disagree. The contraction case is the -ffp-contract=fast
+//                            behaviour (GCC's default at every -O level), and it is not a
+//                            stricter `on`: it is a different mode, in which a plain float
+//                            local suppresses nothing. The WIRE is safe in either build --
+//                            the audited home pins both roundings with
 //                            SERIALIZE_FLOAT_FORCE_ROUND, which no contraction mode fuses
-//                            through -- but the frozen pre-split oracle in the differential
-//                            below is a verbatim copy of code that predates the barrier, so
-//                            it fuses, computes one-rounding values, and its comparisons
-//                            stand down on such a build (the negative-control sentinels
-//                            keep their teeth everywhere; see the differential).
+//                            through and no evaluation width widens -- but the frozen
+//                            pre-split oracle in the differential below is a verbatim copy
+//                            of code that predates the barrier, so it fuses or widens,
+//                            computes non-conformant values, and its comparisons stand down
+//                            on such a build (the negative-control sentinels keep their teeth
+//                            everywhere; see the differential).
 //   barrier_holds         -- the audited home's shape, a store pinned by
 //                            SERIALIZE_FLOAT_FORCE_ROUND, against the volatile reference.
 //                            These must NEVER disagree: the barrier is what the wire's
@@ -10704,9 +10725,11 @@ static uint64_t compressed_float_sentinel_read_divergences = 0;
 // Whether the frozen pre-split oracle computes conformant values in THIS build. The frozen
 // reference is a verbatim copy of code that predates SERIALIZE_FLOAT_FORCE_ROUND, so under
 // cross-statement contraction (-ffp-contract=fast, GCC's default) it fuses its two roundings
-// into one while the barriered audited home does not. On such a build its comparisons assert
-// the wrong thing and stand down; the sentinels above and the conformance vectors carry the
-// teeth there. Set from the measured probe at the top of the differential -- detected, never
+// into one, and under excess precision (x87, FLT_EVAL_METHOD == 2) it carries them wider than
+// float32, while the barriered audited home does neither. On such a build its derived
+// constants, wire bytes, acceptance and decoded patterns can all differ, so every comparison
+// against it stands down; the sentinels above and the conformance vectors carry the teeth
+// there. Set from the measured probe at the top of the differential -- detected, never
 // inferred from flags.
 static bool compressed_float_frozen_oracle_conformant = true;
 
@@ -10759,8 +10782,11 @@ inline void check_compressed_float_value_agrees( float value, float min, float m
     serialize::MeasureStream measurePrecomputed;
     measure_value = value;
     serialize_differential_check( serialize_compressed_float_precomputed_form( measurePrecomputed, measure_value, max_integer_value, bits, delta, min ) == true );
-    serialize_differential_check( measureReference.GetBitsProcessed() == measureLegacy.GetBitsProcessed() );
-    serialize_differential_check( measureReference.GetBitsProcessed() == measurePrecomputed.GetBitsProcessed() );
+    if ( compressed_float_frozen_oracle_conformant )
+    {
+        serialize_differential_check( measureReference.GetBitsProcessed() == measureLegacy.GetBitsProcessed() );
+        serialize_differential_check( measureReference.GetBitsProcessed() == measurePrecomputed.GetBitsProcessed() );
+    }
 
     // write: byte identical wire from all three
     uint8_t buffer_reference[8 + 8] = { 0 };            // + 8: read buffer allocations extend 8 bytes past the data
@@ -10782,8 +10808,11 @@ inline void check_compressed_float_value_agrees( float value, float min, float m
     serialize_differential_check( serialize_compressed_float_precomputed_form( writePrecomputed, write_value, max_integer_value, bits, delta, min ) == true );
     writePrecomputed.Flush();
 
-    serialize_differential_check( writeReference.GetBitsProcessed() == writeLegacy.GetBitsProcessed() );
-    serialize_differential_check( writeReference.GetBitsProcessed() == writePrecomputed.GetBitsProcessed() );
+    if ( compressed_float_frozen_oracle_conformant )
+    {
+        serialize_differential_check( writeReference.GetBitsProcessed() == writeLegacy.GetBitsProcessed() );
+        serialize_differential_check( writeReference.GetBitsProcessed() == writePrecomputed.GetBitsProcessed() );
+    }
     serialize_differential_check( memcmp( buffer_legacy, buffer_precomputed, 8 ) == 0 );
     if ( compressed_float_frozen_oracle_conformant )
     {
@@ -10854,11 +10883,16 @@ inline void check_compressed_float_code_agrees( uint32_t code, float min, float 
     float decoded_precomputed = 0.0f;
     const bool ok_precomputed = serialize_compressed_float_precomputed_form( readPrecomputed, decoded_precomputed, max_integer_value, bits, delta, min );
 
-    serialize_differential_check( ok_reference == ok_legacy );
-    serialize_differential_check( ok_reference == ok_precomputed );
-    serialize_differential_check( ok_reference == ( code <= max_integer_value ) );      // the headroom refusal itself
+    if ( compressed_float_frozen_oracle_conformant )
+    {
+        serialize_differential_check( ok_reference == ok_legacy );
+        serialize_differential_check( ok_reference == ok_precomputed );
+        serialize_differential_check( ok_reference == ( code <= max_integer_value ) );  // the headroom refusal itself
+    }
+    serialize_differential_check( ok_legacy == ok_precomputed );
+    serialize_differential_check( ok_legacy == ( code <= max_integer_value ) );         // the headroom refusal itself
 
-    if ( ok_reference )
+    if ( ok_legacy )
     {
         uint32_t pattern_reference, pattern_legacy, pattern_precomputed;
         memcpy( &pattern_reference, &decoded_reference, 4 );
@@ -11258,6 +11292,82 @@ inline void test_float_finite_kept_bit_exact()
             serialize_check( bits == golden_double_patterns[i] );
         }
         serialize_check( stream.SerializeEnd() == true );
+    }
+}
+
+inline void test_float_force_round_is_bit_exact()
+{
+    // SERIALIZE_FLOAT_FORCE_ROUND must preserve an already-rounded float32 value exactly on
+    // every register class it selects, including the volatile fallback used on x86 without
+    // SSE. Instantiating it here also covers that fallback at compile time.
+    const uint32_t patterns[] = { 0x00000000u, 0x80000000u, 0x3F800000u, 0x4B7FFFFFu, 0x7F7FFFFFu, 0xFF7FFFFFu, 0x00800000u, 0x80000001u };
+    for ( int i = 0; i < (int) ( sizeof( patterns ) / sizeof( patterns[0] ) ); i++ )
+    {
+        float value = 0.0f;
+        memcpy( &value, &patterns[i], 4 );
+        SERIALIZE_FLOAT_FORCE_ROUND( value );
+        uint32_t bits = 0;
+        memcpy( &bits, &value, 4 );
+        serialize_check( bits == patterns[i] );
+    }
+
+    // a product must round to float32 here exactly as it does through a volatile store
+    volatile float a = 6666.0f / 20000.0f;
+    volatile float b = 200.0f;
+    float product = a * b;
+    SERIALIZE_FLOAT_FORCE_ROUND( product );
+    volatile float reference_slot = a * b;
+    const float reference = reference_slot;
+    uint32_t product_bits = 0;
+    uint32_t reference_bits = 0;
+    memcpy( &product_bits, &product, 4 );
+    memcpy( &reference_bits, &reference, 4 );
+    serialize_check( product_bits == reference_bits );
+}
+
+inline void test_compressed_float_intermediates_are_float32()
+{
+    // The compressed float derivation and quantization intermediates are pinned to float32
+    // on every target. A build whose float arithmetic is carried wider than float32 (x87,
+    // FLT_EVAL_METHOD == 2) must still emit the same wire code and the same decoded bits as
+    // an SSE build. Both directions are pinned by BIT PATTERN, not tolerance: the divergence
+    // is one ulp. [0,10] at resolution 0.01 is the declaration with a half-step at
+    // 0x3ba3d709, the row where the widened and the float32-rounded sums land on different
+    // sides of the round.
+
+    const uint32_t input_bits = 0x3ba3d709u;       // just under the half step over [0,10]/0.01
+
+    // writer: the normalized value, the product and the +0.5 sum are each rounded to float32,
+    // so this input quantizes to code 1.
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        serialize::WriteStream stream( buffer, (int) sizeof( buffer ) );
+        float value = 0.0f;
+        memcpy( &value, &input_bits, 4 );
+        serialize_check( serialize::serialize_compressed_float_internal( stream, value, 0.0f, 10.0f, 0.01f ) == true );
+        stream.Flush();
+        uint32_t code = 0;
+        serialize::ReadStream raw( buffer, (int) sizeof( buffer ) );
+        serialize_check( raw.SerializeBits( code, 10 ) == true );
+        serialize_check( code == 1 );
+    }
+
+    // reader: wire code 1 decodes with the quotient, the product and the final add rounded to
+    // float32, giving 0x3C23D70B rather than the widened 0x3C23D70A.
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        serialize::WriteStream stream( buffer, (int) sizeof( buffer ) );
+        uint32_t code = 1;
+        serialize_check( stream.SerializeBits( code, 10 ) == true );
+        stream.Flush();
+        float value = 0.0f;
+        serialize::ReadStream read( buffer, (int) sizeof( buffer ) );
+        serialize_check( serialize::serialize_compressed_float_internal( read, value, 0.0f, 10.0f, 0.01f ) == true );
+        uint32_t bits = 0;
+        memcpy( &bits, &value, 4 );
+        serialize_check( bits == 0x3C23D70Bu );
     }
 }
 
@@ -12394,7 +12504,7 @@ inline void serialize_test()
         printf( "built with %s; fp contraction is %s in this build\n\n",
                 SERIALIZE_TEST_FP_CONTRACT,
                 !fp_contraction_live               ? "NOT AVAILABLE -- this target does not fuse, so the compressed float's rounding barriers are compiled but not exercised"
-                : fp_contraction_crosses_statements ? "LIVE and CROSSING STATEMENTS -- the wire path is barriered against it; the frozen pre-split oracle fuses in this build, so its comparisons stand down"
+                : fp_contraction_crosses_statements ? "LIVE and CROSSING STATEMENTS, or excess precision -- the wire path is barriered against both; the frozen pre-split oracle computes non-conformant values in this build, so its comparisons stand down"
                                                     : "LIVE and statement-local -- the compressed float's rounding barriers are under test" );
     }
 
@@ -12506,6 +12616,8 @@ inline void serialize_test()
         SERIALIZE_RUN_TEST( test_compressed_float_precomputed_conformance );
         SERIALIZE_RUN_TEST( test_compressed_float_precomputed_differential );
         SERIALIZE_RUN_TEST( test_float_finite_kept_bit_exact );
+        SERIALIZE_RUN_TEST( test_float_force_round_is_bit_exact );
+        SERIALIZE_RUN_TEST( test_compressed_float_intermediates_are_float32 );
         SERIALIZE_RUN_TEST( test_float_non_finite_refused );
         SERIALIZE_RUN_TEST( test_compressed_float_decode_is_finite );
         SERIALIZE_RUN_TEST( test_golden_zero_length_bytes );
