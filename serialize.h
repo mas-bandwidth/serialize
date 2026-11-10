@@ -4561,7 +4561,7 @@ namespace serialize
         The compile time companion to WriteStream::SerializeInteger and ReadStream::SerializeInteger: the bit count is a constant, so there is no runtime bits_required call and no min/max parameter traffic.
         Wire bytes are identical to the runtime form given identical inputs.
         On write, the value is checked by debug asserts only, matching the runtime form. On read, the value off the wire is validated against the constant bounds and the function returns false on out of range data.
-        @tparam Min The minimum value. Must be less than Max (enforced at compile time).
+        @tparam Min The minimum value. Must be less than or equal to Max (enforced at compile time).
         @tparam Max The maximum value.
         @param stream The stream object. May be a read, write or measure stream.
         @param value The integer value in [Min,Max]. Written on write/measure, filled in on read.
@@ -4570,8 +4570,14 @@ namespace serialize
 
     template <int32_t Min, int32_t Max, typename Stream> bool SerializeIntConst( Stream & stream, int32_t & value )
     {
-        static_assert( Min < Max, "serialize: min must be less than max" );
+        static_assert( Min <= Max, "serialize: min must be less than or equal to max" );
         constexpr int bits = bits_required64_constexpr( uint64_t( int64_t( Min ) ), uint64_t( int64_t( Max ) ) );
+        if ( bits == 0 )
+        {
+            // degenerate range: the value IS the range, nothing to send. Through the runtime form so a
+            // failed stream still consults its latch and refuses a zero bit read, exactly as it does there.
+            return stream.SerializeInteger( value, Min, Max );
+        }
         uint32_t unsigned_value = 0;
         if ( Stream::IsWriting )
         {
@@ -4601,7 +4607,7 @@ namespace serialize
         The compile time companion to WriteStream::SerializeInteger64 and ReadStream::SerializeInteger64: the bit count is a constant, and the one dword vs two dword split resolves on a constant condition, so the dead branch folds.
         Wire bytes are identical to the runtime form given identical inputs: low dword first, then the high remainder, same convention as serialize_bits and serialize_uint64.
         On write, the value is checked by debug asserts only, matching the runtime form. On read, the value off the wire is validated against the constant bounds and the function returns false on out of range data.
-        @tparam Min The minimum value. Must be less than Max (enforced at compile time).
+        @tparam Min The minimum value. Must be less than or equal to Max (enforced at compile time).
         @tparam Max The maximum value.
         @param stream The stream object. May be a read, write or measure stream.
         @param value The integer value in [Min,Max]. Written on write/measure, filled in on read.
@@ -4610,8 +4616,14 @@ namespace serialize
 
     template <int64_t Min, int64_t Max, typename Stream> bool SerializeInt64Const( Stream & stream, int64_t & value )
     {
-        static_assert( Min < Max, "serialize: min must be less than max" );
+        static_assert( Min <= Max, "serialize: min must be less than or equal to max" );
         constexpr int bits = bits_required64_constexpr( uint64_t( Min ), uint64_t( Max ) );
+        if ( bits == 0 )
+        {
+            // degenerate range: the value IS the range, nothing to send. Through the runtime form so a
+            // failed stream still consults its latch and refuses a zero bit read, exactly as it does there.
+            return stream.SerializeInteger64( value, Min, Max );
+        }
         uint64_t unsigned_value = 0;
         if ( Stream::IsWriting )
         {
@@ -9258,6 +9270,70 @@ inline void test_compile_time_int64()
     }
 }
 
+inline void test_compile_time_degenerate_range()
+{
+    // STANDARD.md defines min == max as a legal zero-bit degenerate ranged integer field, and the
+    // compile time surface is wire identical to the runtime form. The field consumes no bits and the
+    // value is recovered from the range alone.
+    uint8_t buffer[16] = { 0 };
+
+    // write: zero bits, and the next field starts at bit 0
+    serialize::WriteStream writeStream( buffer, 16 );
+    int32_t degenerate = 5;
+    int32_t after = 3;
+    serialize_check( ( serialize_int_compile_time_form<5, 5>( writeStream, degenerate ) == true ) );
+    serialize_check( writeStream.GetBitsProcessed() == 0 );
+    serialize_check( ( serialize::SerializeIntConst<0, 7>( writeStream, after ) == true ) );
+    serialize_check( writeStream.GetBitsProcessed() == 3 );
+    writeStream.Flush();
+
+    // read: the value comes back from the range alone, consuming no bits
+    serialize::ReadStream readStream( buffer, (int) writeStream.GetBytesProcessed() );
+    int32_t read_degenerate = 0;
+    int32_t read_after = 0;
+    serialize_check( ( serialize_int_compile_time_form<5, 5>( readStream, read_degenerate ) == true ) );
+    serialize_check( read_degenerate == 5 );
+    serialize_check( readStream.GetBitsProcessed() == 0 );
+    serialize_check( readStream.SerializeInteger( read_after, 0, 7 ) == true );
+    serialize_check( read_after == 3 );
+
+    // measure: zero bits
+    serialize::MeasureStream measureStream;
+    int32_t measured = 5;
+    serialize_check( ( serialize_int_compile_time_form<5, 5>( measureStream, measured ) == true ) );
+    serialize_check( measureStream.GetBitsProcessed() == 0 );
+
+    // a failed stream still refuses the zero-bit read, leaving the destination unwritten
+    {
+        serialize::ReadStream failedStream( buffer, 0 );
+        uint32_t past_end = 0;
+        serialize_check( failedStream.SerializeBits( past_end, 8 ) == false );
+        int32_t unchanged = -99;
+        serialize_check( ( serialize_int_compile_time_form<5, 5>( failedStream, unchanged ) == false ) );
+        serialize_check( unchanged == -99 );
+    }
+
+    // the 64 bit twin
+    {
+        serialize::WriteStream write64( buffer, 16 );
+        int64_t degenerate64 = 5;
+        serialize_check( ( serialize_int64_compile_time_form<5, 5>( write64, degenerate64 ) == true ) );
+        serialize_check( write64.GetBitsProcessed() == 0 );
+        write64.Flush();
+
+        serialize::ReadStream read64( buffer, (int) write64.GetBytesProcessed() );
+        int64_t read_degenerate64 = 0;
+        serialize_check( ( serialize_int64_compile_time_form<5, 5>( read64, read_degenerate64 ) == true ) );
+        serialize_check( read_degenerate64 == 5 );
+        serialize_check( read64.GetBitsProcessed() == 0 );
+
+        serialize::MeasureStream measure64;
+        int64_t measured64 = 5;
+        serialize_check( ( serialize_int64_compile_time_form<5, 5>( measure64, measured64 ) == true ) );
+        serialize_check( measure64.GetBitsProcessed() == 0 );
+    }
+}
+
 template <int Bits> inline void check_compile_time_bits_width()
 {
     // ( ( 1 << ( Bits - 1 ) ) << 1 ) - 1 is the all ones value without shifting by the full width (undefined behavior at Bits == 32)
@@ -12225,6 +12301,7 @@ inline void serialize_test()
         SERIALIZE_RUN_TEST( test_compile_time_bits_required );
         SERIALIZE_RUN_TEST( test_compile_time_int );
         SERIALIZE_RUN_TEST( test_compile_time_int64 );
+        SERIALIZE_RUN_TEST( test_compile_time_degenerate_range );
         SERIALIZE_RUN_TEST( test_compile_time_bits );
         SERIALIZE_RUN_TEST( test_compile_time_int_validation );
         SERIALIZE_RUN_TEST( test_compile_time_int64_validation );
