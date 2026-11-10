@@ -1312,6 +1312,78 @@ namespace serialize
     }
 
     /**
+        A ranged int's bounds, each evaluated once.
+        serialize_int, serialize_int64 and their read_ and write_ forms bind the caller's min and max here, so a bound is evaluated exactly once whatever the build mode, and the fit check still judges the bound as the caller passed it, before anything narrows it.
+     */
+
+    struct IntBounds
+    {
+        int64_t low;                ///< the caller's min; not named min, which the macros' own parameter would replace
+        int64_t high;               ///< the caller's max
+        bool fits;                  ///< int_bounds_are_int32 or int64_bounds_fit, judged on the caller's original bounds
+    };
+
+    template <typename T, typename U> inline IntBounds int32_bounds( T min, U max )
+    {
+        IntBounds bounds;
+        bounds.fits = int_bounds_are_int32( min, max );
+        bounds.low = converted<int64_t>( min );
+        bounds.high = converted<int64_t>( max );
+        return bounds;
+    }
+
+    template <typename T, typename U> inline IntBounds int64_bounds( T min, U max )
+    {
+        IntBounds bounds;
+        bounds.fits = int64_bounds_fit( min, max );
+        bounds.low = converted<int64_t>( min );
+        bounds.high = converted<int64_t>( max );
+        return bounds;
+    }
+
+    /**
+        A raw bit field's width, evaluated once. The caller's bits when it lies in [1,64], judged before any narrowing, and 0 otherwise. 0 is never a legal width, so the macros refuse it on read and assert on it on write.
+     */
+
+    template <typename T> inline int bit_count( T bits )
+    {
+        if ( bits > 0 && bits <= 64 )
+        {
+            return converted<int>( bits );
+        }
+        return 0;
+    }
+
+    /**
+        The caller's value, evaluated once, with the write side range assertion made on it before the macro narrows it.
+     */
+
+    template <typename T> inline T asserted_in_int64_range( T value, int64_t min, int64_t max )
+    {
+        serialize_assert( value_in_int64_range( value, min, max ) );
+        (void) min;
+        (void) max;
+        return value;
+    }
+
+    template <typename T> inline T asserted_fits_in_bits( T value, int bits )
+    {
+        serialize_assert( value_fits_in_bits( value, bits ) );
+        (void) bits;
+        return value;
+    }
+
+    /**
+        The read side assertion that a decoded value survived its assignment into the caller's variable. The macro passes the assignment expression itself, so the caller's value expression is evaluated once.
+     */
+
+    inline void assert_decoded( bool round_trips )
+    {
+        serialize_assert( round_trips );
+        (void) round_trips;
+    }
+
+    /**
         The 128 bit companion of value_in_int64_range: an unsigned 128 bit value with its top bit set is outside every int128 range, though it converts to a negative int128.
      */
 
@@ -2776,6 +2848,7 @@ namespace serialize
         min <= max is the legal relation. A degenerate range where min == max costs zero bits: the writer emits nothing, the reader consumes nothing and takes the value from min, and a measure adds zero.
         On read, a refused read leaves value exactly as the caller left it, and fails the stream: every later read on that stream fails too, until the stream is re-initialized.
         IMPORTANT: This macro must be called inside a templated serialize function with template \<typename Stream\>. The serialize method must have a bool return value.
+        On a call that does not refuse, value, min and max are each evaluated exactly once, in every build mode and on every stream, so those arguments may carry a side effect. A refused read does not evaluate value, and leaves it as the caller left it. stream is evaluated once on the path taken.
         @param stream The stream object. May be a read, write or measure stream.
         @param value The integer value to serialize in [min,max]. The destination must be wide enough to hold the range; a narrower one is caller error, debug asserted.
         @param min The minimum value.
@@ -2785,29 +2858,32 @@ namespace serialize
     #define serialize_int( stream, value, min, max )                    \
         do                                                              \
         {                                                               \
-            serialize_assert( Stream::IsReading || ( (min) <= (max) ) ); \
+            const serialize::IntBounds serialize_macro_bounds_ =        \
+                serialize::int32_bounds( (min), (max) );                \
             serialize_assert( Stream::IsReading ||                      \
-                serialize::int_bounds_are_int32( (min), (max) ) ); \
+                serialize_macro_bounds_.low <= serialize_macro_bounds_.high ); \
+            serialize_assert( Stream::IsReading || serialize_macro_bounds_.fits ); \
             /* U7 and U16: a bad declaration refuses on read, before any bits move */ \
-            if ( Stream::IsReading &&                                   \
-                 !serialize::int_bounds_are_int32( (min), (max) ) ) \
+            if ( Stream::IsReading && !serialize_macro_bounds_.fits )   \
             {                                                           \
                 return serialize::serialize_fail( stream, serialize::REFUSAL_VALUE_OUT_OF_RANGE ); \
             }                                                           \
-            int32_t serialize_macro_int32_value_ = 0;                                    \
+            int32_t serialize_macro_int32_value_ = 0;                   \
             if ( Stream::IsWriting )                                    \
             {                                                           \
-                serialize_assert( serialize::value_in_int64_range( value, int64_t(min), int64_t(max) ) ); \
-                serialize_macro_int32_value_ = serialize::converted<int32_t>( value );                      \
+                serialize_macro_int32_value_ = serialize::converted<int32_t>( \
+                    serialize::asserted_in_int64_range( value,          \
+                        serialize_macro_bounds_.low, serialize_macro_bounds_.high ) ); \
             }                                                           \
-            if ( !stream.SerializeInteger( serialize_macro_int32_value_, serialize::converted<int32_t>( min ), serialize::converted<int32_t>( max ) ) ) \
+            if ( !stream.SerializeInteger( serialize_macro_int32_value_, \
+                    serialize::converted<int32_t>( serialize_macro_bounds_.low ), \
+                    serialize::converted<int32_t>( serialize_macro_bounds_.high ) ) ) \
             {                                                           \
                 return false;                                           \
             }                                                           \
             if ( Stream::IsReading )                                    \
             {                                                           \
-                value = serialize::decoded( serialize_macro_int32_value_ );          \
-                serialize_assert( int64_t(value) == serialize_macro_int32_value_ );      \
+                serialize::assert_decoded( int64_t( value = serialize::decoded( serialize_macro_int32_value_ ) ) == serialize_macro_int32_value_ ); \
             }                                                           \
         } while (0)
 
@@ -2817,6 +2893,7 @@ namespace serialize
         The full 64 bit range is supported, and the minimal number of bits for [min,max] is used on the wire.
         Serialize macros returns false on error so we don't need to use exceptions for error handling on read. This is an important safety measure because packet data comes from the network and may be malicious.
         IMPORTANT: This macro must be called inside a templated serialize function with template \<typename Stream\>. The serialize method must have a bool return value.
+        On a call that does not refuse, value, min and max are each evaluated exactly once, in every build mode and on every stream, so those arguments may carry a side effect. A refused read does not evaluate value, and leaves it as the caller left it. stream is evaluated once on the path taken.
         @param stream The stream object. May be a read, write or measure stream.
         @param value The 64 bit integer value to serialize in [min,max].
         @param min The minimum value.
@@ -2826,27 +2903,31 @@ namespace serialize
     #define serialize_int64( stream, value, min, max )                  \
         do                                                              \
         {                                                               \
-            serialize_assert( Stream::IsReading || serialize::int64_bounds_fit( (min), (max) ) ); \
-            serialize_assert( Stream::IsReading || int64_t(min) <= int64_t(max) ); \
+            const serialize::IntBounds serialize_macro_bounds_ =        \
+                serialize::int64_bounds( (min), (max) );                \
+            serialize_assert( Stream::IsReading || serialize_macro_bounds_.fits ); \
+            serialize_assert( Stream::IsReading ||                      \
+                serialize_macro_bounds_.low <= serialize_macro_bounds_.high ); \
             /* U16: a bound that does not fit int64 refuses on read before any bits move */ \
-            if ( Stream::IsReading && !serialize::int64_bounds_fit( (min), (max) ) )  \
+            if ( Stream::IsReading && !serialize_macro_bounds_.fits )   \
             {                                                           \
                 return serialize::serialize_fail( stream, serialize::REFUSAL_VALUE_OUT_OF_RANGE ); \
             }                                                           \
-            int64_t serialize_macro_int64_value_ = 0;                                    \
+            int64_t serialize_macro_int64_value_ = 0;                   \
             if ( Stream::IsWriting )                                    \
             {                                                           \
-                serialize_assert( serialize::value_in_int64_range( value, int64_t(min), int64_t(max) ) ); \
-                serialize_macro_int64_value_ = serialize::converted<int64_t>( value );                      \
+                serialize_macro_int64_value_ = serialize::converted<int64_t>( \
+                    serialize::asserted_in_int64_range( value,          \
+                        serialize_macro_bounds_.low, serialize_macro_bounds_.high ) ); \
             }                                                           \
-            if ( !stream.SerializeInteger64( serialize_macro_int64_value_, serialize::converted<int64_t>( min ), serialize::converted<int64_t>( max ) ) ) \
+            if ( !stream.SerializeInteger64( serialize_macro_int64_value_, \
+                    serialize_macro_bounds_.low, serialize_macro_bounds_.high ) ) \
             {                                                           \
                 return false;                                           \
             }                                                           \
             if ( Stream::IsReading )                                    \
             {                                                           \
-                value = serialize::decoded( serialize_macro_int64_value_ );          \
-                serialize_assert( int64_t(value) == serialize_macro_int64_value_ );      \
+                serialize::assert_decoded( int64_t( value = serialize::decoded( serialize_macro_int64_value_ ) ) == serialize_macro_int64_value_ ); \
             }                                                           \
         } while (0)
 
@@ -2897,6 +2978,7 @@ namespace serialize
         This is a helper macro to make writing unified serialize functions easier.
         Serialize macros returns false on error so we don't need to use exceptions for error handling on read. This is an important safety measure because packet data comes from the network and may be malicious.
         IMPORTANT: This macro must be called inside a templated serialize function with template \<typename Stream\>. The serialize method must have a bool return value.
+        On a call that does not refuse, value and bits are each evaluated exactly once, in every build mode and on every stream, so those arguments may carry a side effect. A refused read does not evaluate value, and leaves it as the caller left it. stream may be evaluated more than once: the path wider than 32 bits names it twice, so pass the stream variable itself.
         @param stream The stream object. May be a read, write or measure stream.
         @param value The unsigned integer value to serialize. Must be in [0,(1\<\<bits)-1]; a wider value is caller error, debug asserted before the macro narrows it to the group width.
         @param bits The number of bits to serialize in [1,64].
@@ -2905,44 +2987,45 @@ namespace serialize
     #define serialize_bits( stream, value, bits )                       \
         do                                                              \
         {                                                               \
-            serialize_assert( Stream::IsReading ||                      \
-                ( (bits) > 0 && (bits) <= 64 ) );                       \
-            serialize_assert( !Stream::IsWriting ||                     \
-                serialize::value_fits_in_bits( value, bits ) );         \
+            const int serialize_macro_bits_ = serialize::bit_count( bits ); \
+            serialize_assert( Stream::IsReading || serialize_macro_bits_ > 0 ); \
             /* U16: a bad bit count refuses on read before any bits move */ \
-            if ( Stream::IsReading && ( (bits) <= 0 || (bits) > 64 ) )  \
+            if ( Stream::IsReading && serialize_macro_bits_ <= 0 )      \
             {                                                           \
                 return serialize::serialize_fail( stream, serialize::REFUSAL_VALUE_OUT_OF_RANGE ); \
             }                                                           \
-            if ( (bits) <= 32 )                                         \
+            if ( serialize_macro_bits_ <= 32 )                          \
             {                                                           \
-                uint32_t serialize_macro_uint32_value_ = 0;                              \
+                uint32_t serialize_macro_uint32_value_ = 0;             \
                 if ( Stream::IsWriting )                                \
                 {                                                       \
-                    serialize_macro_uint32_value_ = serialize::converted<uint32_t>( value );                \
+                    serialize_macro_uint32_value_ = serialize::converted<uint32_t>( \
+                        serialize::asserted_fits_in_bits( value, serialize_macro_bits_ ) ); \
                 }                                                       \
-                if ( !stream.SerializeBits( serialize_macro_uint32_value_, bits ) )      \
+                if ( !stream.SerializeBits( serialize_macro_uint32_value_, serialize_macro_bits_ ) ) \
                 {                                                       \
                     return false;                                       \
                 }                                                       \
                 if ( Stream::IsReading )                                \
                 {                                                       \
-                    value = serialize::decoded( serialize_macro_uint32_value_ );     \
+                    value = serialize::decoded( serialize_macro_uint32_value_ ); \
                 }                                                       \
             }                                                           \
             else                                                        \
             {                                                           \
-                uint32_t serialize_macro_hi_ = 0, serialize_macro_lo_ = 0;                                \
+                uint32_t serialize_macro_hi_ = 0, serialize_macro_lo_ = 0; \
                 if ( Stream::IsWriting )                                \
                 {                                                       \
-                    serialize_macro_lo_ = uint32_t( uint64_t(value) & 0xFFFFFFFF );      \
-                    serialize_macro_hi_ = uint32_t( uint64_t(value) >> 32 );             \
+                    const uint64_t serialize_macro_uint64_value_ = serialize::converted<uint64_t>( \
+                        serialize::asserted_fits_in_bits( value, serialize_macro_bits_ ) ); \
+                    serialize_macro_lo_ = uint32_t( serialize_macro_uint64_value_ & 0xFFFFFFFF ); \
+                    serialize_macro_hi_ = uint32_t( serialize_macro_uint64_value_ >> 32 ); \
                 }                                                       \
-                if ( !stream.SerializeBits( serialize_macro_lo_, 32 ) )                  \
+                if ( !stream.SerializeBits( serialize_macro_lo_, 32 ) ) \
                 {                                                       \
                     return false;                                       \
                 }                                                       \
-                if ( !stream.SerializeBits( serialize_macro_hi_, (bits) - 32 ) )         \
+                if ( !stream.SerializeBits( serialize_macro_hi_, serialize_macro_bits_ - 32 ) ) \
                 {                                                       \
                     return false;                                       \
                 }                                                       \
@@ -4204,72 +4287,104 @@ namespace serialize
 
     // read macros corresponding to each serialize_*. useful when you want separate read and write functions.
 
+    /**
+        Read bits from the stream, the read-only companion to serialize_bits.
+        On a call that does not refuse, value and bits are each evaluated exactly once, in every build mode, so those arguments may carry a side effect. A refused read does not evaluate value, and leaves it as the caller left it. stream may be evaluated more than once: the path wider than 32 bits names it twice, so pass the stream variable itself.
+        @param stream The stream object. Must be a read stream.
+        @param value The unsigned integer the read writes.
+        @param bits The number of bits to read in [1,64].
+     */
+
     #define read_bits( stream, value, bits )                                                \
         do                                                                                  \
         {                                                                                   \
             /* U7 and U16: a bad bit count refuses on read before any bits move, never */  \
             /* an assertion: a reader never traps */                                        \
-            if ( (bits) <= 0 || (bits) > 64 )                                               \
+            const int serialize_macro_bits_ = serialize::bit_count( bits );                 \
+            if ( serialize_macro_bits_ <= 0 )                                               \
             {                                                                               \
                 return serialize::serialize_fail( stream, serialize::REFUSAL_VALUE_OUT_OF_RANGE ); \
             }                                                                               \
-            if ( (bits) <= 32 )                                                             \
+            if ( serialize_macro_bits_ <= 32 )                                              \
             {                                                                               \
-                uint32_t serialize_macro_uint32_value_;                                                      \
-                if ( !stream.SerializeBits( serialize_macro_uint32_value_, bits ) )                          \
+                uint32_t serialize_macro_uint32_value_;                                     \
+                if ( !stream.SerializeBits( serialize_macro_uint32_value_, serialize_macro_bits_ ) ) \
                 {                                                                           \
                     return false;                                                           \
                 }                                                                           \
-                value = serialize::decoded( serialize_macro_uint32_value_ );                             \
+                value = serialize::decoded( serialize_macro_uint32_value_ );                \
             }                                                                               \
             else                                                                            \
             {                                                                               \
-                uint32_t serialize_macro_lo_ = 0;                                                            \
-                uint32_t serialize_macro_hi_ = 0;                                                            \
-                if ( !stream.SerializeBits( serialize_macro_lo_, 32 ) )                                      \
+                uint32_t serialize_macro_lo_ = 0;                                           \
+                uint32_t serialize_macro_hi_ = 0;                                           \
+                if ( !stream.SerializeBits( serialize_macro_lo_, 32 ) )                     \
                 {                                                                           \
                     return false;                                                           \
                 }                                                                           \
-                if ( !stream.SerializeBits( serialize_macro_hi_, (bits) - 32 ) )                             \
+                if ( !stream.SerializeBits( serialize_macro_hi_, serialize_macro_bits_ - 32 ) ) \
                 {                                                                           \
                     return false;                                                           \
                 }                                                                           \
-                value = serialize::decoded( ( uint64_t(serialize_macro_hi_) << 32 ) | serialize_macro_lo_ );              \
+                value = serialize::decoded( ( uint64_t(serialize_macro_hi_) << 32 ) | serialize_macro_lo_ ); \
             }                                                                               \
         } while (0)
+
+    /**
+        Read a ranged integer from the stream, the read-only companion to serialize_int.
+        On a call that does not refuse, value, min and max are each evaluated exactly once, in every build mode, so those arguments may carry a side effect. A refused read does not evaluate value, and leaves it as the caller left it. stream is evaluated once on the path taken.
+        @param stream The stream object. Must be a read stream.
+        @param value The integer the read writes. The destination must be wide enough to hold the range.
+        @param min The minimum value.
+        @param max The maximum value.
+     */
 
     #define read_int( stream, value, min, max )                                             \
         do                                                                                  \
         {                                                                                   \
+            const serialize::IntBounds serialize_macro_bounds_ =                            \
+                serialize::int32_bounds( (min), (max) );                                    \
             /* U7 and U16: a bad declaration refuses on read, before any bits move */       \
-            if ( !serialize::int_bounds_are_int32( (min), (max) ) )           \
+            if ( !serialize_macro_bounds_.fits )                                            \
             {                                                                               \
                 return serialize::serialize_fail( stream, serialize::REFUSAL_VALUE_OUT_OF_RANGE ); \
             }                                                                               \
-            int32_t serialize_macro_int32_value_ = 0;                                                        \
-            if ( !stream.SerializeInteger( serialize_macro_int32_value_, serialize::converted<int32_t>( min ), serialize::converted<int32_t>( max ) ) ) \
+            int32_t serialize_macro_int32_value_ = 0;                                       \
+            if ( !stream.SerializeInteger( serialize_macro_int32_value_,                    \
+                    serialize::converted<int32_t>( serialize_macro_bounds_.low ),           \
+                    serialize::converted<int32_t>( serialize_macro_bounds_.high ) ) )       \
             {                                                                               \
                 return false;                                                               \
             }                                                                               \
-            value = serialize::decoded( serialize_macro_int32_value_ );                                  \
-            serialize_assert( int64_t(value) == int64_t(serialize_macro_int32_value_) );                     \
+            serialize::assert_decoded( int64_t( value = serialize::decoded( serialize_macro_int32_value_ ) ) == int64_t( serialize_macro_int32_value_ ) ); \
         } while (0)
+
+    /**
+        Read a ranged 64 bit integer from the stream, the read-only companion to serialize_int64.
+        On a call that does not refuse, value, min and max are each evaluated exactly once, in every build mode, so those arguments may carry a side effect. A refused read does not evaluate value, and leaves it as the caller left it. stream is evaluated once on the path taken.
+        @param stream The stream object. Must be a read stream.
+        @param value The 64 bit integer the read writes.
+        @param min The minimum value.
+        @param max The maximum value.
+     */
 
     #define read_int64( stream, value, min, max )                                           \
         do                                                                                  \
         {                                                                                   \
-            /* U16: a bound that does not fit int64 refuses before any bits move */      \
-            if ( !serialize::int64_bounds_fit( (min), (max) ) )                             \
+            const serialize::IntBounds serialize_macro_bounds_ =                            \
+                serialize::int64_bounds( (min), (max) );                                    \
+            /* U16: a bound that does not fit int64 refuses before any bits move */         \
+            if ( !serialize_macro_bounds_.fits )                                            \
             {                                                                               \
                 return serialize::serialize_fail( stream, serialize::REFUSAL_VALUE_OUT_OF_RANGE ); \
             }                                                                               \
-            int64_t serialize_macro_int64_value_ = 0;                                                        \
-            if ( !stream.SerializeInteger64( serialize_macro_int64_value_, serialize::converted<int64_t>( min ), serialize::converted<int64_t>( max ) ) ) \
+            int64_t serialize_macro_int64_value_ = 0;                                       \
+            if ( !stream.SerializeInteger64( serialize_macro_int64_value_,                  \
+                    serialize_macro_bounds_.low, serialize_macro_bounds_.high ) )           \
             {                                                                               \
                 return false;                                                               \
             }                                                                               \
-            value = serialize::decoded( serialize_macro_int64_value_ );                                  \
-            serialize_assert( int64_t(value) == serialize_macro_int64_value_ );                              \
+            serialize::assert_decoded( int64_t( value = serialize::decoded( serialize_macro_int64_value_ ) ) == serialize_macro_int64_value_ ); \
         } while (0)
 
     #define read_int128( stream, value, min, max )                                          \
@@ -4347,6 +4462,7 @@ namespace serialize
     /**
         Write bits to the stream, the write-only companion to serialize_bits.
         Carries the same debug assertions: the width is in [1,64], and the value fits in that many bits, checked on the caller's value before it is narrowed to the group width.
+        value and bits are each evaluated exactly once, in every build mode, so those arguments may carry a side effect. stream may be evaluated more than once: the path wider than 32 bits names it twice, so pass the stream variable itself.
         @param stream The stream object. Must be a write stream.
         @param value The unsigned integer value to write. Must be in [0,(1\<\<bits)-1].
         @param bits The number of bits to write in [1,64].
@@ -4355,42 +4471,69 @@ namespace serialize
     #define write_bits( stream, value, bits )                                               \
         do                                                                                  \
         {                                                                                   \
-            serialize_assert( (bits) > 0 );                                                 \
-            serialize_assert( (bits) <= 64 );                                               \
-            serialize_assert( serialize::value_fits_in_bits( value, bits ) );               \
-            uint64_t serialize_macro_uint64_value_ = uint64_t( value );                                                  \
-            if ( (bits) <= 32 )                                                             \
+            const int serialize_macro_bits_ = serialize::bit_count( bits );                 \
+            serialize_assert( serialize_macro_bits_ > 0 );                                  \
+            uint64_t serialize_macro_uint64_value_ = serialize::converted<uint64_t>(        \
+                serialize::asserted_fits_in_bits( value, serialize_macro_bits_ ) );         \
+            if ( serialize_macro_bits_ <= 32 )                                              \
             {                                                                               \
-                uint32_t serialize_macro_uint32_value_ = static_cast<uint32_t>( serialize_macro_uint64_value_ );                            \
-                stream.SerializeBits( serialize_macro_uint32_value_, bits );                                 \
+                uint32_t serialize_macro_uint32_value_ = static_cast<uint32_t>( serialize_macro_uint64_value_ ); \
+                stream.SerializeBits( serialize_macro_uint32_value_, serialize_macro_bits_ ); \
             }                                                                               \
             else                                                                            \
             {                                                                               \
-                uint32_t serialize_macro_lo_ = uint32_t( serialize_macro_uint64_value_ & 0xFFFFFFFF );                        \
-                uint32_t serialize_macro_hi_ = uint32_t( serialize_macro_uint64_value_ >> 32 );                               \
-                stream.SerializeBits( serialize_macro_lo_, 32 );                                             \
-                stream.SerializeBits( serialize_macro_hi_, (bits) - 32 );                                    \
+                uint32_t serialize_macro_lo_ = uint32_t( serialize_macro_uint64_value_ & 0xFFFFFFFF ); \
+                uint32_t serialize_macro_hi_ = uint32_t( serialize_macro_uint64_value_ >> 32 ); \
+                stream.SerializeBits( serialize_macro_lo_, 32 );                            \
+                stream.SerializeBits( serialize_macro_hi_, serialize_macro_bits_ - 32 );    \
             }                                                                               \
         } while (0)
+
+    /**
+        Write a ranged integer to the stream, the write-only companion to serialize_int.
+        value, min and max are each evaluated exactly once, in every build mode, so those arguments may carry a side effect. stream is evaluated once.
+        @param stream The stream object. Must be a write stream.
+        @param value The integer value to write in [min,max].
+        @param min The minimum value.
+        @param max The maximum value.
+     */
 
     #define write_int( stream, value, min, max )                                            \
         do                                                                                  \
         {                                                                                   \
-            serialize_assert( int64_t( min ) <= int64_t( max ) );                           \
-            serialize_assert( serialize::int_bounds_are_int32( (min), (max) ) ); \
-            serialize_assert( serialize::value_in_int64_range( value, int64_t( min ), int64_t( max ) ) ); \
-            int32_t serialize_macro_int32_value_ = serialize::converted<int32_t>( value );                                      \
-            stream.SerializeInteger( serialize_macro_int32_value_, serialize::converted<int32_t>( min ), serialize::converted<int32_t>( max ) );    \
+            const serialize::IntBounds serialize_macro_bounds_ =                            \
+                serialize::int32_bounds( (min), (max) );                                    \
+            serialize_assert( serialize_macro_bounds_.low <= serialize_macro_bounds_.high ); \
+            serialize_assert( serialize_macro_bounds_.fits );                               \
+            int32_t serialize_macro_int32_value_ = serialize::converted<int32_t>(           \
+                serialize::asserted_in_int64_range( value,                                  \
+                    serialize_macro_bounds_.low, serialize_macro_bounds_.high ) );          \
+            stream.SerializeInteger( serialize_macro_int32_value_,                          \
+                serialize::converted<int32_t>( serialize_macro_bounds_.low ),               \
+                serialize::converted<int32_t>( serialize_macro_bounds_.high ) );            \
         } while (0)
+
+    /**
+        Write a ranged 64 bit integer to the stream, the write-only companion to serialize_int64.
+        value, min and max are each evaluated exactly once, in every build mode, so those arguments may carry a side effect. stream is evaluated once.
+        @param stream The stream object. Must be a write stream.
+        @param value The 64 bit integer value to write in [min,max].
+        @param min The minimum value.
+        @param max The maximum value.
+     */
 
     #define write_int64( stream, value, min, max )                                          \
         do                                                                                  \
         {                                                                                   \
-            serialize_assert( serialize::int64_bounds_fit( (min), (max) ) );                \
-            serialize_assert( int64_t( min ) <= int64_t( max ) );                            \
-            serialize_assert( serialize::value_in_int64_range( value, int64_t( min ), int64_t( max ) ) ); \
-            int64_t serialize_macro_int64_value_ = serialize::converted<int64_t>( value );                                      \
-            stream.SerializeInteger64( serialize_macro_int64_value_, serialize::converted<int64_t>( min ), serialize::converted<int64_t>( max ) );  \
+            const serialize::IntBounds serialize_macro_bounds_ =                            \
+                serialize::int64_bounds( (min), (max) );                                    \
+            serialize_assert( serialize_macro_bounds_.fits );                               \
+            serialize_assert( serialize_macro_bounds_.low <= serialize_macro_bounds_.high ); \
+            int64_t serialize_macro_int64_value_ = serialize::converted<int64_t>(           \
+                serialize::asserted_in_int64_range( value,                                  \
+                    serialize_macro_bounds_.low, serialize_macro_bounds_.high ) );          \
+            stream.SerializeInteger64( serialize_macro_int64_value_,                        \
+                serialize_macro_bounds_.low, serialize_macro_bounds_.high );                \
         } while (0)
 
     #define write_int128( stream, value, min, max )                                         \
@@ -5934,6 +6077,119 @@ inline void test_serialize_int64_validation()
         serialize::ReadStream readStream( buffer, 4 );
         int64_t value = 0;
         serialize_check( readStream.SerializeInteger64( value, INT64_MIN, INT64_MAX ) == false );
+    }
+}
+
+// every argument of serialize_int, serialize_int64, serialize_bits and their read_ and write_
+// forms is evaluated exactly once per successful call, in every build mode and on every stream:
+// each argument below is an expression with a side effect, and the side effects are counted.
+// value, min, max and bits are each expected once. stream is not counted.
+
+struct ArgumentCounts
+{
+    int next;
+    int mins;
+    int maxs;
+    int bits;
+    int32_t ints[16];               // each call uses the slot at the count of calls before it; room to spare for a miscount
+    int64_t int64s[16];
+    uint32_t narrow_bits[16];
+    uint64_t wide_bits[16];
+
+    ArgumentCounts() : next( 0 ), mins( 0 ), maxs( 0 ), bits( 0 )
+    {
+        memset( ints, 0, sizeof( ints ) );
+        memset( int64s, 0, sizeof( int64s ) );
+        memset( narrow_bits, 0, sizeof( narrow_bits ) );
+        memset( wide_bits, 0, sizeof( wide_bits ) );
+    }
+
+    int64_t Min( int64_t value ) { mins++; return value; }
+    int64_t Max( int64_t value ) { maxs++; return value; }
+    int Bits( int value ) { bits++; return value; }
+};
+
+template <typename Stream> bool serialize_arguments_once( Stream & stream, ArgumentCounts & counts )
+{
+    serialize_int( stream, counts.ints[counts.next++], counts.Min( -100 ), counts.Max( 100 ) );
+    serialize_int64( stream, counts.int64s[counts.next++], counts.Min( -( int64_t( 1 ) << 40 ) ), counts.Max( int64_t( 1 ) << 40 ) );
+    serialize_bits( stream, counts.narrow_bits[counts.next++], counts.Bits( 7 ) );
+    serialize_bits( stream, counts.wide_bits[counts.next++], counts.Bits( 40 ) );
+    return true;
+}
+
+template <typename Stream> bool read_arguments_once( Stream & stream, ArgumentCounts & counts )
+{
+    read_int( stream, counts.ints[counts.next++], counts.Min( -100 ), counts.Max( 100 ) );
+    read_int64( stream, counts.int64s[counts.next++], counts.Min( -( int64_t( 1 ) << 40 ) ), counts.Max( int64_t( 1 ) << 40 ) );
+    read_bits( stream, counts.narrow_bits[counts.next++], counts.Bits( 7 ) );
+    read_bits( stream, counts.wide_bits[counts.next++], counts.Bits( 40 ) );
+    return true;
+}
+
+template <typename Stream> bool write_arguments_once( Stream & stream, ArgumentCounts & counts )
+{
+    write_int( stream, counts.ints[counts.next++], counts.Min( -100 ), counts.Max( 100 ) );
+    write_int64( stream, counts.int64s[counts.next++], counts.Min( -( int64_t( 1 ) << 40 ) ), counts.Max( int64_t( 1 ) << 40 ) );
+    write_bits( stream, counts.narrow_bits[counts.next++], counts.Bits( 7 ) );
+    write_bits( stream, counts.wide_bits[counts.next++], counts.Bits( 40 ) );
+    return true;
+}
+
+inline bool arguments_counted_once( const ArgumentCounts & counts )
+{
+    return counts.next == 4 && counts.mins == 2 && counts.maxs == 2 && counts.bits == 2;
+}
+
+inline void test_serialize_macro_arguments_evaluated_once()
+{
+    ArgumentCounts written;
+    written.ints[0] = -37;
+    written.int64s[1] = ( int64_t( 1 ) << 39 ) + 11;
+    written.narrow_bits[2] = 100;
+    written.wide_bits[3] = ( uint64_t( 1 ) << 39 ) + 3;
+
+    // serialize_ on a write, measure and read stream
+    {
+        uint8_t buffer[64 + 8] = { 0 };
+        serialize::WriteStream writeStream( buffer, 64 );
+        ArgumentCounts counts = written;
+        serialize_check( serialize_arguments_once( writeStream, counts ) );
+        serialize_check( arguments_counted_once( counts ) );
+        writeStream.Flush();
+
+        serialize::MeasureStream measureStream;
+        ArgumentCounts measured = written;
+        serialize_check( serialize_arguments_once( measureStream, measured ) );
+        serialize_check( arguments_counted_once( measured ) );
+
+        serialize::ReadStream readStream( buffer, writeStream.GetBytesProcessed() );
+        ArgumentCounts read;
+        serialize_check( serialize_arguments_once( readStream, read ) );
+        serialize_check( arguments_counted_once( read ) );
+        serialize_check( read.ints[0] == written.ints[0] );
+        serialize_check( read.int64s[1] == written.int64s[1] );
+        serialize_check( read.narrow_bits[2] == written.narrow_bits[2] );
+        serialize_check( read.wide_bits[3] == written.wide_bits[3] );
+    }
+
+    // write_ then read_
+    {
+        uint8_t buffer[64 + 8] = { 0 };
+        serialize::WriteStream writeStream( buffer, 64 );
+        ArgumentCounts counts = written;
+        serialize_check( write_arguments_once( writeStream, counts ) );
+        serialize_check( arguments_counted_once( counts ) );
+        writeStream.Flush();
+
+        serialize::ReadStream readStream( buffer, writeStream.GetBytesProcessed() );
+        ArgumentCounts read;
+        serialize_check( read_arguments_once( readStream, read ) );
+        serialize_check( arguments_counted_once( read ) );
+        serialize_check( read.ints[0] == written.ints[0] );
+        serialize_check( read.int64s[1] == written.int64s[1] );
+        serialize_check( read.narrow_bits[2] == written.narrow_bits[2] );
+        serialize_check( read.wide_bits[3] == written.wide_bits[3] );
     }
 }
 
@@ -12152,6 +12408,7 @@ inline void serialize_test()
         SERIALIZE_RUN_TEST( test_serialize_integer_full_range );
         SERIALIZE_RUN_TEST( test_serialize_int64_full_range );
         SERIALIZE_RUN_TEST( test_serialize_int64_validation );
+        SERIALIZE_RUN_TEST( test_serialize_macro_arguments_evaluated_once );
         SERIALIZE_RUN_TEST( test_serialize_bytes_validation );
         SERIALIZE_RUN_TEST( test_string_read_validation );
         SERIALIZE_RUN_TEST( test_int_relative_validation );
