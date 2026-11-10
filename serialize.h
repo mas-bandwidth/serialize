@@ -10251,6 +10251,20 @@ inline bool serialize_test_fp_barrier_holds()
     return true;
 }
 
+// The -ffp-contract=on build exists to certify statement-local contraction. Where the
+// compiler instead produces cross-statement contraction, that build cannot exercise the
+// discipline it asked for, so it reports the return code CMakeLists.txt names in
+// SKIP_RETURN_CODE and ctest records a skip. Every other build returns 0 and runs the suite.
+inline int serialize_test_fp_contract_on_skip_return_code( bool crosses_statements )
+{
+#if defined( SERIALIZE_TEST_FP_CONTRACT_REQUESTED_ON )
+    return crosses_statements ? 77 : 0;
+#else
+    (void) crosses_statements;
+    return 0;
+#endif
+}
+
 // The caption for this build, so the two runs CMake performs are telling apart in a CI log.
 // CMakeLists.txt defines it on the -ffp-contract=on target; the default covers a hand build
 // and says nothing it cannot know.
@@ -12231,6 +12245,17 @@ inline void test_macro_local_names()
     }
 }
 
+inline void test_fp_contract_on_skip_return_code()
+{
+#if defined( SERIALIZE_TEST_FP_CONTRACT_REQUESTED_ON )
+    serialize_check( serialize_test_fp_contract_on_skip_return_code( false ) == 0 );
+    serialize_check( serialize_test_fp_contract_on_skip_return_code( true ) == 77 );
+#else
+    serialize_check( serialize_test_fp_contract_on_skip_return_code( false ) == 0 );
+    serialize_check( serialize_test_fp_contract_on_skip_return_code( true ) == 0 );
+#endif
+}
+
 #define SERIALIZE_RUN_TEST( test_function )                                 \
     do                                                                      \
     {                                                                       \
@@ -12243,8 +12268,9 @@ inline void serialize_test()
 {
     const bool fp_contraction_live = serialize_test_fp_contraction_is_live();
     const bool fp_contraction_crosses_statements = serialize_test_fp_contraction_crosses_statements();
+    const int fp_contract_on_skip_return_code =
+        serialize_test_fp_contract_on_skip_return_code( fp_contraction_crosses_statements );
 
-#if defined( SERIALIZE_TEST_FP_CONTRACT_REQUESTED_ON )
     // This binary is CMake's second build of the suite, and it asked for STATEMENT-LOCAL
     // contraction. GCC before 14 mapped -ffp-contract=on onto =fast and gives cross-statement
     // contraction instead, which is a different and unsupported thing. That is a fact about
@@ -12252,12 +12278,12 @@ inline void serialize_test()
     // reporting a failure it did not find. The -ffp-contract=off build is still the gate on
     // such a compiler, and its negative controls still carry the discrimination there.
     // Anyone transplanting the -ffp-contract=on build to another repo should carry this check.
-    if ( fp_contraction_crosses_statements )
+    if ( fp_contract_on_skip_return_code != 0 )
     {
         printf( "*** STANDING DOWN: asked for -ffp-contract=on and this compiler produced CROSS-STATEMENT contraction (GCC before 14 maps =on onto =fast), so the discriminating build is not available on this toolchain ***\n\n" );
-        return;
+        fflush( stdout );
+        exit( fp_contract_on_skip_return_code );
     }
-#endif // #if defined( SERIALIZE_TEST_FP_CONTRACT_REQUESTED_ON )
 
     // which build this is, and whether its contraction setting is buying anything on this
     // target. Reported under SERIALIZE_TEST_VERBOSE, never asserted: a host with no FMA
@@ -12386,6 +12412,7 @@ inline void serialize_test()
         SERIALIZE_RUN_TEST( test_unaligned_writer );
         SERIALIZE_RUN_TEST( test_large_buffer );
         SERIALIZE_RUN_TEST( test_macro_local_names );
+        SERIALIZE_RUN_TEST( test_fp_contract_on_skip_return_code );
     }
 }
 
