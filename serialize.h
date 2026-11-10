@@ -7368,31 +7368,60 @@ inline void test_compressed_float_validation()
 #endif // #if defined( NDEBUG )
 }
 
-#if !defined( NDEBUG ) && !defined( _WIN32 )
+#if defined( SERIALIZE_DEBUG ) && ( defined( __unix__ ) || defined( __APPLE__ ) )
 
-#include <unistd.h>         // fork, _exit
+#include <unistd.h>         // fork, pipe, read, close, dup2, _exit
 #include <sys/wait.h>       // waitpid
-#include <signal.h>         // raise, SIGTERM
+#include <signal.h>         // raise, SIGABRT, SIGTERM
 
-// run fn in a forked child with stderr silenced, and report whether it died on a signal --
-// which is what a fired debug assert looks like from outside (assert calls abort, SIGABRT).
-inline bool serialize_test_assert_fires( void (*fn)() )
+// run fn in a forked child with its stderr captured, and report whether it died on SIGABRT
+// carrying an assertion message that names expected_condition. That is what a fired debug
+// assert looks like from outside (assert calls abort). A child killed by any other signal,
+// or one that exits normally, is not an assertion firing.
+inline bool serialize_test_assert_fires( void (*fn)(), const char * expected_condition )
 {
     fflush( stdout );
     fflush( stderr );
+    int pipe_fds[2];
+    if ( pipe( pipe_fds ) != 0 )
+        return false;
     pid_t pid = fork();
     if ( pid == 0 )
     {
-        FILE * reopened = freopen( "/dev/null", "w", stderr );    // the child's assert message is the expected outcome, not test noise
-        (void) reopened;
+        close( pipe_fds[0] );
+        if ( dup2( pipe_fds[1], STDERR_FILENO ) < 0 )
+            _exit( 1 );
+        close( pipe_fds[1] );
         fn();
         _exit( 0 );                             // the assert did not fire
     }
+    close( pipe_fds[1] );
     if ( pid < 0 )
+    {
+        close( pipe_fds[0] );
         return false;
+    }
+    char message[1024];
+    size_t message_length = 0;
+    while ( message_length < sizeof( message ) - 1 )
+    {
+        const ssize_t count = read( pipe_fds[0], message + message_length, sizeof( message ) - 1 - message_length );
+        if ( count <= 0 )
+            break;
+        message_length += static_cast<size_t>( count );
+    }
+    close( pipe_fds[0] );
+    message[message_length] = '\0';
     int status = 0;
     waitpid( pid, &status, 0 );
-    return WIFSIGNALED( status );
+    if ( !WIFSIGNALED( status ) || WTERMSIG( status ) != SIGABRT )
+        return false;
+    return expected_condition == NULL || strstr( message, expected_condition ) != NULL;
+}
+
+inline void serialize_test_die_without_assert()
+{
+    raise( SIGTERM );
 }
 
 inline void serialize_test_write_non_finite_declaration()
@@ -7436,7 +7465,7 @@ inline void serialize_test_precomputed_inconsistent_bits()
     serialize::serialize_compressed_float_precomputed_internal( writeStream, value, 1000, 11, 10.0f, 0.0f );
 }
 
-#endif // #if !defined( NDEBUG ) && !defined( _WIN32 )
+#endif // #if defined( SERIALIZE_DEBUG ) && ( defined( __unix__ ) || defined( __APPLE__ ) )
 
 inline void test_compressed_float_non_finite_asserts()
 {
@@ -7444,29 +7473,24 @@ inline void test_compressed_float_non_finite_asserts()
     // values is not finite in float32 is non-conforming, and writing a non-finite value is
     // non-conforming -- conforming writers assert in debug builds. prove each assert fires,
     // in a forked child so the abort is observed rather than suffered.
-#if !defined( NDEBUG ) && !defined( _WIN32 )
-    serialize_check( serialize_test_assert_fires( serialize_test_write_non_finite_declaration ) == true );
-    serialize_check( serialize_test_assert_fires( serialize_test_write_non_finite_value ) == true );
+#if defined( SERIALIZE_DEBUG ) && ( defined( __unix__ ) || defined( __APPLE__ ) )
+    serialize_check( serialize_test_assert_fires( serialize_test_write_non_finite_declaration, "float_is_finite( delta )" ) == true );
+    serialize_check( serialize_test_assert_fires( serialize_test_write_non_finite_value, "float_is_finite( value )" ) == true );
 #else
     // silently skipped: needs an assert-enabled build and fork. An expected
     // skip is not information — the suite prints test names and failures only.
-#endif // #if !defined( NDEBUG ) && !defined( _WIN32 )
-}
-
-inline void serialize_test_die_without_assert()
-{
-    raise( SIGTERM );
+#endif // #if defined( SERIALIZE_DEBUG ) && ( defined( __unix__ ) || defined( __APPLE__ ) )
 }
 
 inline void test_assert_death_is_recognized()
 {
     // a child that dies on a signal other than an assertion must not be counted as one
-#if !defined( NDEBUG ) && !defined( _WIN32 )
-    serialize_check( serialize_test_assert_fires( serialize_test_die_without_assert ) == false );
-    serialize_check( serialize_test_assert_fires( serialize_test_write_non_finite_value ) == true );
+#if defined( SERIALIZE_DEBUG ) && ( defined( __unix__ ) || defined( __APPLE__ ) )
+    serialize_check( serialize_test_assert_fires( serialize_test_die_without_assert, NULL ) == false );
+    serialize_check( serialize_test_assert_fires( serialize_test_write_non_finite_value, "float_is_finite( value )" ) == true );
 #else
     // silently skipped: needs an assert-enabled build and fork.
-#endif // #if !defined( NDEBUG ) && !defined( _WIN32 )
+#endif // #if defined( SERIALIZE_DEBUG ) && ( defined( __unix__ ) || defined( __APPLE__ ) )
 }
 
 inline void test_compressed_float_precomputed_asserts()
@@ -7476,13 +7500,13 @@ inline void test_compressed_float_precomputed_asserts()
     // constants that are not what serialize_compressed_float_params derives are a caller
     // bug. prove each assert fires, in a forked child so the abort is observed rather
     // than suffered.
-#if !defined( NDEBUG ) && !defined( _WIN32 )
-    serialize_check( serialize_test_assert_fires( serialize_test_write_non_finite_value_precomputed ) == true );
-    serialize_check( serialize_test_assert_fires( serialize_test_precomputed_inconsistent_bits ) == true );
+#if defined( SERIALIZE_DEBUG ) && ( defined( __unix__ ) || defined( __APPLE__ ) )
+    serialize_check( serialize_test_assert_fires( serialize_test_write_non_finite_value_precomputed, "float_is_finite( value )" ) == true );
+    serialize_check( serialize_test_assert_fires( serialize_test_precomputed_inconsistent_bits, "bits == bits_required( 0, max_integer_value )" ) == true );
 #else
     // silently skipped: needs an assert-enabled build and fork. An expected
     // skip is not information — the suite prints test names and failures only.
-#endif // #if !defined( NDEBUG ) && !defined( _WIN32 )
+#endif // #if defined( SERIALIZE_DEBUG ) && ( defined( __unix__ ) || defined( __APPLE__ ) )
 }
 
 inline void test_compressed_float_precomputed_validation()
@@ -12183,10 +12207,14 @@ inline void serialize_test()
         SERIALIZE_RUN_TEST( test_read_stream_bits_remaining );
         SERIALIZE_RUN_TEST( test_compressed_float_validation );
         SERIALIZE_RUN_TEST( test_compressed_float_top_of_range_clamp );
+#if defined( SERIALIZE_DEBUG ) && ( defined( __unix__ ) || defined( __APPLE__ ) )
         SERIALIZE_RUN_TEST( test_assert_death_is_recognized );
         SERIALIZE_RUN_TEST( test_compressed_float_non_finite_asserts );
+#endif
         SERIALIZE_RUN_TEST( test_compressed_float_precomputed_validation );
+#if defined( SERIALIZE_DEBUG ) && ( defined( __unix__ ) || defined( __APPLE__ ) )
         SERIALIZE_RUN_TEST( test_compressed_float_precomputed_asserts );
+#endif
         SERIALIZE_RUN_TEST( test_serialize_fixed );
         SERIALIZE_RUN_TEST( test_serialize_fixed_validation );
         SERIALIZE_RUN_TEST( test_serialize_fixed_matches_int64 );
