@@ -132,15 +132,17 @@
     The reference pair: on GCC and clang an empty asm with a register output operand makes
     the stored value opaque to the contraction pass at zero cost — the product and the add
     compile to separate rounded instructions with no memory traffic ("+w" is an FP/SIMD
-    register on arm64, "+x" an XMM register on x86). Everywhere else — MSVC, and GNU
-    targets whose register class this header does not spell — the same property is
+    register on arm64, "+x" an XMM register on x86 when SSE is available). The "+x" form is
+    selected only when __SSE__ is defined: on 32-bit x86 without SSE (the x87 default) there
+    is no XMM register for the constraint to name. Everywhere else — MSVC, x86 without SSE,
+    and GNU targets whose register class this header does not spell — the same property is
     emulated with a volatile store, which is correct on every compiler at the cost of a
     stack round-trip. (MSVC's /fp:precise does not contract, so the volatile slot there is
     belt on an uncontracted build; /fp:fast builds are held to the rounding by it.)
 */
 #if ( defined( __GNUC__ ) || defined( __clang__ ) ) && ( defined( __aarch64__ ) || defined( _M_ARM64 ) )
 #define SERIALIZE_FLOAT_FORCE_ROUND( x ) __asm__ ( "" : "+w" ( x ) )
-#elif ( defined( __GNUC__ ) || defined( __clang__ ) ) && ( defined( __x86_64__ ) || defined( __i386__ ) )
+#elif ( defined( __GNUC__ ) || defined( __clang__ ) ) && defined( __SSE__ ) && ( defined( __x86_64__ ) || defined( __i386__ ) )
 #define SERIALIZE_FLOAT_FORCE_ROUND( x ) __asm__ ( "" : "+x" ( x ) )
 #else
 #define SERIALIZE_FLOAT_FORCE_ROUND( x )                                                    \
@@ -11063,6 +11065,36 @@ inline void test_float_finite_kept_bit_exact()
     }
 }
 
+inline void test_float_force_round_is_bit_exact()
+{
+    // SERIALIZE_FLOAT_FORCE_ROUND must preserve an already-rounded float32 value exactly on
+    // every register class it selects, including the volatile fallback used on x86 without
+    // SSE. Instantiating it here also covers that fallback at compile time.
+    const uint32_t patterns[] = { 0x00000000u, 0x80000000u, 0x3F800000u, 0x4B7FFFFFu, 0x7F7FFFFFu, 0xFF7FFFFFu, 0x00800000u, 0x80000001u };
+    for ( int i = 0; i < (int) ( sizeof( patterns ) / sizeof( patterns[0] ) ); i++ )
+    {
+        float value = 0.0f;
+        memcpy( &value, &patterns[i], 4 );
+        SERIALIZE_FLOAT_FORCE_ROUND( value );
+        uint32_t bits = 0;
+        memcpy( &bits, &value, 4 );
+        serialize_check( bits == patterns[i] );
+    }
+
+    // a product must round to float32 here exactly as it does through a volatile store
+    volatile float a = 6666.0f / 20000.0f;
+    volatile float b = 200.0f;
+    float product = a * b;
+    SERIALIZE_FLOAT_FORCE_ROUND( product );
+    volatile float reference_slot = a * b;
+    const float reference = reference_slot;
+    uint32_t product_bits = 0;
+    uint32_t reference_bits = 0;
+    memcpy( &product_bits, &product, 4 );
+    memcpy( &reference_bits, &reference, 4 );
+    serialize_check( product_bits == reference_bits );
+}
+
 inline void test_float_non_finite_refused()
 {
     // every non-finite float pattern, alone in its stream: refused with non_finite_float, the
@@ -12201,6 +12233,7 @@ inline void serialize_test()
         SERIALIZE_RUN_TEST( test_compressed_float_precomputed_conformance );
         SERIALIZE_RUN_TEST( test_compressed_float_precomputed_differential );
         SERIALIZE_RUN_TEST( test_float_finite_kept_bit_exact );
+        SERIALIZE_RUN_TEST( test_float_force_round_is_bit_exact );
         SERIALIZE_RUN_TEST( test_float_non_finite_refused );
         SERIALIZE_RUN_TEST( test_compressed_float_decode_is_finite );
         SERIALIZE_RUN_TEST( test_golden_zero_length_bytes );
