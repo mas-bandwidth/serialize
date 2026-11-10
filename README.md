@@ -150,9 +150,11 @@ struct Player
 
 See [example.cpp](example.cpp) for more.
 
+`serialize_int`, `serialize_int64` and `serialize_bits`, and their `read_` and `write_` forms, evaluate value, min, max and bits exactly once each on a call that does not refuse, in debug and in release and on every stream, so `serialize_int( stream, items[count++], 0, 100 )` advances `count` once. A refused read does not evaluate value, and leaves it as the caller left it. stream may be evaluated more than once: the bits path wider than 32 bits names it twice, so pass the stream variable itself. The other macros make no such promise, so keep side effects out of their arguments.
+
 # Reading untrusted data
 
-Packets come off the network, so the read path validates in release builds and drops invalid data. Three rules govern what happens when it does, and code that reads packets should be written against them:
+Packets come off the network, so the read path validates in release builds and drops invalid data. Five rules govern what happens when it does, and code that reads packets should be written against them:
 
 * **A refused read leaves your value alone.** When a read of a scalar fails, the variable you passed holds exactly what it held before the call. You never end up holding a value the stream did not carry. The exception is a read into a buffer you own — `serialize_bytes` and `serialize_string` — where the buffer's contents after a refusal are unspecified.
 * **Failure is terminal.** Nothing after a failing read has a defined position, so nothing after it is interpretable. The first refused read fails the `ReadStream`, and every later read on that stream fails too, consuming no bits and writing nothing. The stream recovers only when you point it at a new buffer with `Initialize` or `InitializePadded`, or discard it. You do not have to check the return code of every read to stay safe — though the serialize macros do it for you anyway, by returning `false` out of your serialize function the moment a read fails.
@@ -178,7 +180,7 @@ serialize is the reference implementation of that format, and the family ports i
 
 The author of this library is Glenn Fiedler.
 
-Open source libraries by the same author include: [netcode](https://github.com/mas-bandwidth/netcode), [reliable](https://github.com/mas-bandwidth/netcode) and [yojimbo](https://github.com/mas-bandwidth/yojimbo)
+Open source libraries by the same author include: [netcode](https://github.com/mas-bandwidth/netcode), [reliable](https://github.com/mas-bandwidth/reliable) and [yojimbo](https://github.com/mas-bandwidth/yojimbo)
 
 If you find this software useful, please consider [becoming a supporter](https://www.patreon.com/MasBandwidth/membership). Thanks!
 

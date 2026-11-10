@@ -415,6 +415,10 @@ if(SERIALIZE_BUILD_TESTS)
             $<$<NOT:$<CONFIG:Debug>>:SERIALIZE_RELEASE>
         )
         add_test(NAME test-fp-contract-on COMMAND serialize_test_fp_contract_on)
+        # This build reports SKIP_RETURN_CODE when the toolchain gives cross-statement
+        # contraction instead of the statement-local mode it asked for, so ctest records
+        # a skip for a build that cannot execute the requested contraction mode.
+        set_tests_properties(test-fp-contract-on PROPERTIES SKIP_RETURN_CODE 77)
 
         add_executable(serialize_test_fp_contract_fast test.cpp serialize.h)
         set_target_properties(serialize_test_fp_contract_fast PROPERTIES OUTPUT_NAME test-fp-contract-fast)

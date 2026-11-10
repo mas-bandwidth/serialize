@@ -42,7 +42,7 @@ If you use CMake, you can consume it as a target instead — via FetchContent:
     FetchContent_MakeAvailable(serialize)
     target_link_libraries(your_target PRIVATE serialize::serialize)
 
-or via `add_subdirectory`, or install it (`cmake --install build`) and use `find_package(serialize CONFIG REQUIRED)`. In all cases the `serialize::serialize` target carries only the include path: none of this repo's warning or fast-math flags leak into your build, and the test and example targets are only built when serialize is the top level project.
+or via `add_subdirectory`, or install it (`cmake --install build`) and use `find_package(serialize CONFIG REQUIRED)`. In all cases the `serialize::serialize` target carries only the include path: none of this repo's warning or floating-point flags leak into your build, and the test and example targets are only built when serialize is the top level project.
 
 `GIT_TAG` names a release, never a branch. A release carries a stated format version, and both endpoints of a connection must run releases carrying the same format version or they do not interoperate. The format version is stated at the head of [STANDARD.md](STANDARD.md) and is not the library version; [COMPATIBILITY.md](COMPATIBILITY.md) lists the release of every implementation in the family that carries the current one. A floating branch moves one endpoint on its own schedule, which is how two endpoints end up on different format versions.
 
@@ -54,6 +54,8 @@ The compressed float wire format requires exact `float32` rounding (STANDARD.md)
 
 - `-ffast-math` (and `-Ofast`) are not supported: they license reciprocal approximation and reassociation, which change the wire in ways no barrier can pin. The test suite refuses such a build by name.
 - Building with `-ffp-contract=off` is still the standing policy for the network libraries this header ships in (serialize, netcode, reliable, yojimbo, flow, rocketnet) — belt and braces on top of the in-source barrier, and the certification setting for golden vectors.
+
+On 32-bit x86 without SSE, the header selects a volatile-store rounding barrier instead of the XMM register constraint. Every compressed-float intermediate — the derived delta and step count, the writer's normalized value, product and `+0.5` sum, and the reader's quotient and final add — goes through that barrier, so x87 (`-mfpmath=387`, where `FLT_EVAL_METHOD == 2` carries float expressions wider than `float32`) builds compile and produce the same wire and decoded bit patterns as SSE builds.
 
 ## Debug builds
 
