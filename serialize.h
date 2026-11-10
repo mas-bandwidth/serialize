@@ -3545,6 +3545,7 @@ namespace serialize
         serialize_bytes( stream, reinterpret_cast<uint8_t*>( string ), length );
         if ( Stream::IsReading )
         {
+            string[length] = '\0';
             // STANDARD.md, "Readers must refuse malformed string payloads" (adopted
             // 2026-08-15). Interior NUL first: a conforming writer derives the length
             // from strlen, so a zero byte among the transmitted bytes only arrives
@@ -3563,7 +3564,6 @@ namespace serialize
             {
                 return serialize_fail( stream, REFUSAL_INVALID_UTF8 );
             }
-            string[length] = '\0';
         }
         return true;
     }
@@ -6038,6 +6038,26 @@ inline void test_string_read_validation()
         char read_back[BufferSize];
         serialize::ReadStream readStream( buffer, writeStream.GetBytesProcessed() );
         serialize_check( serialize::serialize_string_internal( readStream, read_back, BufferSize ) == false );
+    }
+
+    // a refused payload still leaves the destination terminated
+    {
+        uint8_t buffer[64];
+        memset( buffer, 0, sizeof( buffer ) );
+        serialize::WriteStream writeStream( buffer, sizeof( buffer ) );
+        int32_t length = 15;
+        serialize_check( writeStream.SerializeInteger( length, 0, BufferSize - 1 ) );
+        uint8_t payload[15];
+        memset( payload, 0xFF, sizeof( payload ) );
+        serialize_check( writeStream.SerializeBytes( payload, 15 ) );
+        writeStream.Flush();
+
+        char read_back[BufferSize];
+        memset( read_back, 'X', sizeof( read_back ) );
+        serialize::ReadStream readStream( buffer, writeStream.GetBytesProcessed() );
+        serialize_check( serialize::serialize_string_internal( readStream, read_back, BufferSize ) == false );
+        serialize_check( readStream.GetRefusal() == serialize::REFUSAL_INVALID_UTF8 );
+        serialize_check( read_back[15] == '\0' );
     }
 
     // truncated UTF-8: a 3 byte lead as the final transmitted byte
