@@ -93,7 +93,7 @@ tuple, carrying its reason, whatever the runtime's idiom elsewhere.
 The latch has three properties, and every implementation keeps all three: the
 stream is refused exactly when a reason is recorded, the reason never changes
 once recorded, and no read succeeds after a refusal. They are modelled in
-[tla/ReadStreamLatch.tla](tla/ReadStreamLatch.tla), checked with TLC.
+[tla/ReadStreamLatch.tla](https://github.com/mas-bandwidth/serialize/blob/main/tla/ReadStreamLatch.tla), checked with TLC.
 
 ## The caller's refusal (U2)
 
@@ -142,7 +142,7 @@ negative tie.
 
 serialize 2.0 carries text as UTF-8 only. A C++ program that holds text as
 `wchar_t`, UTF-16 or UTF-32 converts at its own boundary with
-[serialize_utf.h](serialize_utf.h), which refuses a lone surrogate exactly as
+[serialize_utf.h](https://github.com/mas-bandwidth/serialize/blob/main/serialize_utf.h), which refuses a lone surrogate exactly as
 the wire refuses an encoded one. A port whose native strings are UTF-16 (Java,
 C#, JavaScript, Dart) converts with its runtime's strict codec: strict, because
 the lenient ones replace a lone surrogate with `U+FFFD`, which sends a different
@@ -166,7 +166,7 @@ surface.
 
 ## Uniform behaviour: U1 to U16
 
-*(Rowan's rulings from the cross-port audit, 2026-10-27, on Glenn's requirement
+*(Rulings from the cross-port audit, 2026-10-27, on the requirement
 that behaviour be uniform across every port and in the spec.)* None of these can
 be a corpus vector: each is write-side, measure-side, API-shape or caller-misuse
 behaviour, which no stream observes. They are nonetheless normative: **every
