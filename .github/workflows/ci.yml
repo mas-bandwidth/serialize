@@ -136,10 +136,11 @@ jobs:
           ./conformance_cxx03_no_int128 conformance/*.txt
 
   # serialize.h is clean under the flags a strict consumer builds with: -Wconversion -Wsign-conversion
-  # -Wcast-qual -Wundef, as errors, on both compilers. The serialize macros expand at the caller, so the
+  # -Wcast-qual -Wundef -Wshadow, as errors, on both compilers. The serialize macros expand at the caller, so the
   # check is a consumer translation unit (warnings.cpp) that touches every macro with destinations of every
-  # width and signedness, plus the embedded tests (test.cpp), which are part of the header. Every cast that
-  # keeps it clean is the conversion the code already did, spelled out: the machine code is unchanged.
+  # width and signedness, plus the embedded tests (test.cpp), which are part of the header, and every
+  # other program (every *.cpp in the repository, found rather than listed) under the same flags. Every
+  # cast that keeps it clean is the conversion the code already did, spelled out: the machine code is unchanged.
   strict-warnings:
     name: strict warnings (${{ matrix.compiler }})
     runs-on: ubuntu-24.04
@@ -150,14 +151,28 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7
 
-      - name: The consumer translation unit and the embedded tests, four flags as errors
+      - name: The consumer translation unit and the embedded tests, five flags as errors
         run: |
           for std in c++11 c++17 c++20; do
             for mode in "-DSERIALIZE_DEBUG" "-DSERIALIZE_RELEASE -O2"; do
-              ${{ matrix.compiler }} -std=$std -I. -Wall -Wextra -Wconversion -Wsign-conversion -Wcast-qual -Wundef -Werror -ffp-contract=off -fno-rtti $mode -c warnings.cpp -o /dev/null
-              ${{ matrix.compiler }} -std=$std -I. -Wall -Wextra -Wconversion -Wsign-conversion -Wcast-qual -Wundef -Werror -ffp-contract=off -fno-rtti -DSERIALIZE_ENABLE_TESTS=1 $mode -c test.cpp -o /dev/null
+              ${{ matrix.compiler }} -std=$std -I. -Wall -Wextra -Wconversion -Wsign-conversion -Wcast-qual -Wundef -Wshadow -Werror -ffp-contract=off -fno-rtti $mode -c warnings.cpp -o /dev/null
+              ${{ matrix.compiler }} -std=$std -I. -Wall -Wextra -Wconversion -Wsign-conversion -Wcast-qual -Wundef -Wshadow -Werror -ffp-contract=off -fno-rtti -DSERIALIZE_ENABLE_TESTS=1 $mode -c test.cpp -o /dev/null
+              for file in $(git ls-files '*.cpp'); do
+                if [ "$file" = warnings.cpp ] || [ "$file" = test.cpp ]; then continue; fi
+                ${{ matrix.compiler }} -std=$std -I. -Wall -Wextra -Wconversion -Wsign-conversion -Wcast-qual -Wundef -Wshadow -Werror -ffp-contract=off -fno-rtti $mode -c $file -o /dev/null
+              done
             done
           done
+
+      - name: The consumer translation unit under the broader GCC warning set
+        if: matrix.compiler == 'g++'
+        run: |
+          g++ -std=c++17 -I. -Wall -Wextra -Wconversion -Wsign-conversion -Wcast-qual -Wundef -Wshadow -Wold-style-cast -Wfloat-equal -Wuseless-cast -Werror -ffp-contract=off -fno-rtti -DSERIALIZE_DEBUG -c warnings.cpp -o /dev/null
+
+      - name: The consumer translation unit under clang's full warning set
+        if: matrix.compiler == 'clang++'
+        run: |
+          clang++ -std=c++17 -I. -Weverything -Werror -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-padded -Wno-unsafe-buffer-usage -Wno-missing-prototypes -Wno-pre-c++14-compat -Wno-covered-switch-default -ffp-contract=off -fno-rtti -DSERIALIZE_DEBUG -c warnings.cpp -o /dev/null
 
       # NEGATIVE CONTROL: the job must be able to go red. A scratch copy of the header with one of the
       # casts taken out again has to fail the consumer translation unit; if it passes, the flags are not
@@ -165,9 +180,9 @@ jobs:
       - name: Control, a header with one cast removed must fail
         run: |
           mkdir control && cp serialize.h warnings.cpp control/
-          sed -i 's/normalizedValue \* (float) max_integer_value;/normalizedValue * max_integer_value;/' control/serialize.h
+          sed -i 's/normalizedValue \* static_cast<float>( max_integer_value );/normalizedValue * max_integer_value;/' control/serialize.h
           cmp -s serialize.h control/serialize.h && { echo "::error::the control sabotaged nothing"; exit 1; }
-          if ${{ matrix.compiler }} -std=c++17 -Icontrol -Wall -Wextra -Wconversion -Wsign-conversion -Wcast-qual -Wundef -Werror -DSERIALIZE_DEBUG -c control/warnings.cpp -o /dev/null; then
+          if ${{ matrix.compiler }} -std=c++17 -Icontrol -Wall -Wextra -Wconversion -Wsign-conversion -Wcast-qual -Wundef -Wshadow -Werror -DSERIALIZE_DEBUG -c control/warnings.cpp -o /dev/null; then
             echo "::error::the strict warnings job did not notice a removed cast"
             exit 1
           fi

@@ -529,12 +529,12 @@ template <typename Stream> bool FuzzRoundTrip( Stream & stream, const uint8_t * 
                 uint8_t value[256];
                 if ( Stream::IsWriting )
                 {
-                    memcpy( value, expected, numBytes );
+                    memcpy( value, expected, (size_t) numBytes );
                 }
                 serialize_bytes( stream, value, numBytes );
                 if ( Stream::IsReading )
                 {
-                    fuzz_check( memcmp( value, expected, numBytes ) == 0 );
+                    fuzz_check( memcmp( value, expected, (size_t) numBytes ) == 0 );
                 }
             }
             break;
@@ -558,7 +558,7 @@ template <typename Stream> bool FuzzRoundTrip( Stream & stream, const uint8_t * 
                 char value[32];
                 if ( Stream::IsWriting )
                 {
-                    memcpy( value, expected, length + 1 );
+                    memcpy( value, expected, (size_t) length + 1 );
                 }
                 serialize_string( stream, value, (int) sizeof( value ) );
                 if ( Stream::IsReading )
@@ -608,7 +608,7 @@ template <typename Stream> bool FuzzRoundTrip( Stream & stream, const uint8_t * 
                 char value[40];
                 if ( Stream::IsWriting )
                 {
-                    memcpy( value, expected, length + 1 );
+                    memcpy( value, expected, (size_t) length + 1 );
                 }
                 serialize_string( stream, value, (int) sizeof( value ) );
                 if ( Stream::IsReading )
