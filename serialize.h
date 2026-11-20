@@ -36,8 +36,8 @@
 
 #define SERIALIZE_VERSION_MAJOR 2
 #define SERIALIZE_VERSION_MINOR 1
-#define SERIALIZE_VERSION_PATCH 4
-#define SERIALIZE_VERSION "2.1.4"
+#define SERIALIZE_VERSION_PATCH 5
+#define SERIALIZE_VERSION "2.1.5"
 
 #if defined(_MSC_VER)
 #define serialize_restrict __restrict
@@ -495,7 +495,10 @@ typedef struct serialize_uint128_t
         const uint64_t carry = ( ( product_ll >> 32 ) + ( product_lh & 0xFFFFFFFFULL ) + ( product_hl & 0xFFFFFFFFULL ) ) >> 32;
 
         serialize_uint128_t result( 0 );
-        result.lo = product_ll + ( product_lh << 32 ) + ( product_hl << 32 );
+        // lo * other.lo is already exact modulo 2^64; reassembling it from the 32 bit cross
+        // limbs (product_ll + (product_lh << 32) + (product_hl << 32)) miscompiles under MSVC
+        // 19.52 /O2 when one factor is a power of two and the other spans both 32 bit halves.
+        result.lo = lo * other.lo;
         result.hi = product_hh + ( product_lh >> 32 ) + ( product_hl >> 32 ) + carry;
         result.hi += lo * other.hi + hi * other.lo;
         return result;
@@ -9334,6 +9337,8 @@ inline void test_uint128_emulation()
         serialize_check( max64 * max64 == uint128_emulated( 0xFFFFFFFFFFFFFFFEULL, 1 ) );                           // 2^128 - 2^65 + 1
         serialize_check( uint128_emulated( 1, 0 ) * ::serialize_uint128_t( 5 ) == uint128_emulated( 5, 0 ) );             // the high lane path
         serialize_check( all_ones * all_ones == ::serialize_uint128_t( 1 ) );                                             // ( 2^128 - 1 )^2 mod 2^128
+        serialize_check( ::serialize_uint128_t( 65536ULL ) * ::serialize_uint128_t( -140737488355327LL ) == uint128_emulated( 0xFFFFFFFFFFFFFFFFULL, 0x8000000000010000ULL ) );
+        serialize_check( ::serialize_uint128_t( -140737488355327LL ) * ::serialize_uint128_t( 65536ULL ) == uint128_emulated( 0xFFFFFFFFFFFFFFFFULL, 0x8000000000010000ULL ) );
 
         ::serialize_uint128_t accumulator( 3 );
         accumulator *= ::serialize_uint128_t( 5 );
