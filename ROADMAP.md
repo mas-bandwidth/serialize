@@ -130,17 +130,58 @@ What makes the family's 2.1 visible to the people who use it.
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | The reference COMPATIBILITY matrix pins re-synced to v2.1.0 | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | A nightly cross-port differential against the reference | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| The crates.io publish of serialize.rs 3.x | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| The Homebrew formula at 2.1.0 | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| complete | 75% | 50% | 50% | 25% | 50% | 50% | 50% | 50% | 50% | 50% | 50% | 50% | 50% | 50% | 50% |
+| The crates.io publish of serialize.rs 3.x | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| The Homebrew formula at 2.1.0 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| complete | 100% | 50% | 50% | 50% | 50% | 50% | 50% | 50% | 50% | 50% | 50% | 50% | 50% | 50% | 50% |
 
 [Source data](docs/roadmap.sexp)
 
 <!-- nova-work:release:end -->
 
+## Reach: packages, listings and READMEs
+
+What lets people find the family and install it by name, and what the family's pages say about the schema compiler that generates code for it. Recorded on 2026-11-21 from a survey of registries and lists made that day, each fact checked again against the registries and repositories that day. Accounts and registrations are the owner's, and a pull request to a list or registry someone else keeps is an outward act the owner approves. The schema compiler is going to be renamed; where a row waits on the rename it says so.
+
+**The C# runtime on NuGet and OpenUPM.** Done looks like: serialize.cs published as a NuGet package and listed on OpenUPM from a UPM package.json and an asmdef in the repository, both released by the repository's release tooling, so .NET and Unity users add the runtime by name instead of copying src/Serialize.cs and src/Int128Pair.cs by hand (the repository had no package.json and no asmdef on 2026-11-21). The names the survey found free, checked again on 2026-11-21: NuGet MasBandwidth.Serialize (api.nuget.org 404) and OpenUPM com.masbandwidth.serialize (package.openupm.com 404). NuGet needs a Microsoft account and an API key, with an optional ID-prefix reservation; OpenUPM needs a pull request to the openupm repository, an open-source licence and a versioned git tag, and a first-time contributor's pull request is approved by its moderators. Who: the package.json, the asmdef, the NuGet metadata and the publish workflow are a maintainer with repo access; the NuGet account and the OpenUPM submission need the owner (account or registration). Waits on: the owner's NuGet account and his choice of package ID.
+
+**The JavaScript runtime on npm under a scope.** serialize.js's package.json is named `serialize` (2.1.3), and the bare npm name `serialize` belongs to an unrelated package (0.1.3, a utility that serializes the execution of asynchronous functions; registry.npmjs.org on 2026-11-21), so serialize.js is not on npm. Done looks like: serialize.js published under a scope (the survey proposes @mas-bandwidth/serialize, which returned 404 on 2026-11-21; whether the mas-bandwidth org itself is free could not be checked), its package.json renamed to match, and its README's install line naming the scoped package. Who: the package.json change and a trusted-publishing workflow from GitHub Actions are a maintainer with repo access; the npm account and the org that owns the scope need the owner (account or registration). Waits on: the owner creating or confirming the npm org.
+
+**vcpkg and Conan recipes for the C and C++ runtimes.** Done looks like: a vcpkg port and a Conan Center recipe for serialize (C++) and for serialize.c, both header-only, merged upstream, so C and C++ users get the runtime by name. Neither microsoft/vcpkg's ports/ nor conan-center-index's recipes/ had a serialize entry on 2026-11-21. The C++ library is already in Homebrew core (serialize 2.1.5 on formulae.brew.sh on 2026-11-21); serialize.c is not. vcpkg takes a pull request reviewed by its maintainers; Conan Center takes a pull request with a signed CLA, its CI and a review. Who: a maintainer with repo access writes the recipes; a pull request to someone else's repository is an outward act the owner approves, and the Conan CLA is signed by whoever submits. Waits on: the owner's approval to submit.
+
+**serialize in fffaraz/awesome-cpp's Serialization section** (https://github.com/fffaraz/awesome-cpp). Its CONTRIBUTING.md rule, read on 2026-11-21: pull requests by accounts created after 2024, or for repositories created after 2024, are blocked and reported; one pull request per suggestion, in the format [RESOURCE](REPO-LINK) - DESCRIPTION. [LICENSE], alphabetical within the category. This repository was created on 2023-12-24 and qualifies; the schema compiler's repository was created on 2026-08-05 and does not, so it is never submitted there. The Serialization section's only bit-packer on 2026-11-21 was Bitsery. Done looks like: one merged pull request adding serialize to that section. Who: a maintainer with repo access drafts the line; the submission is an outward act the owner approves, and it must come from an account created before 2025, so it needs the owner. Waits on: the owner's approval.
+
+**The Go and Rust registry pages point readers at the schema compiler.** Search results on 2026-11-21 showed https://pkg.go.dev/github.com/mas-bandwidth/serialize.go@v1.4.0, an old page of the v1 module path (whose latest is v1.15.1) with no link to the compiler; the current module is github.com/mas-bandwidth/serialize.go/v2, latest v2.1.2 on the Go proxy. pkg.go.dev shows the package documentation first, and serialize.go's doc comment reads only 'Package serialize implements fast bitpacked binary serialization for Go.' serialize.rs is on crates.io as serialize-official 5.0.1, with homepage and documentation unset and a description that names no compiler. Done looks like, for Go: the package doc comment carries one sentence naming the schema compiler's new name with its link, a deprecation comment on the v1 module's go.mod points readers at the v2 module, and both are released through the release tooling so pkg.go.dev shows them. For Rust: the crate documentation in src/lib.rs carries the same sentence, Cargo.toml sets homepage and documentation, and a release publishes them to crates.io. Who: the text and the Go releases are a maintainer with repo access; the crates.io publish needs the owner's credentials. Waits on: the schema compiler's rename.
+
+**The family READMEs name the schema compiler's new name.** On 2026-11-21 each of the fifteen family READMEs gained a paragraph that names 'Schema' and links https://github.com/mas-bandwidth/schema, verified in every one that day: serialize, serialize.c, serialize.go, serialize.rs, serialize.js, serialize.java, serialize.cs, serialize.dart, serialize.elixir, serialize.lua, serialize.luau, serialize.nut, serialize.goose, serialize.lobster and serialize.moo. Some also link mas-bandwidth/schema from a benchmarking sentence further down (serialize.js does, for one). Done looks like: every one of those paragraphs and links names the schema compiler's new name and links its new address, and no README in the family names the old one. Who: a maintainer with repo access. Waits on: the rename, and the owner making the new name public.
+
+**Stale README text in serialize.js and serialize.lobster**, found on 2026-11-21 and read again that day. serialize.js's README says 'One of the nine implementations of the serialize family, wire compatible with the' and then lists eight siblings (C++, C, C#, Dart, Elixir, Go, Java and Rust); its CLAUDE.md says 'This repository is one of the **nine implementations** of the serialize family (C, C++, C#, Dart, Elixir, Go, Java, JavaScript and Rust)', and its package.json description names the same eight. The family is fifteen. serialize.lobster's README: the paragraph beginning 'The wire format is serialize's STANDARD.md' ends 'which refuses trailing bytes and set padding:', a colon that introduces code, but the next paragraph is prose ('A message serialized through a top-level `serialize` function must be declared as a `class`, not a `struct`') and the code block comes after it. Done looks like: serialize.js's README, CLAUDE.md and package.json description name the whole family or stop counting it, and serialize.lobster's code block follows the sentence that introduces it. Who: a maintainer with repo access. Waits on: nothing.
+
+**serialize.moo drops moo-analyze -j1 when moo fixes the analyzer.** PR mas-bandwidth/serialize.moo#35 (merged 2026-11-21) set `MOO_ANALYZE_FLAGS ?= -j1` in the Makefile, which CI uses: moo-analyze at the pinned moo commit corrupts its heap now and then when it checks modules on its default worker threads (about 1 run in 80), and one thread has not crashed. The defect is recorded for moo's roadmap in PR mas-bandwidth/moo#75 (open on 2026-11-21). Done looks like: moo fixes the analyzer, serialize.moo moves its moo pin to a commit with the fix, and -j1 and its comment are removed. Who: a maintainer with repo access. Waits on: the fix in moo.
+
+**Every PR job survives a build-cache eviction inside the 2-minute limit.** PR mas-bandwidth/serialize.moo#35 also added a daily scheduled CI run, because a pull request after a quiet week found its cache of the checked moo build evicted, had to build it cold (about 95 s on an idle bench), did not fit the fleet's 2-minute limit beside other work, and went red. Done looks like: each family repository's push and pull-request jobs checked for a step that restores a build from a cache (a toolchain, an interpreter, a pinned dependency) and would exceed 2 minutes building cold; each one that would gets a scheduled run that keeps its caches restored, or a cold build that fits; a cell is ✅ when that check is recorded for its repository. serialize.moo's cell is ✅ from PR #35. Who: a maintainer with repo access. Waits on: nothing.
+
+<!-- nova-work:reach:start -->
+
+| feature | C++ | C | Go | Rust | JS | Java | C# | Dart | Elixir | Lua | Luau | Squirrel | Goose | Lobster | moo |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| The C# runtime on NuGet and OpenUPM | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| The JavaScript runtime on npm under a scope | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| vcpkg and Conan recipes for the C and C++ runtimes | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| serialize in fffaraz/awesome-cpp's Serialization section | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| The Go and Rust registry pages point readers at the schema compiler | ✅ | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| The family READMEs name the schema compiler's new name | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Stale README text in serialize.js and serialize.lobster | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ |
+| serialize.moo drops moo-analyze -j1 when moo fixes the analyzer | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
+| Every PR job survives a build-cache eviction inside the 2-minute limit | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| complete | 55% | 66% | 66% | 66% | 55% | 77% | 66% | 77% | 77% | 77% | 77% | 77% | 77% | 66% | 77% |
+
+[Source data](docs/roadmap.sexp)
+
+<!-- nova-work:reach:end -->
+
 ## The bar
 
-When every cell is ✅, the family is uniform, audited, honestly tested and fast. That is the bar.
+When every cell is ✅, the family is uniform, audited, honestly tested and fast, and people can find it and install it by name. That is the bar.
 
 ## About this page
 
