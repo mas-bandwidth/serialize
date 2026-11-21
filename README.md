@@ -6,6 +6,8 @@
 
 **serialize** is a simple bitpacking serializer for C++.
 
+If you would rather not write serialize functions by hand, [Schema](https://github.com/mas-bandwidth/schema) generates them for C++ and many other languages from one definition of your data. The packet code it generates for C++ uses this library as its runtime.
+
 [ROADMAP.md](ROADMAP.md) is the family roadmap: what this reference and its fourteen ports still need.
 
 It has the following features:
