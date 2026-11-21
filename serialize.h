@@ -113,7 +113,7 @@
 #if defined( __clang__ ) || defined( __GNUC__ )
 #define SERIALIZE_BULK_COPY( dst, src, bytes ) __builtin_memcpy( ( dst ), ( src ), ( bytes ) )
 #else // #if defined( __clang__ ) || defined( __GNUC__ )
-#define SERIALIZE_BULK_COPY( dst, src, bytes ) memcpy( ( dst ), ( src ), ( bytes ) )
+#define SERIALIZE_BULK_COPY( dst, src, bytes ) ::memcpy( ( dst ), ( src ), ( bytes ) )
 #endif // #if defined( __clang__ ) || defined( __GNUC__ )
 
 /*
@@ -2998,16 +2998,16 @@ namespace serialize
             {                                                           \
                 return serialize::serialize_fail( stream, serialize::REFUSAL_VALUE_OUT_OF_RANGE ); \
             }                                                           \
-            int32_t serialize_macro_int32_value_ = 0;                   \
+            ::int32_t serialize_macro_int32_value_ = 0;                 \
             if ( Stream::IsWriting )                                    \
             {                                                           \
-                serialize_macro_int32_value_ = serialize::converted<int32_t>( \
+                serialize_macro_int32_value_ = serialize::converted< ::int32_t>( \
                     serialize::asserted_in_int64_range( value,          \
                         serialize_macro_bounds_.low, serialize_macro_bounds_.high ) ); \
             }                                                           \
             if ( !stream.SerializeInteger( serialize_macro_int32_value_, \
-                    serialize::converted<int32_t>( serialize_macro_bounds_.low ), \
-                    serialize::converted<int32_t>( serialize_macro_bounds_.high ) ) ) \
+                    serialize::converted< ::int32_t>( serialize_macro_bounds_.low ), \
+                    serialize::converted< ::int32_t>( serialize_macro_bounds_.high ) ) ) \
             {                                                           \
                 return false;                                           \
             }                                                           \
@@ -3047,10 +3047,10 @@ namespace serialize
             {                                                           \
                 return serialize::serialize_fail( stream, serialize::REFUSAL_VALUE_OUT_OF_RANGE ); \
             }                                                           \
-            int64_t serialize_macro_int64_value_ = 0;                   \
+            ::int64_t serialize_macro_int64_value_ = 0;                 \
             if ( Stream::IsWriting )                                    \
             {                                                           \
-                serialize_macro_int64_value_ = serialize::converted<int64_t>( \
+                serialize_macro_int64_value_ = serialize::converted< ::int64_t>( \
                     serialize::asserted_in_int64_range( value,          \
                         serialize_macro_bounds_.low, serialize_macro_bounds_.high ) ); \
             }                                                           \
@@ -3137,10 +3137,10 @@ namespace serialize
             }                                                           \
             if ( serialize_macro_bits_ <= 32 )                          \
             {                                                           \
-                uint32_t serialize_macro_uint32_value_ = 0;             \
+                ::uint32_t serialize_macro_uint32_value_ = 0;           \
                 if ( Stream::IsWriting )                                \
                 {                                                       \
-                    serialize_macro_uint32_value_ = serialize::converted<uint32_t>( \
+                    serialize_macro_uint32_value_ = serialize::converted< ::uint32_t>( \
                         serialize::asserted_fits_in_bits( value, serialize_macro_bits_ ) ); \
                 }                                                       \
                 if ( !stream.SerializeBits( serialize_macro_uint32_value_, serialize_macro_bits_ ) ) \
@@ -3158,13 +3158,13 @@ namespace serialize
             }                                                           \
             else                                                        \
             {                                                           \
-                uint32_t serialize_macro_hi_ = 0, serialize_macro_lo_ = 0; \
+                ::uint32_t serialize_macro_hi_ = 0, serialize_macro_lo_ = 0; \
                 if ( Stream::IsWriting )                                \
                 {                                                       \
-                    const uint64_t serialize_macro_uint64_value_ = serialize::converted<uint64_t>( \
+                    const ::uint64_t serialize_macro_uint64_value_ = serialize::converted< ::uint64_t>( \
                         serialize::asserted_fits_in_bits( value, serialize_macro_bits_ ) ); \
-                    serialize_macro_lo_ = uint32_t( serialize_macro_uint64_value_ & 0xFFFFFFFF ); \
-                    serialize_macro_hi_ = uint32_t( serialize_macro_uint64_value_ >> 32 ); \
+                    serialize_macro_lo_ = ::uint32_t( serialize_macro_uint64_value_ & 0xFFFFFFFF ); \
+                    serialize_macro_hi_ = ::uint32_t( serialize_macro_uint64_value_ >> 32 ); \
                 }                                                       \
                 if ( !stream.SerializeBits( serialize_macro_lo_, 32 ) ) \
                 {                                                       \
@@ -3176,7 +3176,7 @@ namespace serialize
                 }                                                       \
                 if ( Stream::IsReading )                                \
                 {                                                       \
-                    const uint64_t serialize_macro_ranged_value_ = ( uint64_t(serialize_macro_hi_) << 32 ) | serialize_macro_lo_; \
+                    const ::uint64_t serialize_macro_ranged_value_ = ( ::uint64_t(serialize_macro_hi_) << 32 ) | serialize_macro_lo_; \
                     if ( !serialize_decoded_bits_fit_destination( serialize_macro_ranged_value_, serialize_macro_bits_, value ) ) \
                     {                                                   \
                         return serialize::serialize_fail( stream, serialize::REFUSAL_VALUE_OUT_OF_RANGE ); \
@@ -3199,7 +3199,7 @@ namespace serialize
     #define serialize_bool( stream, value )                             \
         do                                                              \
         {                                                               \
-            uint32_t serialize_macro_uint32_bool_value_ = 0;                             \
+            ::uint32_t serialize_macro_uint32_bool_value_ = 0;                           \
             if ( Stream::IsWriting )                                    \
             {                                                           \
                 serialize_macro_uint32_bool_value_ = ( value ) ? 1 : 0;                  \
@@ -4466,7 +4466,7 @@ namespace serialize
             }                                                                               \
             if ( serialize_macro_bits_ <= 32 )                                              \
             {                                                                               \
-                uint32_t serialize_macro_uint32_value_;                                     \
+                ::uint32_t serialize_macro_uint32_value_;                                   \
                 if ( !stream.SerializeBits( serialize_macro_uint32_value_, serialize_macro_bits_ ) ) \
                 {                                                                           \
                     return false;                                                           \
@@ -4479,8 +4479,8 @@ namespace serialize
             }                                                                               \
             else                                                                            \
             {                                                                               \
-                uint32_t serialize_macro_lo_ = 0;                                           \
-                uint32_t serialize_macro_hi_ = 0;                                           \
+                ::uint32_t serialize_macro_lo_ = 0;                                         \
+                ::uint32_t serialize_macro_hi_ = 0;                                         \
                 if ( !stream.SerializeBits( serialize_macro_lo_, 32 ) )                     \
                 {                                                                           \
                     return false;                                                           \
@@ -4490,7 +4490,7 @@ namespace serialize
                     return false;                                                           \
                 }                                                                           \
                 {                                                                           \
-                    const uint64_t serialize_macro_ranged_value_ = ( uint64_t(serialize_macro_hi_) << 32 ) | serialize_macro_lo_;      \
+                    const ::uint64_t serialize_macro_ranged_value_ = ( ::uint64_t(serialize_macro_hi_) << 32 ) | serialize_macro_lo_;  \
                     if ( !serialize_decoded_bits_fit_destination( serialize_macro_ranged_value_, serialize_macro_bits_, value ) ) \
                     {                                                                       \
                         return serialize::serialize_fail( stream, serialize::REFUSAL_VALUE_OUT_OF_RANGE ); \
@@ -4519,10 +4519,10 @@ namespace serialize
             {                                                                               \
                 return serialize::serialize_fail( stream, serialize::REFUSAL_VALUE_OUT_OF_RANGE ); \
             }                                                                               \
-            int32_t serialize_macro_int32_value_ = 0;                                       \
+            ::int32_t serialize_macro_int32_value_ = 0;                                     \
             if ( !stream.SerializeInteger( serialize_macro_int32_value_,                    \
-                    serialize::converted<int32_t>( serialize_macro_bounds_.low ),           \
-                    serialize::converted<int32_t>( serialize_macro_bounds_.high ) ) )       \
+                    serialize::converted< ::int32_t>( serialize_macro_bounds_.low ),        \
+                    serialize::converted< ::int32_t>( serialize_macro_bounds_.high ) ) )    \
             {                                                                               \
                 return false;                                                               \
             }                                                                               \
@@ -4552,7 +4552,7 @@ namespace serialize
             {                                                                               \
                 return serialize::serialize_fail( stream, serialize::REFUSAL_VALUE_OUT_OF_RANGE ); \
             }                                                                               \
-            int64_t serialize_macro_int64_value_ = 0;                                       \
+            ::int64_t serialize_macro_int64_value_ = 0;                                     \
             if ( !stream.SerializeInteger64( serialize_macro_int64_value_,                  \
                     serialize_macro_bounds_.low, serialize_macro_bounds_.high ) )           \
             {                                                                               \
@@ -4615,7 +4615,7 @@ namespace serialize
     #define read_bytes( stream, data, bytes )                                               \
         do                                                                                  \
         {                                                                                   \
-            uint8_t * serialize_macro_data_ptr_ = serialize::reinterpreted<uint8_t*>( data );                                       \
+            ::uint8_t * serialize_macro_data_ptr_ = serialize::reinterpreted< ::uint8_t*>( data );                                  \
             if ( !stream.SerializeBytes( serialize_macro_data_ptr_, bytes ) )                                \
             {                                                                               \
                 return false;                                                               \
@@ -4654,17 +4654,17 @@ namespace serialize
         {                                                                                   \
             const int serialize_macro_bits_ = serialize::bit_count( bits );                 \
             serialize_assert( serialize_macro_bits_ > 0 );                                  \
-            uint64_t serialize_macro_uint64_value_ = serialize::converted<uint64_t>(        \
+            ::uint64_t serialize_macro_uint64_value_ = serialize::converted< ::uint64_t>(   \
                 serialize::asserted_fits_in_bits( value, serialize_macro_bits_ ) );         \
             if ( serialize_macro_bits_ <= 32 )                                              \
             {                                                                               \
-                uint32_t serialize_macro_uint32_value_ = static_cast<uint32_t>( serialize_macro_uint64_value_ ); \
+                ::uint32_t serialize_macro_uint32_value_ = static_cast< ::uint32_t>( serialize_macro_uint64_value_ ); \
                 stream.SerializeBits( serialize_macro_uint32_value_, serialize_macro_bits_ ); \
             }                                                                               \
             else                                                                            \
             {                                                                               \
-                uint32_t serialize_macro_lo_ = uint32_t( serialize_macro_uint64_value_ & 0xFFFFFFFF ); \
-                uint32_t serialize_macro_hi_ = uint32_t( serialize_macro_uint64_value_ >> 32 ); \
+                ::uint32_t serialize_macro_lo_ = ::uint32_t( serialize_macro_uint64_value_ & 0xFFFFFFFF ); \
+                ::uint32_t serialize_macro_hi_ = ::uint32_t( serialize_macro_uint64_value_ >> 32 ); \
                 stream.SerializeBits( serialize_macro_lo_, 32 );                            \
                 stream.SerializeBits( serialize_macro_hi_, serialize_macro_bits_ - 32 );    \
             }                                                                               \
@@ -4686,12 +4686,12 @@ namespace serialize
                 serialize::int32_bounds( (min), (max) );                                    \
             serialize_assert( serialize_macro_bounds_.low <= serialize_macro_bounds_.high ); \
             serialize_assert( serialize_macro_bounds_.fits );                               \
-            int32_t serialize_macro_int32_value_ = serialize::converted<int32_t>(           \
+            ::int32_t serialize_macro_int32_value_ = serialize::converted< ::int32_t>(      \
                 serialize::asserted_in_int64_range( value,                                  \
                     serialize_macro_bounds_.low, serialize_macro_bounds_.high ) );          \
             stream.SerializeInteger( serialize_macro_int32_value_,                          \
-                serialize::converted<int32_t>( serialize_macro_bounds_.low ),               \
-                serialize::converted<int32_t>( serialize_macro_bounds_.high ) );            \
+                serialize::converted< ::int32_t>( serialize_macro_bounds_.low ),            \
+                serialize::converted< ::int32_t>( serialize_macro_bounds_.high ) );         \
         } while (0)
 
     /**
@@ -4710,7 +4710,7 @@ namespace serialize
                 serialize::int64_bounds( (min), (max) );                                    \
             serialize_assert( serialize_macro_bounds_.fits );                               \
             serialize_assert( serialize_macro_bounds_.low <= serialize_macro_bounds_.high ); \
-            int64_t serialize_macro_int64_value_ = serialize::converted<int64_t>(           \
+            ::int64_t serialize_macro_int64_value_ = serialize::converted< ::int64_t>(      \
                 serialize::asserted_in_int64_range( value,                                  \
                     serialize_macro_bounds_.low, serialize_macro_bounds_.high ) );          \
             stream.SerializeInteger64( serialize_macro_int64_value_,                        \
@@ -4750,8 +4750,8 @@ namespace serialize
         do                                                                                  \
         {                                                                                   \
             float serialize_macro_float_value_ = serialize::converted<float>( value );                                          \
-            uint32_t serialize_macro_int_value_;                                                             \
-            memcpy( reinterpret_cast<char*>( &serialize_macro_int_value_ ), &serialize_macro_float_value_, 4 );                                  \
+            ::uint32_t serialize_macro_int_value_;                                                           \
+            ::memcpy( reinterpret_cast<char*>( &serialize_macro_int_value_ ), &serialize_macro_float_value_, 4 );                                \
             /* finite only, checked after the narrowing to float: a finite double */        \
             /* above FLT_MAX narrows to an infinity, and that is what would be sent */      \
             serialize_assert( serialize::float_bits_are_finite( serialize_macro_int_value_ ) );              \
@@ -4762,8 +4762,8 @@ namespace serialize
         do                                                                                  \
         {                                                                                   \
             double serialize_macro_double_value_ = serialize::converted<double>( value );                                       \
-            uint64_t serialize_macro_int64_value_;                                                           \
-            memcpy( reinterpret_cast<char*>( &serialize_macro_int64_value_ ), &serialize_macro_double_value_, 8 );                               \
+            ::uint64_t serialize_macro_int64_value_;                                                         \
+            ::memcpy( reinterpret_cast<char*>( &serialize_macro_int64_value_ ), &serialize_macro_double_value_, 8 );                             \
             serialize_assert( serialize::double_bits_are_finite( serialize_macro_int64_value_ ) );           \
             write_bits( stream, serialize_macro_int64_value_, 64 );                                          \
         } while (0)
@@ -4771,7 +4771,7 @@ namespace serialize
     #define write_bytes( stream, data, bytes )                                              \
         do                                                                                  \
         {                                                                                   \
-            const uint8_t * serialize_macro_data_ptr_ = serialize::reinterpreted<const uint8_t*>( data );                           \
+            const ::uint8_t * serialize_macro_data_ptr_ = serialize::reinterpreted<const ::uint8_t*>( data );                       \
             stream.SerializeBytes( serialize_macro_data_ptr_, bytes );                                       \
         } while (0)
 
@@ -4780,14 +4780,14 @@ namespace serialize
         {                                                                                   \
             /* the length assertion runs on the size_t strlen returns, before it narrows */ \
             /* to int. See serialize::serialize_string_internal */                          \
-            const size_t serialize_macro_string_length_ = strlen( string );                                  \
+            const ::size_t serialize_macro_string_length_ = ::strlen( string );                              \
             serialize_assert( (buffer_size) > 0 );                                          \
-            serialize_assert( serialize_macro_string_length_ < static_cast<size_t>( buffer_size ) );                     \
+            serialize_assert( serialize_macro_string_length_ < static_cast< ::size_t>( buffer_size ) );                  \
             int serialize_macro_length_ = static_cast<int>( serialize_macro_string_length_ );                                               \
             /* the writer's contract, debug only. See serialize_string_is_valid_utf8 */     \
             serialize_assert( serialize::serialize_string_is_valid_utf8( string, serialize_macro_length_ ) );\
             write_int( stream, serialize_macro_length_, 0, (buffer_size) - 1 );                              \
-            write_bytes( stream, serialize::reinterpreted<const uint8_t*>( string ), serialize_macro_length_ );                           \
+            write_bytes( stream, serialize::reinterpreted<const ::uint8_t*>( string ), serialize_macro_length_ );                         \
         } while (0)
 
 
@@ -5074,11 +5074,11 @@ namespace serialize
     #define serialize_int_compile_time( stream, value, min, max )                           \
         do                                                                                  \
         {                                                                                   \
-            int32_t serialize_macro_int32_value_ = 0;                                                        \
+            ::int32_t serialize_macro_int32_value_ = 0;                                                      \
             if ( Stream::IsWriting )                                                        \
             {                                                                               \
-                serialize_assert( serialize::value_in_int64_range( value, int64_t( min ), int64_t( max ) ) ); \
-                serialize_macro_int32_value_ = serialize::converted<int32_t>( value );                                          \
+                serialize_assert( serialize::value_in_int64_range( value, ::int64_t( min ), ::int64_t( max ) ) ); \
+                serialize_macro_int32_value_ = serialize::converted< ::int32_t>( value );                                       \
             }                                                                               \
             if ( !serialize::SerializeIntConst<(min), (max)>( stream, serialize_macro_int32_value_ ) )       \
             {                                                                               \
@@ -5108,11 +5108,11 @@ namespace serialize
     #define serialize_int64_compile_time( stream, value, min, max )                         \
         do                                                                                  \
         {                                                                                   \
-            int64_t serialize_macro_int64_value_ = 0;                                                        \
+            ::int64_t serialize_macro_int64_value_ = 0;                                                      \
             if ( Stream::IsWriting )                                                        \
             {                                                                               \
-                serialize_assert( serialize::value_in_int64_range( value, int64_t( min ), int64_t( max ) ) ); \
-                serialize_macro_int64_value_ = serialize::converted<int64_t>( value );                                          \
+                serialize_assert( serialize::value_in_int64_range( value, ::int64_t( min ), ::int64_t( max ) ) ); \
+                serialize_macro_int64_value_ = serialize::converted< ::int64_t>( value );                                       \
             }                                                                               \
             if ( !serialize::SerializeInt64Const<(min), (max)>( stream, serialize_macro_int64_value_ ) )     \
             {                                                                               \
@@ -5141,11 +5141,11 @@ namespace serialize
     #define serialize_bits_compile_time( stream, value, bits )                              \
         do                                                                                  \
         {                                                                                   \
-            uint32_t serialize_macro_uint32_value_ = 0;                                                      \
+            ::uint32_t serialize_macro_uint32_value_ = 0;                                                    \
             if ( Stream::IsWriting )                                                        \
             {                                                                               \
                 serialize_assert( serialize::value_fits_in_bits( value, bits ) );           \
-                serialize_macro_uint32_value_ = serialize::converted<uint32_t>( value );                                        \
+                serialize_macro_uint32_value_ = serialize::converted< ::uint32_t>( value );                                     \
             }                                                                               \
             if ( !serialize::SerializeBitsConst<(bits)>( stream, serialize_macro_uint32_value_ ) )           \
             {                                                                               \
@@ -5174,11 +5174,11 @@ namespace serialize
     #define serialize_bits64_compile_time( stream, value, bits )                            \
         do                                                                                  \
         {                                                                                   \
-            uint64_t serialize_macro_uint64_value_ = 0;                                                      \
+            ::uint64_t serialize_macro_uint64_value_ = 0;                                                    \
             if ( Stream::IsWriting )                                                        \
             {                                                                               \
                 serialize_assert( serialize::value_fits_in_bits( value, bits ) );           \
-                serialize_macro_uint64_value_ = serialize::converted<uint64_t>( value );                                        \
+                serialize_macro_uint64_value_ = serialize::converted< ::uint64_t>( value );                                     \
             }                                                                               \
             if ( !serialize::SerializeBits64Const<(bits)>( stream, serialize_macro_uint64_value_ ) )         \
             {                                                                               \
@@ -5206,7 +5206,7 @@ namespace serialize
     #define serialize_bool_compile_time( stream, value )                                    \
         do                                                                                  \
         {                                                                                   \
-            uint32_t serialize_macro_uint32_bool_value_ = 0;                                                 \
+            ::uint32_t serialize_macro_uint32_bool_value_ = 0;                                               \
             if ( Stream::IsWriting )                                                        \
             {                                                                               \
                 serialize_macro_uint32_bool_value_ = ( value ) ? 1 : 0;                                      \
@@ -13301,7 +13301,7 @@ inline void test_fp_contract_on_skip_return_code()
 #define SERIALIZE_RUN_TEST( test_function )                                 \
     do                                                                      \
     {                                                                       \
-        printf( #test_function "\n" );                                      \
+        ::printf( #test_function "\n" );                                    \
         test_function();                                                    \
     }                                                                       \
     while (0)
