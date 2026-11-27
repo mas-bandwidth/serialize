@@ -228,7 +228,15 @@ static void test_bounds()
     {
         char * empty = (char*) malloc( 0 );
         uint32_t code = 0xFFFFFFFF;
+        // a zero-length allocation has no bytes to initialise; GCC still flags passing it as maybe-uninitialized
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+#endif
         check( serialize_utf8_decode( empty, 0, code ) == 0, "decode over a zero-length input returns 0" );
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
         free( empty );
     }
 
