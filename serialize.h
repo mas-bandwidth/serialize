@@ -36,8 +36,8 @@
 
 #define SERIALIZE_VERSION_MAJOR 2
 #define SERIALIZE_VERSION_MINOR 1
-#define SERIALIZE_VERSION_PATCH 6
-#define SERIALIZE_VERSION "2.1.6"
+#define SERIALIZE_VERSION_PATCH 7
+#define SERIALIZE_VERSION "2.1.7"
 
 #if defined(_MSC_VER)
 #define serialize_restrict __restrict
@@ -1824,6 +1824,27 @@ namespace serialize
     };
 
     /**
+        Does this byte count fit a signed bit cursor?
+        The cursor stores the size in bits, eight per byte. Poison steps one past
+        that, and rounding the cursor up to a byte adds 7. A negative count, or
+        one whose bit count does not leave those 8 bits, is not a size: the
+        multiply is not performed, and the reader stays empty.
+        The largest accepted count is the greatest multiple of 8 that is at most
+        INT64_MAX - 8, divided by 8. One above that still fits in a signed
+        multiply and still does not leave the 8 bits.
+     */
+
+    inline bool byte_count_fits_reader( int64_t bytes )
+    {
+        const int64_t max_bytes = ( INT64_MAX - 15 ) / 8;
+        // one unsigned compare: a negative count converts above every accepted count
+        return uint64_t( bytes ) <= uint64_t( max_bytes );
+    }
+
+    serialize_static_assert( ( ( INT64_MAX - 15 ) / 8 ) * 8 <= INT64_MAX - 8, "the largest read count leaves cursor headroom" );
+    serialize_static_assert( ( ( ( INT64_MAX - 15 ) / 8 ) + 1 ) * 8 > INT64_MAX - 8, "one more byte does not leave cursor headroom" );
+
+    /**
         Reads bit packed integer values from a buffer.
         Relies on the user reconstructing the exact same set of bit reads as bit writes when the buffer was written. This is an unattributed bitpacked binary stream!
         Implementation: branchless. Each read loads a 64 bit window from the current byte position with memcpy and shifts by the bit remainder.
@@ -1847,6 +1868,14 @@ namespace serialize
         {
             serialize_assert( data );
             m_data = static_cast<const uint8_t*>( data );
+            // the count is judged before the multiply. a rejected count is an empty reader
+            if ( !byte_count_fits_reader( bytes ) )
+            {
+                m_numBytes = 0;
+                m_numBits = 0;
+                m_bitsRead = 0;
+                return;
+            }
             m_numBytes = bytes;
             m_numBits = m_numBytes * 8;
             m_bitsRead = 0;
@@ -1857,15 +1886,13 @@ namespace serialize
             Any buffer size is supported, as packets read from the network need not be a multiple of any word size.
             IMPORTANT: The actual buffer allocated for the packet data must extend at least 8 bytes past the end of the data, because the reader loads a 64 bit window from the current byte position, and near the end of the stream that window begins inside the final bytes. The bytes past the end are loaded but never interpreted.
             @param data Pointer to the bitpacked data to read. Does not need to be aligned: the reader loads each window with memcpy, which packet payloads require because they typically start at an unaligned offset once the transport header is stripped.
-            @param bytes The number of bytes of bitpacked data to read. Buffer sizes are effectively unlimited, because bit counts are stored in 64 bit signed integers.
+            @param bytes The number of bytes of bitpacked data to read. A count byte_count_fits_reader rejects leaves the reader empty; the bit count is not formed.
             @see BitWriter
          */
 
-        BitReader( const void * serialize_restrict data, int64_t bytes ) : m_data( static_cast<const uint8_t*>( data ) ), m_numBytes( bytes )
+        BitReader( const void * serialize_restrict data, int64_t bytes ) : m_data( static_cast<const uint8_t*>( data ) ), m_numBits( byte_count_fits_reader( bytes ) ? bytes * 8 : 0 ), m_numBytes( byte_count_fits_reader( bytes ) ? bytes : 0 ), m_bitsRead( 0 )
         {
             serialize_assert( data );
-            m_numBits = m_numBytes * 8;
-            m_bitsRead = 0;
         }
 
         /**
@@ -1877,7 +1904,9 @@ namespace serialize
 
         bool WouldReadPastEnd( int bits ) const
         {
-            return m_bitsRead + bits > m_numBits;
+            // subtract, do not add. both ends are in range: the byte count was
+            // checked, and the cursor is inside the buffer or one past it (poison)
+            return int64_t( bits ) > m_numBits - m_bitsRead;
         }
 
         /**
@@ -1888,7 +1917,7 @@ namespace serialize
 
         SERIALIZE_ALWAYS_INLINE void PoisonPosition()
         {
-            m_bitsRead = m_numBits + 1;
+            m_bitsRead = m_numBits + 1; // fits: byte_count_fits_reader left a bit above the cursor
         }
 
         /**
@@ -1906,7 +1935,7 @@ namespace serialize
             serialize_assert( m_data );                 // if this fires, the reader was used before Initialize
             serialize_assert( bits > 0 );
             serialize_assert( bits <= 32 );
-            serialize_assert( m_bitsRead + bits <= m_numBits );
+            serialize_assert( int64_t( bits ) <= m_numBits - m_bitsRead );
 
             // loads up to 7 bytes past the last data byte: the allocation contract covers this
             uint64_t window;
@@ -1952,7 +1981,9 @@ namespace serialize
             serialize_assert( m_data );                 // if this fires, the reader was used before Initialize
             serialize_assert( data || bytes == 0 );
             serialize_assert( GetAlignBits() == 0 );
-            serialize_assert( uint64_t(m_bitsRead) + uint64_t(bytes) * 8 <= uint64_t(m_numBits) );
+            serialize_assert( bytes >= 0 );
+            serialize_assert( m_bitsRead <= m_numBits );
+            serialize_assert( bytes <= ( m_numBits - m_bitsRead ) / 8 );
 
             // the bit index is byte aligned here (see the align assert), so this is a straight copy —
             // through SERIALIZE_BULK_COPY, because a plain memcpy spelling here re-arms the fortify
@@ -2353,10 +2384,17 @@ namespace serialize
 
         void Initialize( const uint8_t * buffer, int64_t bytes )
         {
+            // U7: a count that does not fit the cursor is misuse on read. judged
+            // before the reader multiplies, and the reader left empty
+            if ( !byte_count_fits_reader( bytes ) )
+            {
+                m_reader.Initialize( buffer, 0 );
+                m_refusal = REFUSAL_NONE;
+                Fail( REFUSAL_VALUE_OUT_OF_RANGE );
+                return;
+            }
             m_reader.Initialize( buffer, bytes );
             m_refusal = REFUSAL_NONE;
-            if ( bytes < 0 )                // U7, see the constructor
-                Fail( REFUSAL_VALUE_OUT_OF_RANGE );
         }
 
         /**
@@ -2378,10 +2416,11 @@ namespace serialize
         bool InitializePadded( uint8_t * destination, int64_t destination_bytes, const uint8_t * data, int64_t bytes )
         {
             serialize_assert( destination );
-            // IMPLEMENTING.md U7 and U16: a reader never traps. A negative byte count, or a
-            // declared size the destination cannot hold with its 8 bytes of slack, is caller
-            // misuse on read and refuses as value_out_of_range, with no assertion
-            if ( bytes < 0 || destination_bytes < 8 || destination_bytes - 8 < bytes )
+            // IMPLEMENTING.md U7 and U16: a reader never traps. A negative byte count, a count
+            // whose bit length does not fit the cursor, or a declared size the destination
+            // cannot hold with its 8 bytes of slack, is caller misuse on read and refuses as
+            // value_out_of_range, with no assertion. the count is judged before the copy
+            if ( !byte_count_fits_reader( bytes ) || destination_bytes < 8 || destination_bytes - 8 < bytes )
             {
                 m_reader.Initialize( destination, 0 );
                 m_refusal = REFUSAL_NONE;
@@ -2406,10 +2445,10 @@ namespace serialize
             @param bytes The number of bytes of packet data to read. IMPORTANT: the underlying allocation must extend at least 8 bytes past the end of the data, because the bit reader loads 64 bit windows at byte granularity. See BitReader for details. For an exactly sized allocation, use InitializePadded.
          */
 
-        ReadStream( const uint8_t * buffer, int64_t bytes ) : m_reader( buffer, bytes ), m_refusal( REFUSAL_NONE )
+        ReadStream( const uint8_t * buffer, int64_t bytes ) : m_reader( buffer, byte_count_fits_reader( bytes ) ? bytes : 0 ), m_refusal( REFUSAL_NONE )
         {
-            // U7: a negative byte count is caller misuse on read, refused as value_out_of_range rather than reported as nothing
-            if ( bytes < 0 )
+            // U7: same check as Initialize, including a count that is too large for the cursor
+            if ( !byte_count_fits_reader( bytes ) )
                 Fail( REFUSAL_VALUE_OUT_OF_RANGE );
         }
 
@@ -2691,6 +2730,7 @@ namespace serialize
 
         int64_t GetBytesProcessed() const
         {
+            // +7 fits. byte_count_fits_reader leaves 8 bits above the bit count, and poison uses one of them
             return ( m_reader.GetBitsRead() + 7 ) / 8;
         }
 
@@ -5029,7 +5069,11 @@ namespace serialize
         static_assert( Bits <= 64, "serialize: bits must be less than or equal to 64" );
         if ( Bits <= 32 )       // constant condition: the dead branch folds at compile time
         {
-            uint32_t value32 = uint32_t( value );
+            uint32_t value32 = 0;
+            if ( !Stream::IsReading )
+            {
+                value32 = uint32_t( value );
+            }
             if ( !stream.SerializeBits( value32, Bits ) )
             {
                 return false;
@@ -5042,8 +5086,13 @@ namespace serialize
         else
         {
             // low dword first, then the high remainder: same convention as serialize_bits and serialize_uint64
-            uint32_t lo = uint32_t( value & 0xFFFFFFFF );
-            uint32_t hi = uint32_t( value >> 32 );
+            uint32_t lo = 0;
+            uint32_t hi = 0;
+            if ( !Stream::IsReading )
+            {
+                lo = uint32_t( value & 0xFFFFFFFF );
+                hi = uint32_t( value >> 32 );
+            }
             if ( !stream.SerializeBits( lo, 32 ) )
             {
                 return false;
@@ -10356,6 +10405,71 @@ inline void test_compile_time_bits_validation()
         serialize::ReadStream readStream( buffer, 4 );
         uint64_t value = 0;
         serialize_check( serialize::SerializeBits64Const<48>( readStream, value ) == false );
+    }
+
+    // a direct read into an uninitialised destination, at 32 bits or fewer and above 32 bits
+    {
+        uint8_t buffer[16 + 8] = { 0 };         // + 8: read buffer allocations extend 8 bytes past the data
+        {
+            serialize::WriteStream writeStream( buffer, 16 );
+            uint64_t narrow_in = 0xABCDEULL;
+            uint64_t wide_in = 0x123456789ABCULL;
+            serialize_check( serialize::SerializeBits64Const<20>( writeStream, narrow_in ) );
+            serialize_check( serialize::SerializeBits64Const<48>( writeStream, wide_in ) );
+            writeStream.Flush();
+        }
+
+        serialize::ReadStream readStream( buffer, 16 );
+        uint64_t narrow;
+        uint64_t wide;
+        serialize_check( serialize::SerializeBits64Const<20>( readStream, narrow ) );
+        serialize_check( serialize::SerializeBits64Const<48>( readStream, wide ) );
+        serialize_check( narrow == 0xABCDEULL );
+        serialize_check( wide == 0x123456789ABCULL );
+    }
+
+    // a read hands the stream zeroed groups: nothing is derived from the destination's prior contents
+    {
+        struct GroupProbeStream
+        {
+            enum { IsWriting = 0 };
+            enum { IsReading = 1 };
+            bool SerializeBits( uint32_t & group, int bits )
+            {
+                serialize_check( numGroups < 2 );
+                seen[numGroups++] = group;
+                group = 1;
+                (void) bits;
+                return true;
+            }
+            uint32_t seen[2] = { 0xFFFFFFFFU, 0xFFFFFFFFU };
+            int numGroups = 0;
+        };
+
+        GroupProbeStream narrowStream;
+        uint64_t narrow = 0xFFFFFFFFFFFFFFFFULL;
+        serialize_check( serialize::SerializeBits64Const<20>( narrowStream, narrow ) );
+        serialize_check( narrowStream.numGroups == 1 );
+        serialize_check( narrowStream.seen[0] == 0 );
+        serialize_check( narrow == 1 );
+
+        GroupProbeStream wideStream;
+        uint64_t wide = 0xFFFFFFFFFFFFFFFFULL;
+        serialize_check( serialize::SerializeBits64Const<48>( wideStream, wide ) );
+        serialize_check( wideStream.numGroups == 2 );
+        serialize_check( wideStream.seen[0] == 0 );
+        serialize_check( wideStream.seen[1] == 0 );
+        serialize_check( wide == ( ( uint64_t(1) << 32 ) | 1 ) );
+    }
+
+    // a truncated multi-group read leaves an initialised destination unchanged
+    {
+        uint8_t buffer[4 + 8] = { 0 };
+
+        serialize::ReadStream readStream( buffer, 4 );
+        uint64_t value = 0xDEADBEEFCAFEF00DULL;
+        serialize_check( serialize::SerializeBits64Const<48>( readStream, value ) == false );
+        serialize_check( value == 0xDEADBEEFCAFEF00DULL );
     }
 }
 
