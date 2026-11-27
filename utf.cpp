@@ -36,6 +36,7 @@
 #include "serialize_utf.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static int failures = 0;
@@ -221,6 +222,26 @@ static void test_lone_surrogates_refused()
     }
 }
 
+static void test_bounds()
+{
+    // the decode over a zero-length heap allocation reads nothing and returns 0
+    {
+        char * empty = (char*) malloc( 0 );
+        uint32_t code = 0xFFFFFFFF;
+        check( serialize_utf8_decode( empty, 0, code ) == 0, "decode over a zero-length input returns 0" );
+        free( empty );
+    }
+
+    // each converter refuses a NULL input with a positive length, through the same path as any refusal
+    char utf8[64];
+    uint16_t utf16[4];
+    uint32_t utf32[4];
+    check( serialize_utf16_to_utf8( NULL, 1, utf8, sizeof( utf8 ) ) == -1 && utf8[0] == '\0', "utf16 null input refused" );
+    check( serialize_utf32_to_utf8( NULL, 1, utf8, sizeof( utf8 ) ) == -1 && utf8[0] == '\0', "utf32 null input refused" );
+    check( serialize_utf8_to_utf16( NULL, 1, utf16, 4 ) == -1, "utf8 to utf16 null input refused" );
+    check( serialize_utf8_to_utf32( NULL, 1, utf32, 4 ) == -1, "utf8 to utf32 null input refused" );
+}
+
 static void test_limits()
 {
     // a zero character inside counted input is refused: serialize_string refuses a NUL among its bytes
@@ -246,6 +267,7 @@ int main()
 
     test_round_trips();
     test_lone_surrogates_refused();
+    test_bounds();
     test_limits();
 
     if ( failures > 0 )

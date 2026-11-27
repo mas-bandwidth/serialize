@@ -6,6 +6,8 @@
 
 **serialize** is a simple bitpacking serializer for C++.
 
+If you would rather not write serialize functions by hand, [Schema](https://github.com/mas-bandwidth/schema) generates them for C++ and many other languages from one definition of your data. The packet code it generates for C++ uses this library as its runtime.
+
 [ROADMAP.md](ROADMAP.md) is the family roadmap: what this reference and its fourteen ports still need.
 
 It has the following features:
@@ -150,13 +152,15 @@ struct Player
 
 See [example.cpp](example.cpp) for more.
 
+`serialize_int`, `serialize_int64` and `serialize_bits`, and their `read_` and `write_` forms, evaluate value, min, max and bits exactly once each on a call that does not refuse, in debug and in release and on every stream, so `serialize_int( stream, items[count++], 0, 100 )` advances `count` once. A refused read does not evaluate value, and leaves it as the caller left it. stream may be evaluated more than once: the bits path wider than 32 bits names it twice, so pass the stream variable itself. The other macros make no such promise, so keep side effects out of their arguments.
+
 # Reading untrusted data
 
-Packets come off the network, so the read path validates in release builds and drops invalid data. Three rules govern what happens when it does, and code that reads packets should be written against them:
+Packets come off the network, so the read path validates in release builds and drops invalid data. Five rules govern what happens when it does, and code that reads packets should be written against them:
 
 * **A refused read leaves your value alone.** When a read of a scalar fails, the variable you passed holds exactly what it held before the call. You never end up holding a value the stream did not carry. The exception is a read into a buffer you own — `serialize_bytes` and `serialize_string` — where the buffer's contents after a refusal are unspecified.
 * **Failure is terminal.** Nothing after a failing read has a defined position, so nothing after it is interpretable. The first refused read fails the `ReadStream`, and every later read on that stream fails too, consuming no bits and writing nothing. The stream recovers only when you point it at a new buffer with `Initialize` or `InitializePadded`, or discard it. You do not have to check the return code of every read to stay safe — though the serialize macros do it for you anyway, by returning `false` out of your serialize function the moment a read fails.
-* **Ranges are refused, never clamped.** A value off the wire outside `[min,max]`, an offset past its span, non-zero alignment padding, a malformed UTF-8 payload or a zero byte inside one, a float or double that is NaN or infinite: each fails the read rather than being repaired into something plausible.
+* **Ranges are refused, never clamped.** A value off the wire outside `[min,max]`, an offset past its span, non-zero alignment padding, a malformed UTF-8 payload or a zero byte inside one, a float or double that is NaN or infinite: each fails the read rather than being repaired into something plausible. So does a value your variable cannot hold: reading 300 into a `uint8_t` refuses as `value_out_of_range` rather than storing 44. A ranged read judges the value with its sign; a raw bit read (`serialize_bits` and the `uintN` and `bool` forms) judges the bit pattern, so `ff ff ff ff` in 32 bits reads into an `int32_t` as -1. A bit-field variable is checked against its declared type, not its width, so size it to hold the range.
 * **Every refusal has a reason.** `ReadStream::GetRefusal` returns the first refusal's reason from the closed list in STANDARD.md (`past_end`, `value_out_of_range`, `nonzero_padding`, `trailing_data`, `non_finite_float`, `invalid_utf8`, `embedded_nul`, `non_canonical`, and the caller's own `rejected`, which `serialize_reject` and a nested object returning false latch), and `serialize::refusal_name` spells it as every implementation in the family does.
 * **A packet ends where its object does.** Call `serialize_end( stream )` after the last field of the packet's top level object, and initialize the read stream with exactly the bytes the writer reported. The end refuses a whole byte left over (`trailing_data`) and a set bit in the final byte's padding (`nonzero_padding`), so one value always reads from one byte sequence. On write and measure it does nothing.
 
@@ -178,7 +182,7 @@ serialize is the reference implementation of that format, and the family ports i
 
 The author of this library is Glenn Fiedler.
 
-Open source libraries by the same author include: [netcode](https://github.com/mas-bandwidth/netcode), [reliable](https://github.com/mas-bandwidth/netcode) and [yojimbo](https://github.com/mas-bandwidth/yojimbo)
+Open source libraries by the same author include: [netcode](https://github.com/mas-bandwidth/netcode), [reliable](https://github.com/mas-bandwidth/reliable) and [yojimbo](https://github.com/mas-bandwidth/yojimbo)
 
 If you find this software useful, please consider [becoming a supporter](https://www.patreon.com/MasBandwidth/membership). Thanks!
 

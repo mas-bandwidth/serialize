@@ -24,8 +24,8 @@
 
 /*
     A consumer translation unit, compiled in CI with -Wall -Wextra -Wconversion -Wsign-conversion
-    -Wcast-qual -Wundef as errors (the `strict warnings` job), so serialize.h stays clean under the flags a
-    strict consumer builds with. It is never run. It touches every serialize macro, read, write and measure,
+    -Wcast-qual -Wundef -Wshadow as errors (the `strict warnings` job), so serialize.h stays clean under the
+    flags a strict consumer builds with. It is never run. It touches every serialize macro, read, write and measure,
     with destination variables of every width and signedness, because the macros expand at the caller and
     a conversion inside one is reported at the caller's line.
 
@@ -83,6 +83,8 @@ struct Packet
         serialize_bits( stream, bits5, 5 );
         serialize_bits( stream, bits40, 40 );
         serialize_bits( stream, u8, 3 );
+        serialize_bits( stream, a, 7 );
+        serialize_bits( stream, s16, 16 );
         serialize_bool( stream, b );
         serialize_uint8( stream, u8 );
         serialize_uint16( stream, u16 );
@@ -93,6 +95,7 @@ struct Packet
         serialize_double( stream, d );
         serialize_compressed_float( stream, cf, 0.0f, 100.0f, 0.01f );
         serialize_compressed_float( stream, cf, 0, 100, 0.01 );
+        serialize_compressed_float_precomputed( stream, cf, 1000, 10, 10.0f, 0.0f );
         serialize_fixed( stream, q32, 16, 16, -100, 100 );
         serialize_fixed( stream, q64, 48, 16, -1000, 1000 );
         serialize_fixed( stream, wide, 112, 16, -1000, 1000 );
@@ -105,6 +108,72 @@ struct Packet
         return true;
     }
 };
+
+template <typename Stream> bool reject_packet( Stream & stream )
+{
+    serialize_reject( stream );
+}
+
+bool reject_read( serialize::ReadStream & stream )
+{
+    return reject_packet( stream );
+}
+
+#if defined( SERIALIZE_HAS_COMPILE_TIME_SURFACE )
+
+// the compile time surface, with destinations narrower and of other signedness than the
+// macro's own temporary, so a conversion inside any of them is reported here
+
+struct CompileTimePacket
+{
+    int a;
+    int8_t s8;
+    int16_t s16;
+    int64_t i;
+    uint8_t u8;
+    uint32_t u32;
+    uint64_t u64;
+    bool b;
+
+    template <typename Stream> bool Serialize( Stream & stream )
+    {
+        serialize_int_compile_time( stream, a, -100, 100 );
+        serialize_int_compile_time( stream, s8, -100, 100 );
+        serialize_int_compile_time( stream, s16, -1000, 1000 );
+        serialize_int_compile_time( stream, u8, 0, 200 );
+        serialize_int64_compile_time( stream, i, -5000000000LL, 5000000000LL );
+        serialize_int64_compile_time( stream, a, -100, 100 );
+        serialize_int64_compile_time( stream, u32, 0, 1000 );
+        serialize_bits_compile_time( stream, u8, 3 );
+        serialize_bits_compile_time( stream, u32, 32 );
+        serialize_bits_compile_time( stream, a, 7 );
+        serialize_bits_compile_time( stream, s16, 16 );
+        serialize_bits64_compile_time( stream, u64, 40 );
+        serialize_bits64_compile_time( stream, u32, 20 );
+        serialize_bits64_compile_time( stream, u8, 8 );
+        serialize_bits64_compile_time( stream, a, 7 );
+        serialize_bits64_compile_time( stream, i, 40 );
+        serialize_bool_compile_time( stream, b );
+        return true;
+    }
+};
+
+bool write_compile_time( CompileTimePacket & packet, serialize::WriteStream & stream )
+{
+    return packet.Serialize( stream );
+}
+
+bool read_compile_time( CompileTimePacket & packet, serialize::ReadStream & stream )
+{
+    return packet.Serialize( stream );
+}
+
+bool measure_compile_time( CompileTimePacket & packet, serialize::MeasureStream & stream )
+{
+    return packet.Serialize( stream );
+}
+
+#endif // #if defined( SERIALIZE_HAS_COMPILE_TIME_SURFACE )
 
 bool write_packet( Packet & packet, uint8_t * buffer, int bytes )
 {
@@ -135,16 +204,28 @@ bool write_separately( Packet & packet, serialize::WriteStream & stream )
     write_int128( stream, packet.wide, -5, 5 );
     write_bits( stream, packet.bits5, 5 );
     write_bits( stream, packet.bits40, 40 );
+    write_bits( stream, packet.u8, 3 );
+    write_bits( stream, packet.a, 7 );
+    write_bits( stream, packet.s16, 16 );
+    write_bits( stream, packet.i, 40 );
     write_bool( stream, packet.b );
     write_uint8( stream, packet.u8 );
     write_uint16( stream, packet.u16 );
     write_uint32( stream, packet.u32 );
     write_uint64( stream, packet.u64 );
+    write_uint128( stream, packet.uwide );
+    write_uint128( stream, packet.u64 );
+    write_uint128( stream, packet.a );
     write_float( stream, packet.f );
     write_double( stream, packet.d );
+    write_fixed( stream, packet.q32, 16, 16, -100, 100 );
+    write_fixed( stream, packet.q64, 48, 16, -1000, 1000 );
+    write_int_relative( stream, packet.previous, packet.current );
     write_align( stream );
     write_bytes( stream, packet.bytes, 16 );
     write_string( stream, packet.string, 32 );
+    write_object( stream, packet.inner );
+    write_end( stream );
     return true;
 }
 
@@ -155,15 +236,102 @@ bool read_separately( Packet & packet, serialize::ReadStream & stream )
     read_int128( stream, packet.wide, -5, 5 );
     read_bits( stream, packet.bits5, 5 );
     read_bits( stream, packet.bits40, 40 );
+    read_bits( stream, packet.u8, 3 );
+    read_bits( stream, packet.a, 7 );
+    read_bits( stream, packet.s16, 16 );
+    read_bits( stream, packet.i, 40 );
     read_bool( stream, packet.b );
     read_uint8( stream, packet.u8 );
     read_uint16( stream, packet.u16 );
     read_uint32( stream, packet.u32 );
     read_uint64( stream, packet.u64 );
+    read_uint128( stream, packet.uwide );
     read_float( stream, packet.f );
     read_double( stream, packet.d );
+    read_fixed( stream, packet.q32, 16, 16, -100, 100 );
+    read_fixed( stream, packet.q64, 48, 16, -1000, 1000 );
+    read_int_relative( stream, packet.previous, packet.current );
     read_align( stream );
     read_bytes( stream, packet.bytes, 16 );
     read_string( stream, packet.string, 32 );
+    read_object( stream, packet.inner );
+    read_end( stream );
     return true;
+}
+
+// A CONSUMER NAMESPACE THAT DECLARES THE C LIBRARY'S NAMES. The macros expand at the caller, so a
+// name a replacement list spells bare is looked up in the caller's scope, and a namespace that
+// declares its own uint8_t or memcpy (generated code may: a schema can name a type either) would
+// capture it. Every C library name in a replacement list is spelled from the global root, and this
+// namespace holds the header to that: each struct below hides the name it spells, and every macro
+// family expands inside it.
+
+namespace shadowing_consumer
+{
+    struct int8_t {};
+    struct int16_t {};
+    struct int32_t {};
+    struct int64_t {};
+    struct uint8_t {};
+    struct uint16_t {};
+    struct uint32_t {};
+    struct uint64_t {};
+    struct size_t {};
+    struct memcpy {};
+    struct strlen {};
+
+    template <typename Stream> bool serialize_shadowed( ::Packet & packet, Stream & stream )
+    {
+        serialize_int( stream, packet.a, -100, 100 );
+        serialize_int64( stream, packet.i, -5000000000LL, 5000000000LL );
+        serialize_int128( stream, packet.wide, -5, 5 );
+        serialize_bits( stream, packet.bits5, 5 );
+        serialize_bits( stream, packet.bits40, 40 );
+        serialize_bool( stream, packet.b );
+        serialize_uint8( stream, packet.u8 );
+        serialize_uint16( stream, packet.u16 );
+        serialize_uint32( stream, packet.u32 );
+        serialize_uint64( stream, packet.u64 );
+        serialize_uint128( stream, packet.uwide );
+        serialize_float( stream, packet.f );
+        serialize_double( stream, packet.d );
+        serialize_compressed_float( stream, packet.cf, 0.0f, 100.0f, 0.01f );
+        serialize_fixed( stream, packet.q32, 16, 16, -100, 100 );
+        serialize_fixed( stream, packet.q64, 48, 16, -1000, 1000 );
+        serialize_int_relative( stream, packet.previous, packet.current );
+        serialize_align( stream );
+        serialize_bytes( stream, packet.bytes, 16 );
+        serialize_string( stream, packet.string, 32 );
+        serialize_object( stream, packet.inner );
+        serialize_end( stream );
+        return true;
+    }
+
+    bool write_shadowed( ::Packet & packet, serialize::WriteStream & stream )
+    {
+        write_int( stream, packet.a, -100, 100 );
+        write_uint64( stream, packet.u64 );
+        write_float( stream, packet.f );
+        write_double( stream, packet.d );
+        write_bytes( stream, packet.bytes, 16 );
+        write_string( stream, packet.string, 32 );
+        return serialize_shadowed( packet, stream );
+    }
+
+    bool read_shadowed( ::Packet & packet, serialize::ReadStream & stream )
+    {
+        read_int( stream, packet.a, -100, 100 );
+        read_uint64( stream, packet.u64 );
+        read_float( stream, packet.f );
+        read_double( stream, packet.d );
+        read_bytes( stream, packet.bytes, 16 );
+        read_string( stream, packet.string, 32 );
+        return serialize_shadowed( packet, stream );
+    }
+
+    bool measure_shadowed( ::Packet & packet )
+    {
+        serialize::MeasureStream stream;
+        return serialize_shadowed( packet, stream );
+    }
 }

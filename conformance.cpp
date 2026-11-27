@@ -1756,7 +1756,7 @@ static void run_vector( const Vector & vector )
         vectorFailures += failures - before;
         if ( numFailedNames < MaxNames )
         {
-            strncpy( failedNames[numFailedNames], vector.name, MaxLine - 1 );
+            memcpy( failedNames[numFailedNames], vector.name, MaxLine );
             failedNames[numFailedNames][MaxLine - 1] = '\0';
             numFailedNames++;
         }
@@ -1860,7 +1860,8 @@ static bool run_file( const char * path )
 
         char * space = strchr( text, ' ' );
         const char * key = text;
-        char * value = (char*) "";
+        char empty[1] = { '\0' };
+        char * value = empty;
         if ( space )
         {
             *space = '\0';

@@ -421,7 +421,7 @@ int main()
 {
     printf( "\nserialize example\n\n" );
 
-    srand( time(NULL) );
+    srand( (unsigned int) time(NULL) );
 
     for ( int i = 0; i < 10000; i++ )
     {
@@ -429,7 +429,7 @@ int main()
 
         memset( &input, 0, sizeof(input) );
 
-        input.packetType = rand() % NumPacketTypes;
+        input.packetType = uint8_t( rand() % NumPacketTypes );
 
         switch ( input.packetType )
         {
@@ -439,9 +439,9 @@ int main()
 
                 for ( int j = 0; j < input.a.numObjects; j++ )
                 {
-                    input.a.object[j].position.x = ( rand() % 100 ) - 50;
-                    input.a.object[j].position.y = ( rand() % 100 ) - 50;
-                    input.a.object[j].position.z = ( rand() % 100 ) - 50;
+                    input.a.object[j].position.x = float( ( rand() % 100 ) - 50 );
+                    input.a.object[j].position.y = float( ( rand() % 100 ) - 50 );
+                    input.a.object[j].position.z = float( ( rand() % 100 ) - 50 );
                     
                     input.a.object[j].orientation.x = 1;
                     input.a.object[j].orientation.y = 0;
@@ -466,9 +466,9 @@ int main()
 
             case B: 
             {
-                input.b.x = ( ( rand() % 1000000 ) / 1000000.0f ) - 0.5f;
-                input.b.y = ( ( rand() % 1000000 ) / 1000000.0f ) - 0.5f;
-                input.b.z = ( ( rand() % 1000000 ) / 1000000.0f ) - 0.5f;
+                input.b.x = ( float( rand() % 1000000 ) / 1000000.0f ) - 0.5f;
+                input.b.y = ( float( rand() % 1000000 ) / 1000000.0f ) - 0.5f;
+                input.b.z = ( float( rand() % 1000000 ) / 1000000.0f ) - 0.5f;
             }
             break;
 
@@ -498,13 +498,13 @@ int main()
 
                         case ByteProperty:
                         {
-                            input.c.propertyValue[j].byte_value = rand() % 256;
+                            input.c.propertyValue[j].byte_value = uint8_t( rand() % 256 );
                         }
                         break;
 
                         case ShortProperty:
                         {
-                            input.c.propertyValue[j].short_value = rand() % 65536;
+                            input.c.propertyValue[j].short_value = uint16_t( rand() % 65536 );
                         }
                         break;
 
@@ -524,7 +524,7 @@ int main()
 
                         case FloatProperty:
                         {
-                            input.c.propertyValue[j].float_value = uint32_t( rand() % 10000000 ) / 1000.0f;
+                            input.c.propertyValue[j].float_value = float( rand() % 10000000 ) / 1000.0f;
                         }
                         break;
 
@@ -535,7 +535,7 @@ int main()
                         break;
                     }
 
-                    input.c.propertyValue[j].type = propertyType;
+                    input.c.propertyValue[j].type = uint8_t( propertyType );
                 }
             }
             break;
@@ -550,7 +550,7 @@ int main()
                 {
                     for ( int j = 0; j < PlayerDataBytes; j++ )
                     {
-                        input.d.playerData[j] = rand() % 256;
+                        input.d.playerData[j] = uint8_t( rand() % 256 );
                     }
                 }
             }
@@ -603,7 +603,7 @@ int main()
         }
         writeStream.Flush();
 
-        const int bytesWritten = writeStream.GetBytesProcessed();
+        const int bytesWritten = (int) writeStream.GetBytesProcessed();
 
         Packet output;
         memset( &output, 0, sizeof(output) );
@@ -614,7 +614,7 @@ int main()
             exit( 1 );
         }
 
-        const int bytesRead = readStream.GetBytesProcessed();
+        const int bytesRead = (int) readStream.GetBytesProcessed();
 
         if ( input.packetType == B )
         {
