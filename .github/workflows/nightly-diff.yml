@@ -294,7 +294,7 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
-      - uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d   # v1
+      - uses: dart-lang/setup-dart@2286a0c042b44434fe26d292bbce8d34f7ec662b   # v1
         if: ${{ matrix.port == 'dart' }}
         with:
           sdk: 3.13.2
