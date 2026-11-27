@@ -105,8 +105,8 @@ template <typename T> inline int serialize_utf_refuse( T * output, int output_si
 
 inline int serialize_utf8_decode( const char * input, int input_bytes, uint32_t & code )
 {
-    if ( input_bytes <= 0 )
-        return 0;
+    if ( !input || input_bytes < 1 )
+        return 0;                               // nothing to read: not well formed
     const uint8_t * bytes = (const uint8_t*) input;
     const uint32_t lead = bytes[0];
     if ( lead < 0x80 )
@@ -151,7 +151,7 @@ inline int serialize_utf8_decode( const char * input, int input_bytes, uint32_t 
 
 inline int serialize_utf16_to_utf8( const uint16_t * input, int input_units, char * output, int output_size )
 {
-    if ( !output || output_size < 1 || input_units < 0 )
+    if ( !output || output_size < 1 || input_units < 0 || ( !input && input_units > 0 ) )
         return serialize_utf_refuse( output, output_size );
     int length = 0;
     for ( int i = 0; i < input_units; i++ )
@@ -183,7 +183,7 @@ inline int serialize_utf16_to_utf8( const uint16_t * input, int input_units, cha
 
 inline int serialize_utf32_to_utf8( const uint32_t * input, int input_units, char * output, int output_size )
 {
-    if ( !output || output_size < 1 || input_units < 0 )
+    if ( !output || output_size < 1 || input_units < 0 || ( !input && input_units > 0 ) )
         return serialize_utf_refuse( output, output_size );
     int length = 0;
     for ( int i = 0; i < input_units; i++ )
@@ -210,7 +210,7 @@ inline int serialize_utf32_to_utf8( const uint32_t * input, int input_units, cha
 
 inline int serialize_utf8_to_utf16( const char * input, int input_bytes, uint16_t * output, int output_units )
 {
-    if ( !output || output_units < 1 || input_bytes < 0 )
+    if ( !output || output_units < 1 || input_bytes < 0 || ( !input && input_bytes > 0 ) )
         return serialize_utf_refuse( output, output_units );
     int length = 0;
     int i = 0;
@@ -221,7 +221,7 @@ inline int serialize_utf8_to_utf16( const char * input, int input_bytes, uint16_
         if ( consumed == 0 || code == 0 )
             return serialize_utf_refuse( output, output_units );
         const int needed = ( code >= 0x10000 ) ? 2 : 1;
-        if ( length + needed + 1 > output_units )
+        if ( (uint32_t) length + (uint32_t) needed + 1u > (uint32_t) output_units )
             return serialize_utf_refuse( output, output_units );
         if ( needed == 2 )
         {
@@ -245,7 +245,7 @@ inline int serialize_utf8_to_utf16( const char * input, int input_bytes, uint16_
 
 inline int serialize_utf8_to_utf32( const char * input, int input_bytes, uint32_t * output, int output_units )
 {
-    if ( !output || output_units < 1 || input_bytes < 0 )
+    if ( !output || output_units < 1 || input_bytes < 0 || ( !input && input_bytes > 0 ) )
         return serialize_utf_refuse( output, output_units );
     int length = 0;
     int i = 0;
