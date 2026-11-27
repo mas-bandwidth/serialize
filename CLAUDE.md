@@ -55,13 +55,14 @@ THE WRITE/READ RULE — this library is the clearest statement of it, IN ITS OWN
 Glenn, 2026-07-26: "intention is on write, user is responsible to not crash or do undefined
 behavior. asserts are there to help. callers responsibility. on read, obviously, we must
 check." Plus Postel: "be conservative in what you send, permissive in what you receive."
-serialize.h says it directly at :1928, :1943 and :1959 (WriteStream) -- "All checking is performed by debug
-asserts on write." That is the CONTRACT. I audited this header, quoted that exact line in my
-notes, and still filed the write path as a defect. Do not repeat that.
+serialize.h says it directly in WriteStream::SerializeInteger, SerializeInteger64 and
+SerializeInteger128 -- "All checking is performed by debug asserts on write." That is the
+CONTRACT. I audited this header, quoted that exact line in my notes, and still filed the
+write path as a defect. Do not repeat that.
 DELIBERATELY ASSERT-ONLY ON WRITE, do NOT "fix":
-  - BitWriter::WriteBits (:1359) and WriteBytes (:1419) -- the asserts are the whole bound.
-  - BitWriter::Initialize / ctor (:1306, :1326): serialize_assert( ( bytes % 8 ) == 0 ) is the
-    ENTIRE enforcement of the qword-store contract that FlushBits (:1468) relies on. Hand a
+  - BitWriter::WriteBits and WriteBytes -- the asserts are the whole bound.
+  - BitWriter::Initialize / ctor: serialize_assert( ( bytes % 8 ) == 0 ) is the
+    ENTIRE enforcement of the qword-store contract that FlushBits relies on. Hand a
     WriteStream a 100-byte buffer, write exactly 800 bits -- within capacity, violating no
     assert even in debug -- and the flush memcpys 8 bytes at offset 96, four PAST the end.
     Proved with a canary, 2026-07-26. Still the caller's responsibility: pass a multiple of 8.
@@ -73,18 +74,17 @@ partial-granule write (8 bytes at offset 96 of a 100-byte allocation) and ASan i
 it -- verified with a control, an identical raw memcpy is also unreported. "No ASan report"
 is NOT evidence of safety in this header. Use a canary region.
 THE READ PATH: every BitReader assert has a real ReadStream companion -- WouldReadPastEnd in
-SerializeInteger/64/128 and SerializeBits (:2204, :2234, :2275, :2330), the align at :2367;
-ReadBytes bounds in SerializeBytes at :2347 and :2353; values off the wire range-checked once,
-in SerializeInteger at :2213 (one place per rule, so the controls can measure it). Line
-numbers as of 2.1.0. The 2026-10-27 audit found what the old note here called clean was not:
-caller DECLARATIONS on read were asserted, not checked, so in release a string read with
+SerializeInteger/64/128 and SerializeBits, the align; ReadBytes bounds in SerializeBytes;
+values off the wire range-checked once, in SerializeInteger (one place per rule, so the
+controls can measure it). The 2026-10-27 audit found what the old note here called clean was
+not: caller DECLARATIONS on read were asserted, not checked, so in release a string read with
 buffer_size <= 0 made the length range [0,-1] and memcpy'd a wire-chosen payload past the
 caller's buffer, and a ranged read with min > max accepted wrong data. 2.1 refuses every bad
 declaration on read as value_out_of_range before any bits move (IMPLEMENTING.md U7/U16):
-serialize_string_internal (:3362) checks buffer_size first; SerializeInteger/64/128 check
+serialize_string_internal checks buffer_size first; SerializeInteger/64/128 check
 min > max; SerializeBits and serialize_bits check the bit count; serialize_int refuses bounds
 outside int32 on read; the precomputed compressed_float checks its constants. Its write
-assert at :3380 is inside an IsWriting branch and never runs on read. 2.1.2 closed three
+assert is inside an IsWriting branch and never runs on read. 2.1.2 closed three
 left over: the per-call compressed_float declaration (it reached the params' asserts), read_bits'
 bit count, and InitializePadded's sizes (now value_out_of_range); asserts.cpp proves each
 refuses on read with no assertion fired.
@@ -94,13 +94,13 @@ refuses on read with no assertion fired.
 
 ## What this is
 
-A single-header C++ bitpacking serializer (~3,200 lines of library code in
-[serialize.h](serialize.h), plus ~2,400 lines of embedded tests) aimed at game
+A single-header C++ bitpacking serializer (~4,870 lines of library code in
+[serialize.h](serialize.h), plus ~6,800 lines of embedded tests) aimed at game
 networking. Header-only is intentional: the serialize methods are heavily
 templated, so the implementation cannot live in a .cpp file. The header is
 self-contained — including it into a translation unit with no prior
 includes must compile — and includes only the libc headers the library
-uses (stdint, stddef, string, wchar, math, plus conditional assert/endian;
+uses (stdint, stddef, string, math, plus conditional assert/endian;
 test-only includes live behind `SERIALIZE_ENABLE_TESTS`). It descends from the yojimbo/netcode lineage: a word-at-a-time
 `BitWriter`/`BitReader` core, and `WriteStream`/`ReadStream`/`MeasureStream`
 wrappers driven through templated `Serialize()` methods so one function handles
@@ -203,16 +203,16 @@ performance work here must not relearn:
 
 - **The read path is defensive, and recently hardened.** Every `ReadStream`
   operation bounds-checks before reading and range-checks after
-  ([serialize.h:2197](serialize.h:2197), ReadStream::SerializeInteger), returning false instead of asserting,
+  (ReadStream::SerializeInteger), returning false instead of asserting,
   so malicious packets fail cleanly. Arithmetic that could overflow signed
   ints is done in the unsigned domain with comments explaining why (e.g.
-  [serialize.h:2215](serialize.h:2215), [serialize.h:2256](serialize.h:2256)),
+  ReadStream::SerializeInteger and SerializeInteger64),
   and NaN is clamped before any float-to-int cast
-  ([serialize.h:2993](serialize.h:2993)). Recent commits show active work here.
+  (serialize_compressed_float). Recent commits show active work here.
 - **The tests cover adversarial cases, not just round trips**: out-of-range
   encodings smuggled into bit headroom, full `[INT32_MIN, INT32_MAX]` ranges,
   negative and huge byte counts, NaN input, >2^31 relative gaps
-  ([serialize.h:5295](serialize.h:5295), test_serialize_integer_validation, onward). This is better test thinking
+  (test_serialize_integer_validation, onward). This is better test thinking
   than most serialization libraries have.
 - **The core design is sound and well understood.** Writer: 64-bit scratch,
   64-bit flush — the scratch stores as a qword when it fills and the bits

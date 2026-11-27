@@ -97,11 +97,11 @@ jobs:
           library_part() {
             ref="$1"
             git show "${ref}:serialize.h" > /tmp/_sh_full.h 2>/dev/null || return 1
-            starts=$(grep -c '^#if SERIALIZE_ENABLE_TESTS$' /tmp/_sh_full.h)
-            ends=$(grep -c '^#endif // #if SERIALIZE_ENABLE_TESTS$' /tmp/_sh_full.h)
+            starts=$(grep -c '^#if defined( SERIALIZE_ENABLE_TESTS ) && SERIALIZE_ENABLE_TESTS$' /tmp/_sh_full.h)
+            ends=$(grep -c '^#endif // #if defined( SERIALIZE_ENABLE_TESTS ) && SERIALIZE_ENABLE_TESTS$' /tmp/_sh_full.h)
             [ "$starts" = "1" ] && [ "$ends" = "1" ] || return 1
-            s=$(grep -n '^#if SERIALIZE_ENABLE_TESTS$' /tmp/_sh_full.h | cut -d: -f1)
-            e=$(grep -n '^#endif // #if SERIALIZE_ENABLE_TESTS$' /tmp/_sh_full.h | cut -d: -f1)
+            s=$(grep -n '^#if defined( SERIALIZE_ENABLE_TESTS ) && SERIALIZE_ENABLE_TESTS$' /tmp/_sh_full.h | cut -d: -f1)
+            e=$(grep -n '^#endif // #if defined( SERIALIZE_ENABLE_TESTS ) && SERIALIZE_ENABLE_TESTS$' /tmp/_sh_full.h | cut -d: -f1)
             [ "$s" -lt "$e" ] || return 1
             sed -n "1,$((s - 1))p" /tmp/_sh_full.h
             sed -n "$((e + 1)),\$p" /tmp/_sh_full.h
@@ -142,7 +142,7 @@ jobs:
           if [ -n "$header_log" ]; then
             if library_part "$newest_tag" > /tmp/lib_tag.h && library_part HEAD > /tmp/lib_head.h; then
               if diff -q /tmp/lib_tag.h /tmp/lib_head.h > /dev/null; then
-                echo "serialize.h changed since $newest_tag, but only inside #if SERIALIZE_ENABLE_TESTS — its $(wc -l < /tmp/lib_tag.h | tr -d ' ') library lines are identical. Not a wire change."
+                echo "serialize.h changed since $newest_tag, but only inside #if defined( SERIALIZE_ENABLE_TESTS ) && SERIALIZE_ENABLE_TESTS — its $(wc -l < /tmp/lib_tag.h | tr -d ' ') library lines are identical. Not a wire change."
               elif comment_only /tmp/lib_tag.h /tmp/lib_head.h; then
                 echo "serialize.h's library section changed since $newest_tag, but every changed line is a // comment. Not a wire change."
               else
@@ -151,7 +151,7 @@ jobs:
               fi
             else
               header_is_wire="yes"
-              echo "::warning::Could not locate a single '#if SERIALIZE_ENABLE_TESTS' section in serialize.h at $newest_tag or at HEAD — counting the whole file as wire-affecting, which is the safe answer. If those markers were renamed or split, update this job to match."
+              echo "::warning::Could not locate a single '#if defined( SERIALIZE_ENABLE_TESTS ) && SERIALIZE_ENABLE_TESTS' section in serialize.h at $newest_tag or at HEAD — counting the whole file as wire-affecting, which is the safe answer. If those markers were renamed or split, update this job to match."
             fi
           fi
 
