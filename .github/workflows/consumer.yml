@@ -15,12 +15,26 @@
 # The byte literal is the family's, not this implementation's: the same three
 # values encode to the same four bytes in every port, so a change to it is a
 # wire change and belongs in STANDARD.md first.
+#
+# WHICH VERSION THE FORMULA MUST SERVE. A formula can only be bumped once the
+# release it points at exists, so checking it against the version in the
+# working tree is circular: a release-bump PR raises serialize.h to a version
+# no formula can serve until that PR merges and the tag is cut. So:
+#   - on a release (the release event), the formula must serve that release.
+#     It cannot yet, the moment the release is published, and this run fails
+#     loudly on purpose: it is the record that the formula bump is owed.
+#   - everywhere else (PRs, main, nightly, by hand), the formula must serve the
+#     newest released tag. Until the formula bump lands, every run fails with
+#     the same drift error, so a release nobody can install never goes quiet.
+#     A working tree ahead of the newest tag is a release in preparation; that
+#     is Release Check's to judge ("unreleased wire changes"), not this job's.
 name: consumer
 
 on:
   push:
     branches: [main]
-    tags: ['v*']
+  release:
+    types: [published]
   pull_request:
     branches: [main]
   schedule:
@@ -43,8 +57,12 @@ jobs:
       HOMEBREW_NO_INSTALL_CLEANUP: 1
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0          # tags: off a release, the newest v* tag is the version the formula must serve
 
       - name: Consume the published formula
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           set -u
           status=0
@@ -65,13 +83,36 @@ jobs:
             exit 1
           fi
 
+          # the version the formula must serve: the release being published, or
+          # off a release the newest release tag (see the header of this file)
+          if [ "$GITHUB_EVENT_NAME" = "release" ]; then
+            expected="${RELEASE_TAG#v}"
+            expected_from="the release being published ($RELEASE_TAG)"
+          else
+            newest_tag=$(git tag --list 'v*' --sort=-v:refname | head -n1)
+            if [ -z "$newest_tag" ]; then
+              echo "::error::no v* tag in this checkout, so there is no released version to check the formula against"
+              exit 1
+            fi
+            expected="${newest_tag#v}"
+            expected_from="the newest release tag ($newest_tag)"
+          fi
+          if [ -z "$expected" ]; then
+            echo "::error::could not work out which version the formula must serve"
+            exit 1
+          fi
+
           # the version homebrew/core actually serves, from the index rather
           # than from whatever tap the runner image happens to carry
           published=$(curl -fsS https://formulae.brew.sh/api/formula/serialize.json \
             | jq -r '.versions.stable')
 
           echo "repository: $repo"
+          echo "expected:   $expected, $expected_from"
           echo "formula:    ${published:-none}"
+          if [ "$repo" != "$expected" ]; then
+            echo "::notice::this tree is at $repo and the formula is checked against $expected, $expected_from. Whether $repo is owed a release is Release Check's call"
+          fi
 
           if [ -z "$published" ] || [ "$published" = "null" ]; then
             echo "::error::homebrew/core serves no version of serialize. There is no consumer path to check"
@@ -203,8 +244,8 @@ jobs:
           # constant in the header a consumer actually compiles against
           package_version=$(sed -n 's/^SERIALIZE_VERSION \(.*\)$/\1/p' "$consumer/run.log" | head -1)
           echo "version constant in the installed header: ${package_version:-unknown}"
-          if [ -n "$package_version" ] && [ "$package_version" != "$repo" ]; then
-            echo "::error::version mismatch: the installed serialize.h states $package_version and this repository states $repo"
+          if [ -n "$package_version" ] && [ "$package_version" != "$published" ]; then
+            echo "::error::version mismatch: the installed serialize.h states $package_version and the formula claims $published"
             status=1
           fi
 
@@ -215,16 +256,17 @@ jobs:
             echo "|---|---|"
             echo "| formula | \`homebrew/core/serialize\` |"
             echo "| version here | \`$repo\` |"
+            echo "| version the formula must serve | \`$expected\` ($expected_from) |"
             echo "| version in homebrew/core | \`$published\` |"
             echo "| version installed on this runner | \`$installed\` |"
             echo "| version constant in the installed header | \`${package_version:-unknown}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          # the drift gate. A repository ahead of the formula is a release that
-          # exists here and nowhere a consumer can reach
-          if [ "$repo" != "$published" ] && \
-             [ "$(printf '%s\n%s\n' "$published" "$repo" | sort -V | tail -n1)" = "$repo" ]; then
-            echo "::error::published version drift: this repository is at $repo and homebrew/core serves $published. Bump the formula before the consumer path can be checked against $repo"
+          # the drift gate. A release ahead of the formula is a release that
+          # exists and that no consumer can reach
+          if [ "$expected" != "$published" ] && \
+             [ "$(printf '%s\n%s\n' "$published" "$expected" | sort -V | tail -n1)" = "$expected" ]; then
+            echo "::error::published version drift: $expected_from is $expected and homebrew/core serves $published. The formula bump to $expected is owed: v$expected is released and no consumer can install it"
             status=1
           fi
 
