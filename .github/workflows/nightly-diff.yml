@@ -107,16 +107,10 @@ jobs:
     needs: generate
     runs-on: ubuntu-24.04
     timeout-minutes: 45
-    # ADVISORY legs (continue-on-error): lua and nut run the committed corpus and their sabotage
-    # controls in the same test target, and a control names exactly the vectors its sabotaged reader must
-    # fail, so any added file trips it ("red but not listed: diff-...") although the port's own corpus test
-    # passes; goose and lobster assert the corpus's record count at the end of the run. moo and luau
-    # are gating: their runners take a second corpus directory (moorun -extra, luaurun
-    # SERIALIZE_CORPUS_EXTRA_DIR) that joins an ordinary run and never a control run. Their per-vector
-    # verdict on the generated file is still in the log (lines naming diff-<seed>-<n>), and a failure of
-    # their corpus test shows there. They go gating when each runner grows a way to take a second directory
-    # (owed to the port workers).
-    continue-on-error: ${{ contains(fromJSON('["lua","nut","goose","lobster"]'), matrix.port) }}
+    # Every leg gates. A runner takes the generated file as a SECOND corpus directory that joins an
+    # ordinary run and never a control run or the committed corpus's record count (moorun -extra,
+    # SERIALIZE_CORPUS_EXTRA_DIR, SERIALIZE_CONFORMANCE_EXTRA_DIR), so the committed corpus and the
+    # controls are exactly what the reference ships.
     strategy:
       fail-fast: false
       matrix:
@@ -155,6 +149,18 @@ jobs:
           echo "ROOT=$GITHUB_WORKSPACE/corpus" >> "$GITHUB_ENV"
           echo "DIR=$GITHUB_WORKSPACE/corpus/conformance" >> "$GITHUB_ENV"
           echo "CONTROLS=$GITHUB_WORKSPACE/corpus/conformance-controls" >> "$GITHUB_ENV"
+
+      # the committed corpus and the controls as the reference ships them, and the generated file
+      # alone in a second directory, for the runners that take one
+      - name: Split the generated file from the committed corpus
+        run: |
+          split="$RUNNER_TEMP/split"
+          mkdir -p "$split/conformance" "$RUNNER_TEMP/extra"
+          cp "${{ env.DIR }}"/*.txt "$split/conformance/"
+          mv "$split/conformance/diff.txt" "$RUNNER_TEMP/extra/"
+          cp -R "${{ env.CONTROLS }}" "$split/conformance-controls"
+          echo "SPLIT=$split" >> "$GITHUB_ENV"
+          echo "EXTRA=$RUNNER_TEMP/extra" >> "$GITHUB_ENV"
 
       # ------------------------------------------------------------------ toolchains
       # the pinned Lobster binary links OpenGL even for a headless run
@@ -279,7 +285,8 @@ jobs:
         if: ${{ matrix.port == 'lua' }}
         working-directory: port
         env:
-          SERIALIZE_CORPUS_DIR: ${{ env.ROOT }}
+          SERIALIZE_CORPUS_DIR: ${{ env.SPLIT }}
+          SERIALIZE_CORPUS_EXTRA_DIR: ${{ env.EXTRA }}
         run: |
           make dist-lua
           make test T=conformance
@@ -297,7 +304,8 @@ jobs:
         if: ${{ matrix.port == 'nut' }}
         working-directory: port
         env:
-          SERIALIZE_CORPUS_DIR: ${{ env.ROOT }}
+          SERIALIZE_CORPUS_DIR: ${{ env.SPLIT }}
+          SERIALIZE_CORPUS_EXTRA_DIR: ${{ env.EXTRA }}
         run: |
           make dist-squirrel
           make test T=conformance
@@ -306,7 +314,8 @@ jobs:
         if: ${{ matrix.port == 'goose' }}
         working-directory: port
         env:
-          SERIALIZE_CONFORMANCE_DIR: ${{ env.DIR }}
+          SERIALIZE_CONFORMANCE_DIR: ${{ env.SPLIT }}/conformance
+          SERIALIZE_CONFORMANCE_EXTRA_DIR: ${{ env.EXTRA }}
         run: |
           make dist-goose
           make test
@@ -315,8 +324,9 @@ jobs:
         if: ${{ matrix.port == 'lobster' }}
         working-directory: port
         env:
-          SERIALIZE_CONFORMANCE_DIR: ${{ env.DIR }}
+          SERIALIZE_CONFORMANCE_DIR: ${{ env.SPLIT }}/conformance
           SERIALIZE_CONFORMANCE_CONTROLS_DIR: ${{ env.CONTROLS }}
+          SERIALIZE_CONFORMANCE_EXTRA_DIR: ${{ env.EXTRA }}
         run: |
           make dist-lobster
           make test
@@ -325,10 +335,5 @@ jobs:
         if: ${{ matrix.port == 'moo' }}
         working-directory: port
         run: |
-          # the committed corpus and the controls as the reference ships them; the generated file
-          # alone goes in a second directory, which no control run reads
-          mkdir -p "$RUNNER_TEMP/moo-corpus" "$RUNNER_TEMP/moo-extra"
-          cp "${{ env.DIR }}"/*.txt "$RUNNER_TEMP/moo-corpus/"
-          mv "$RUNNER_TEMP/moo-corpus/diff.txt" "$RUNNER_TEMP/moo-extra/"
           make dist-moo JOBS=4
-          make test MOORUN_FLAGS="-corpus $RUNNER_TEMP/moo-corpus -controls ${{ env.CONTROLS }} -extra $RUNNER_TEMP/moo-extra"
+          make test MOORUN_FLAGS="-corpus ${{ env.SPLIT }}/conformance -controls ${{ env.CONTROLS }} -extra ${{ env.EXTRA }}"
